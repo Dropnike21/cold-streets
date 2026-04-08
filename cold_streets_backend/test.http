@@ -1,0 +1,8 @@
+### Create My Admin Account
+POST http://127.0.0.1:3000/register
+Content-Type: application/json
+
+{
+  "username": "Godfather",
+  "password": "mySecretPassword123"
+}
