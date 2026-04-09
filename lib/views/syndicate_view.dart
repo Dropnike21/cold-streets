@@ -122,7 +122,7 @@ class _SyndicateViewState extends State<SyndicateView> {
                   icon: const Icon(Icons.person_add, size: 14, color: Color(0xFF39FF14)),
                   label: const Text("RECRUIT", style: TextStyle(color: Color(0xFF39FF14), fontSize: 10, fontWeight: FontWeight.bold)),
                   style: ElevatedButton.styleFrom(
-                    backgroundColor: const Color(0xFF39FF14).withOpacity(0.1),
+                    backgroundColor: const Color(0xFF39FF14).withValues(alpha:0.1),
                     side: const BorderSide(color: Color(0xFF39FF14)),
                     padding: const EdgeInsets.symmetric(horizontal: 12),
                   ),
@@ -176,7 +176,7 @@ class _SyndicateViewState extends State<SyndicateView> {
                 child: ElevatedButton(
                   onPressed: null,
                   style: ElevatedButton.styleFrom(
-                    backgroundColor: const Color(0xFF39FF14).withOpacity(0.1),
+                    backgroundColor: const Color(0xFF39FF14).withValues(alpha:0.1),
                     disabledBackgroundColor: const Color(0xFF121212),
                     side: const BorderSide(color: Color(0xFF333333)),
                   ),
@@ -260,7 +260,7 @@ class _SyndicateViewState extends State<SyndicateView> {
             child: LinearProgressIndicator(
               value: progress,
               backgroundColor: const Color(0xFF121212),
-              color: const Color(0xFF39FF14).withOpacity(0.5),
+              color: const Color(0xFF39FF14).withValues(alpha:0.5),
               minHeight: 3,
             ),
           ),
@@ -278,7 +278,7 @@ class _SyndicateViewState extends State<SyndicateView> {
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
         color: const Color(0xFF1E1E1E),
-        border: Border.all(color: isRecruit ? const Color(0xFF333333) : const Color(0xFF39FF14).withOpacity(0.3)),
+        border: Border.all(color: isRecruit ? const Color(0xFF333333) : const Color(0xFF39FF14).withValues(alpha:0.3)),
         borderRadius: BorderRadius.circular(4),
       ),
       child: Column(
@@ -313,7 +313,7 @@ class _SyndicateViewState extends State<SyndicateView> {
                       child: ElevatedButton(
                         onPressed: () {},
                         style: ElevatedButton.styleFrom(
-                          backgroundColor: const Color(0xFF39FF14).withOpacity(0.1),
+                          backgroundColor: const Color(0xFF39FF14).withValues(alpha:0.1),
                           padding: const EdgeInsets.symmetric(horizontal: 12),
                           side: const BorderSide(color: Color(0xFF39FF14)),
                         ),

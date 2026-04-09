@@ -2,17 +2,23 @@ import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
 
-class MarketView extends StatefulWidget {
+class InventoryView extends StatefulWidget {
   final Map<String, dynamic> userData;
   final Function(Map<String, dynamic>) onStateChange;
 
-  const MarketView({super.key, required this.userData, required this.onStateChange});
+  const InventoryView({super.key, required this.userData, required this.onStateChange});
 
   @override
-  State<MarketView> createState() => _MarketViewState();
+  State<InventoryView> createState() => _InventoryViewState();
 }
 
-class _MarketViewState extends State<MarketView> {
+class _InventoryViewState extends State<InventoryView> {
+  final String apiUrl = "http://10.0.2.2:3000/inventory";
+  bool _isLoading = true;
+
+  List<dynamic> _allItems = [];
+  List<dynamic> _filteredItems = [];
+
   final FocusNode _searchFocusNode = FocusNode();
   bool _isSearchFocused = false;
   String _selectedCategory = "ALL";
@@ -27,13 +33,6 @@ class _MarketViewState extends State<MarketView> {
     "CONSUMABLES": ["ALL", "BOOSTS", "MEDICAL"],
   };
 
-  final String apiUrl = "http://10.0.2.2:3000/market";
-  bool _isLoading = true;
-  List<dynamic> _allItems = [];
-  List<dynamic> _filteredItems = [];
-
-  Map<int, int> _cart = {};
-
   @override
   void initState() {
     super.initState();
@@ -41,7 +40,7 @@ class _MarketViewState extends State<MarketView> {
       setState(() => _isSearchFocused = _searchFocusNode.hasFocus);
     });
     _searchController.addListener(_applyFilters);
-    _fetchMarket();
+    _fetchInventory();
   }
 
   @override
@@ -51,15 +50,16 @@ class _MarketViewState extends State<MarketView> {
     super.dispose();
   }
 
-  Future<void> _fetchMarket() async {
+  Future<void> _fetchInventory() async {
     try {
-      final response = await http.get(Uri.parse('$apiUrl/list'));
+      final String userId = widget.userData['user_id'].toString();
+      final response = await http.get(Uri.parse('$apiUrl/$userId'));
+
       if (response.statusCode == 200) {
         if (mounted) {
           setState(() {
             _allItems = jsonDecode(response.body);
             _isLoading = false;
-            _cart.clear();
             _applyFilters();
           });
         }
@@ -83,74 +83,7 @@ class _MarketViewState extends State<MarketView> {
     });
   }
 
-  void _updateCart(int itemId, int quantity) {
-    setState(() {
-      if (quantity <= 0) {
-        _cart.remove(itemId);
-      } else {
-        _cart[itemId] = quantity;
-      }
-    });
-  }
-
-  int get _cartTotal {
-    int total = 0;
-    for (var item in _allItems) {
-      int id = item['item_id'];
-      if (_cart.containsKey(id)) {
-        total += (item['base_value'] as int) * _cart[id]!;
-      }
-    }
-    return total;
-  }
-
-  // 🔥 Dynamic Ceiling Algorithm
-  int _getMaxAllowed(Map<String, dynamic> currentItem) {
-    int itemId = currentItem['item_id'];
-    int itemPrice = currentItem['base_value'];
-    int currentStock = currentItem['stock'] ?? 0;
-
-    int costOfOtherItems = 0;
-    _cart.forEach((id, qty) {
-      if (id != itemId) {
-        final otherItem = _allItems.firstWhere((e) => e['item_id'] == id, orElse: () => null);
-        if (otherItem != null) {
-          costOfOtherItems += (otherItem['base_value'] as int) * qty;
-        }
-      }
-    });
-
-    int remainingCash = widget.userData['dirty_cash'] - costOfOtherItems;
-    if (remainingCash < 0) remainingCash = 0; // Failsafe
-
-    // Prevent divide by zero error if base_value is ever 0
-    int affordableQty = itemPrice > 0 ? remainingCash ~/ itemPrice : currentStock;
-
-    // Return whichever is smaller: what they can afford, or what is actually in stock
-    return affordableQty < currentStock ? affordableQty : currentStock;
-  }
-
-  Future<void> _processPurchase({Map<String, dynamic>? singleItem, int? singleQty}) async {
-    List<Map<String, dynamic>> payloadCart = [];
-    int expectedCost = 0;
-
-    if (singleItem != null && singleQty != null) {
-      payloadCart.add({"item_id": singleItem['item_id'], "quantity": singleQty});
-      expectedCost = singleItem['base_value'] * singleQty;
-    } else {
-      _cart.forEach((itemId, qty) {
-        payloadCart.add({"item_id": itemId, "quantity": qty});
-      });
-      expectedCost = _cartTotal;
-    }
-
-    if (payloadCart.isEmpty) return;
-
-    if (widget.userData['dirty_cash'] < expectedCost) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Not enough Dirty Cash!"), backgroundColor: Colors.orangeAccent));
-      return;
-    }
-
+  Future<void> _useItem(Map<String, dynamic> item) async {
     showDialog(
       context: context,
       barrierDismissible: false,
@@ -159,12 +92,9 @@ class _MarketViewState extends State<MarketView> {
 
     try {
       final response = await http.post(
-        Uri.parse('$apiUrl/buy-bulk'),
+        Uri.parse('http://10.0.2.2:3000/inventory/use'),
         headers: {"Content-Type": "application/json"},
-        body: jsonEncode({
-          "user_id": widget.userData['user_id'],
-          "cart": payloadCart
-        }),
+        body: jsonEncode({"user_id": widget.userData['user_id'], "item_id": item['item_id']}),
       );
 
       if (!mounted) return;
@@ -174,10 +104,10 @@ class _MarketViewState extends State<MarketView> {
 
       if (response.statusCode == 200) {
         if (result['user'] != null) widget.onStateChange(result['user']);
-        _fetchMarket();
+        _fetchInventory();
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(result['message']), backgroundColor: Colors.greenAccent));
       } else {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(result['error'] ?? "Purchase failed."), backgroundColor: Colors.redAccent));
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(result['error'] ?? "Failed to use item."), backgroundColor: Colors.redAccent));
       }
     } catch (e) {
       if (!mounted) return;
@@ -189,10 +119,10 @@ class _MarketViewState extends State<MarketView> {
   @override
   Widget build(BuildContext context) {
     final screenWidth = MediaQuery.of(context).size.width;
-    bool hasItemsInCart = _cartTotal > 0;
 
     return Column(
       children: [
+        // --- SEARCH & CATEGORY BAR ---
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: 10.0, vertical: 12.0),
           child: Column(
@@ -252,65 +182,26 @@ class _MarketViewState extends State<MarketView> {
         ),
         const Divider(color: Color(0xFF333333), height: 1),
 
+        // --- INVENTORY LIST ---
         Expanded(
           child: GestureDetector(
             onTap: () => FocusScope.of(context).unfocus(),
             child: _isLoading
                 ? const Center(child: CircularProgressIndicator(color: Color(0xFF39FF14)))
                 : _filteredItems.isEmpty
-                ? const Center(child: Text("NO ITEMS FOUND.", style: TextStyle(color: Colors.white54, fontWeight: FontWeight.bold)))
+                ? const Center(child: Text("YOUR STASH IS EMPTY.", style: TextStyle(color: Colors.white54, fontWeight: FontWeight.bold)))
                 : ListView.builder(
-              padding: EdgeInsets.only(top: 10, left: 10, right: 10, bottom: hasItemsInCart ? 80 : 10),
+              padding: const EdgeInsets.all(10),
               itemCount: _filteredItems.length,
               itemBuilder: (context, index) {
-                final item = _filteredItems[index];
-                final itemId = item['item_id'];
-                final currentQty = _cart[itemId] ?? 0;
-
-                final maxAllowed = _getMaxAllowed(item);
-
-                return _MarketItemCard(
-                  itemData: item,
-                  currentQuantity: currentQty,
-                  maxAllowed: maxAllowed,
-                  onQuantityChanged: (newQty) => _updateCart(itemId, newQty),
-                  onBuy: () => _processPurchase(singleItem: item, singleQty: currentQty),
+                return _InventoryItemCard(
+                  itemData: _filteredItems[index],
+                  onUse: () => _useItem(_filteredItems[index]),
                 );
               },
             ),
           ),
         ),
-
-        if (hasItemsInCart)
-          Container(
-            width: double.infinity,
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-            decoration: const BoxDecoration(
-              color: Colors.black,
-              border: Border(top: BorderSide(color: Color(0xFF39FF14), width: 1)),
-            ),
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const Text("TOTAL COST", style: TextStyle(color: Colors.white54, fontSize: 10, fontWeight: FontWeight.bold)),
-                    Text("\$$_cartTotal", style: const TextStyle(color: Colors.greenAccent, fontSize: 18, fontWeight: FontWeight.w900)),
-                  ],
-                ),
-                ElevatedButton.icon(
-                  onPressed: () => _processPurchase(),
-                  icon: const Icon(Icons.shopping_cart_checkout, size: 16, color: Colors.black),
-                  label: const Text("BUY CART", style: TextStyle(color: Colors.black, fontSize: 12, fontWeight: FontWeight.bold, letterSpacing: 1)),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: const Color(0xFF39FF14),
-                    padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
-                  ),
-                )
-              ],
-            ),
-          )
       ],
     );
   }
@@ -347,59 +238,29 @@ class _MarketViewState extends State<MarketView> {
   }
 }
 
-class _MarketItemCard extends StatefulWidget {
+class _InventoryItemCard extends StatefulWidget {
   final Map<String, dynamic> itemData;
-  final int currentQuantity;
-  final int maxAllowed;
-  final Function(int) onQuantityChanged;
-  final VoidCallback onBuy;
+  final VoidCallback onUse;
 
-  const _MarketItemCard({
+  const _InventoryItemCard({
     required this.itemData,
-    required this.currentQuantity,
-    required this.maxAllowed,
-    required this.onQuantityChanged,
-    required this.onBuy,
+    required this.onUse,
   });
 
   @override
-  State<_MarketItemCard> createState() => _MarketItemCardState();
+  State<_InventoryItemCard> createState() => _InventoryItemCardState();
 }
 
-class _MarketItemCardState extends State<_MarketItemCard> {
+class _InventoryItemCardState extends State<_InventoryItemCard> {
   bool _isExpanded = false;
-  late TextEditingController _qtyController;
-
-  @override
-  void initState() {
-    super.initState();
-    _qtyController = TextEditingController(text: widget.currentQuantity.toString());
-  }
-
-  @override
-  void didUpdateWidget(covariant _MarketItemCard oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (widget.currentQuantity != oldWidget.currentQuantity || widget.maxAllowed != oldWidget.maxAllowed) {
-      if (_qtyController.text != widget.currentQuantity.toString()) {
-        _qtyController.text = widget.currentQuantity.toString();
-      }
-    }
-  }
-
-  @override
-  void dispose() {
-    _qtyController.dispose();
-    super.dispose();
-  }
 
   @override
   Widget build(BuildContext context) {
-    int currentStock = widget.itemData['stock'] ?? 0;
-    bool isOutOfStock = currentStock <= 0;
-    int basePrice = widget.itemData['base_value'] as int;
-    int totalPrice = widget.currentQuantity * basePrice;
+    int quantity = widget.itemData['quantity'] ?? 0;
 
-    // FIXED: Safely parses the PostgreSQL BigInt string into a Dart integer
+    // 🔥 THE FIXES: Read the dynamic Street Value, and safely parse Circulation!
+    // FIXED: Safely parses the PostgreSQL NUMERIC string into a Dart integer
+    int streetValue = int.tryParse(widget.itemData['current_value']?.toString() ?? widget.itemData['base_value']?.toString() ?? '0') ?? 0;
     int circulation = int.tryParse(widget.itemData['circulation']?.toString() ?? '0') ?? 0;
 
     String name = widget.itemData['name'].toString().toUpperCase();
@@ -407,7 +268,7 @@ class _MarketItemCardState extends State<_MarketItemCard> {
     String stat = widget.itemData['stat_modifier']?.toString().toUpperCase() ?? "NONE";
     String desc = widget.itemData['description']?.toString() ?? "No description available.";
 
-    bool canBuy = !isOutOfStock && widget.currentQuantity > 0;
+    bool isConsumable = type == 'CONSUMABLES';
 
     return GestureDetector(
       onTap: () {
@@ -421,7 +282,7 @@ class _MarketItemCardState extends State<_MarketItemCard> {
         decoration: BoxDecoration(
           color: const Color(0xFF1E1E1E),
           border: Border(left: BorderSide(
-              color: isOutOfStock ? Colors.redAccent.withValues(alpha: 0.5) : (_isExpanded ? const Color(0xFF39FF14) : const Color(0xFF333333)),
+              color: _isExpanded ? const Color(0xFF39FF14) : const Color(0xFF333333),
               width: 3
           )),
         ),
@@ -436,61 +297,41 @@ class _MarketItemCardState extends State<_MarketItemCard> {
                     children: [
                       Text(name, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: Colors.white)),
                       const SizedBox(height: 4),
-                      Text(isOutOfStock ? "OUT OF STOCK" : "STOCK: $currentStock",
-                          style: TextStyle(color: isOutOfStock ? Colors.redAccent : Colors.white24, fontSize: 10, fontWeight: FontWeight.bold)),
+                      Text("OWNED: $quantity", style: const TextStyle(color: Colors.white54, fontSize: 10, fontWeight: FontWeight.bold)),
                     ],
                   ),
                 ),
-                Row(
-                  children: [
-                    Text("\$$basePrice", style: const TextStyle(color: Colors.white54, fontSize: 10)),
-                    const SizedBox(width: 8),
-                    SizedBox(
-                      width: 38,
-                      height: 24,
-                      child: TextField(
-                        controller: _qtyController,
-                        enabled: !isOutOfStock,
-                        keyboardType: TextInputType.number,
-                        textAlign: TextAlign.center,
-                        textAlignVertical: TextAlignVertical.center,
-                        style: const TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.bold),
-                        decoration: const InputDecoration(
-                          isDense: true,
-                          contentPadding: EdgeInsets.zero,
-                          filled: true,
-                          fillColor: Color(0xFF121212),
-                          border: OutlineInputBorder(borderSide: BorderSide(color: Color(0xFF333333))),
-                        ),
-                        onChanged: (val) {
-                          int parsed = int.tryParse(val) ?? 0;
-                          if (parsed > widget.maxAllowed) {
-                            parsed = widget.maxAllowed;
-                            _qtyController.text = parsed.toString();
-                            _qtyController.selection = TextSelection.fromPosition(TextPosition(offset: _qtyController.text.length));
-                          }
-                          widget.onQuantityChanged(parsed);
-                        },
+                if (isConsumable)
+                  SizedBox(
+                    height: 28,
+                    child: ElevatedButton(
+                      onPressed: widget.onUse,
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: const Color(0xFF39FF14).withValues(alpha: 0.1),
+                        padding: const EdgeInsets.symmetric(horizontal: 16),
+                        side: const BorderSide(color: Color(0xFF39FF14)),
                       ),
+                      child: const Text("USE", style: TextStyle(color: Color(0xFF39FF14), fontSize: 10, fontWeight: FontWeight.bold)),
                     ),
-                    const SizedBox(width: 8),
-                    SizedBox(
-                      height: 28,
-                      child: ElevatedButton(
-                        onPressed: canBuy ? widget.onBuy : null,
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: canBuy ? const Color(0xFF39FF14).withValues(alpha: 0.1) : Colors.transparent,
-                          padding: const EdgeInsets.symmetric(horizontal: 10),
-                          side: BorderSide(color: canBuy ? const Color(0xFF39FF14) : Colors.white12),
-                        ),
-                        child: Text("BUY \$$totalPrice",
-                            style: TextStyle(color: canBuy ? const Color(0xFF39FF14) : Colors.white24, fontSize: 10, fontWeight: FontWeight.bold)),
+                  )
+                else
+                  SizedBox(
+                    height: 28,
+                    child: ElevatedButton(
+                      onPressed: () {
+                        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Equipping gear coming soon.")));
+                      },
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: Colors.blueAccent.withValues(alpha: 0.1),
+                        padding: const EdgeInsets.symmetric(horizontal: 16),
+                        side: const BorderSide(color: Colors.blueAccent),
                       ),
-                    )
-                  ],
-                ),
+                      child: const Text("EQUIP", style: TextStyle(color: Colors.blueAccent, fontSize: 10, fontWeight: FontWeight.bold)),
+                    ),
+                  )
               ],
             ),
+
             if (_isExpanded) ...[
               const SizedBox(height: 12),
               const Divider(color: Color(0xFF333333), height: 1),
@@ -505,14 +346,53 @@ class _MarketItemCardState extends State<_MarketItemCard> {
                 child: Text(desc, style: const TextStyle(color: Colors.white70, fontSize: 11, fontStyle: FontStyle.italic)),
               ),
               const SizedBox(height: 12),
+
               Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
-                  Text("VALUE: \$$basePrice", style: const TextStyle(color: Colors.white54, fontSize: 10, fontWeight: FontWeight.bold)),
+                  // 🔥 RENAMED TO STREET VALUE
+                  Text("STREET VALUE: \$$streetValue", style: const TextStyle(color: Colors.white54, fontSize: 10, fontWeight: FontWeight.bold)),
                   Text("CIRCULATION: $circulation", style: const TextStyle(color: Colors.white54, fontSize: 10, fontWeight: FontWeight.bold)),
                   Text("TYPE: $type", style: const TextStyle(color: Colors.white54, fontSize: 10, fontWeight: FontWeight.bold)),
                 ],
               ),
+              const SizedBox(height: 12),
+
+              Row(
+                children: [
+                  Expanded(
+                    child: ElevatedButton.icon(
+                      onPressed: () {
+                        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Black Market Fence coming soon.")));
+                      },
+                      icon: const Icon(Icons.attach_money, size: 14, color: Colors.orangeAccent),
+                      label: const Text("SELL", style: TextStyle(color: Colors.orangeAccent, fontSize: 10, fontWeight: FontWeight.bold, letterSpacing: 1)),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: Colors.orangeAccent.withValues(alpha: 0.1),
+                        side: const BorderSide(color: Colors.orangeAccent),
+                        padding: const EdgeInsets.symmetric(vertical: 8),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Tooltip(
+                      message: "Syndicate Trading coming soon",
+                      triggerMode: TooltipTriggerMode.tap,
+                      child: ElevatedButton.icon(
+                        onPressed: null,
+                        icon: const Icon(Icons.swap_horiz, size: 14, color: Colors.white24),
+                        label: const Text("TRADE", style: TextStyle(color: Colors.white24, fontSize: 10, fontWeight: FontWeight.bold, letterSpacing: 1)),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Colors.transparent,
+                          side: const BorderSide(color: Colors.white12),
+                          padding: const EdgeInsets.symmetric(vertical: 8),
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+              )
             ]
           ],
         ),

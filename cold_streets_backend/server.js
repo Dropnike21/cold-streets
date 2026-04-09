@@ -1,6 +1,5 @@
 const express = require('express');
 const cors = require('cors');
-const bcrypt = require('bcrypt');
 const pool = require('./db');
 require('dotenv').config();
 
@@ -11,42 +10,74 @@ app.use(express.json());
 
 // Check Database Connection
 pool.connect()
-  .then(() => console.log("🟢 SYSTEM ONLINE: Connected to Shadow Logistics Database."))
+  .then(() => console.log("🟢 SYSTEM ONLINE: Connected to Cold Streets Database."))
   .catch(err => console.error("🔴 CRITICAL ERROR: Database connection failed.", err.message));
 
-// --- API ROUTES ---
+// --- MODULAR ROUTERS ---
+app.use('/auth', require('./routes/auth'));
+app.use('/crimes', require('./routes/crimes'));
+app.use('/market', require('./routes/market'));
+app.use('/inventory', require('./routes/inventory'));
 
-// REGISTER ROUTE
-app.post('/register', async (req, res) => {
+// --- THE VITAL TICK & WARDEN (Cron Job) ---
+// Runs every 1 minute for testing (Change to 5 minutes for production: 5 * 60 * 1000)
+setInterval(async () => {
     try {
-        const { username, password } = req.body;
+        console.log("⏱️ THE VITAL TICK: Regenerating player stats and checking Wardens...");
 
-        // 1. Check if user exists
-        const userCheck = await pool.query("SELECT * FROM users WHERE username = $1", [username]);
-        if (userCheck.rows.length > 0) {
-            return res.status(400).json({ error: "Username already taken on the streets." });
-        }
+        // 1. The Warden: Clear expired cooldowns (Hospital/Jail)
+        await pool.query("DELETE FROM user_cooldowns WHERE expires_at <= NOW()");
 
-        // 2. Encrypt the password
-        const salt = await bcrypt.genSalt(10);
-        const hashedPassword = await bcrypt.hash(password, salt);
-
-        // 3. Insert into database as 'admin'
-        const newUser = await pool.query(
-            "INSERT INTO users (username, password_hash, role) VALUES ($1, $2, $3) RETURNING user_id, username, role, dirty_cash, hp",
-            [username, hashedPassword, 'admin']
-        );
-
-        res.json({
-            message: "Welcome to the Syndicate.",
-            user: newUser.rows[0]
-        });
-
+        // 2. The Vital Tick: Restore 10 Energy, 2 Nerve, and 10 HP globally (up to caps)
+        await pool.query(`
+            UPDATE users
+            SET
+                energy = LEAST(energy + 5, 100),
+                nerve = LEAST(nerve + 2, max_nerve),
+                hp = LEAST(hp + 10, 100)
+        `);
     } catch (err) {
-        console.error(err.message);
-        res.status(500).json({ error: "Server encountered a fatal error." });
+        console.error("🔴 CRITICAL WARDEN ERROR:", err.message);
     }
-});
+}, 30 * 1000); // 1 minute interval
+
+
+// --- THE CARTEL ECONOMY ENGINE (AUTOMATED RESTOCK) ---
+// Currently set to 1 minute (60 * 1000) for testing.
+// Later, change to (4 * 60 * 60 * 1000) for 4 hours.
+setInterval(async () => {
+    try {
+        const pool = require('./db');
+
+        // 1. Find all items that are running low on the streets
+        // We now pull the current stock so we can log it!
+        const lowStock = await pool.query("SELECT item_id, name, stock FROM items_master WHERE stock < 100");
+
+        if (lowStock.rows.length > 0) {
+            // 2. Shuffle the list to simulate random cartel shipments
+            const shuffled = lowStock.rows.sort(() => 0.5 - Math.random());
+
+            // 3. Pick 1 or 2 items randomly to restock
+            const numToRestock = Math.min(Math.floor(Math.random() * 2) + 1, shuffled.length);
+            const selectedItems = shuffled.slice(0, numToRestock);
+
+            for (let item of selectedItems) {
+                // 4. Generate a random shipment size between 2,000 and 5,000 units
+                const shipmentSize = Math.floor(Math.random() * (5000 - 2000 + 1)) + 2000;
+
+                // 5. ADD the shipment to the current stock instead of overwriting it!
+                await pool.query("UPDATE items_master SET stock = stock + $1 WHERE item_id = $2", [shipmentSize, item.item_id]);
+
+                console.log(`[ECONOMY] 📦 CRATE ARRIVED: Added ${shipmentSize} units of ${item.name}. (Was: ${item.stock} | Now: ${item.stock + shipmentSize})`);
+            }
+        } else {
+            console.log(`[ECONOMY] 📊 Market stable. No shortages detected.`);
+        }
+    } catch (e) {
+        console.error("[ECONOMY ENGINE ERROR]:", e.message);
+    }
+}, 60 * 1000); // <-- 60,000 ms = 1 minute
+
 
 // Start Server
 const PORT = process.env.PORT || 3000;
