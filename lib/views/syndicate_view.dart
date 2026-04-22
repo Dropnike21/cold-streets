@@ -1,3 +1,5 @@
+// File Path: lib/views/syndicate_view.dart
+
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
@@ -11,6 +13,7 @@ class SyndicateView extends StatefulWidget {
 }
 
 class _SyndicateViewState extends State<SyndicateView> {
+  // NOTE: 10.0.2.2 is for Android Emulator. Use local IPv4 if testing on a physical device.
   final String apiUrl = "http://10.0.2.2:3000/syndicate";
 
   List<dynamic> _activeCrew = [];
@@ -19,6 +22,7 @@ class _SyndicateViewState extends State<SyndicateView> {
 
   int dailyRefreshes = 0;
   bool isLoading = true;
+  bool _isFetching = false; // GUARD: Prevents overlapping 5-second polling requests
   int recruitCooldownSeconds = 0;
   Timer? _recruitTimer;
   Timer? _backgroundSyncTimer;
@@ -46,24 +50,37 @@ class _SyndicateViewState extends State<SyndicateView> {
   }
 
   Future<void> _fetchActiveCrew({bool isBackground = false}) async {
-    if (!isBackground) setState(() => isLoading = true);
+    if (_isFetching) return;
+    _isFetching = true;
+
+    if (!isBackground && mounted) setState(() => isLoading = true);
+
     try {
-      final response = await http.get(Uri.parse('$apiUrl/${widget.userId}'));
+      // FIX: Added an 8-second timeout so the UI doesn't hang indefinitely on bad connections
+      final response = await http
+          .get(Uri.parse('$apiUrl/${widget.userId}'))
+          .timeout(const Duration(seconds: 8));
+
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
         if (mounted) {
           setState(() {
-            _activeCrew = data['crew'];
-            dailyRefreshes = data['refreshesLeft'];
-            _ownedTools = List<String>.from(data['ownedTools'] ?? []).map((t) => t.toUpperCase()).toList();
-            if (!isBackground) isLoading = false;
+            _activeCrew = data['crew'] ?? [];
+            dailyRefreshes = data['refreshesLeft'] ?? 0;
+            _ownedTools = List<String>.from(data['ownedTools'] ?? [])
+                .map((t) => t.toUpperCase())
+                .toList();
           });
         }
-      } else {
-        if (!isBackground && mounted) setState(() => isLoading = false);
       }
     } catch (e) {
-      if (!isBackground && mounted) setState(() => isLoading = false);
+      debugPrint("Fetch Crew Error: $e");
+    } finally {
+      // FIX: Ensure isLoading is ALWAYS set to false, regardless of network or JSON errors
+      _isFetching = false;
+      if (!isBackground && mounted) {
+        setState(() => isLoading = false);
+      }
     }
   }
 
@@ -75,7 +92,8 @@ class _SyndicateViewState extends State<SyndicateView> {
         Uri.parse('$apiUrl/generate_board'),
         headers: {"Content-Type": "application/json"},
         body: jsonEncode({"user_id": widget.userId}),
-      );
+      ).timeout(const Duration(seconds: 8));
+
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
         setModalState(() {
@@ -83,7 +101,7 @@ class _SyndicateViewState extends State<SyndicateView> {
           dailyRefreshes = data['refreshesLeft'];
           isLoading = false;
         });
-        setState(() {});
+        setState(() {}); // Update the background UI as well
       } else {
         setModalState(() => isLoading = false);
       }
@@ -99,7 +117,8 @@ class _SyndicateViewState extends State<SyndicateView> {
         Uri.parse('$apiUrl/hire'),
         headers: {"Content-Type": "application/json"},
         body: jsonEncode({"user_id": widget.userId, "recruit": recruit}),
-      );
+      ).timeout(const Duration(seconds: 8));
+
       if (response.statusCode == 200) {
         setModalState(() { _recruitmentBoard.remove(recruit); recruitCooldownSeconds = 120; });
         _fetchActiveCrew();
@@ -110,7 +129,9 @@ class _SyndicateViewState extends State<SyndicateView> {
           } else { timer.cancel(); }
         });
       }
-    } catch (e) {}
+    } catch (e) {
+      debugPrint("Hire Error: $e");
+    }
   }
 
   Future<void> _unassignCrew(String crewId) async {
@@ -120,10 +141,16 @@ class _SyndicateViewState extends State<SyndicateView> {
         Uri.parse('$apiUrl/unassign_job'),
         headers: {"Content-Type": "application/json"},
         body: jsonEncode({"user_id": widget.userId, "crew_id": crewId}),
-      );
-      if (response.statusCode == 200) { _fetchActiveCrew(); }
-      else { setState(() => isLoading = false); }
-    } catch (e) { setState(() => isLoading = false); }
+      ).timeout(const Duration(seconds: 8));
+
+      if (response.statusCode == 200) {
+        _fetchActiveCrew();
+      } else {
+        setState(() => isLoading = false);
+      }
+    } catch (e) {
+      setState(() => isLoading = false);
+    }
   }
 
   @override
@@ -242,7 +269,9 @@ class _SyndicateViewState extends State<SyndicateView> {
     String? expandedCategory;
 
     showModalBottomSheet(
-      context: context, isScrollControlled: true, backgroundColor: const Color(0xFF1E1E1E),
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: const Color(0xFF1E1E1E),
       shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(12))),
       builder: (BuildContext context) {
         return StatefulBuilder(builder: (context, setModalState) {
@@ -250,14 +279,30 @@ class _SyndicateViewState extends State<SyndicateView> {
             http.get(Uri.parse('$apiUrl/crimes_board/${widget.userId}')).then((response) {
               if (response.statusCode == 200) {
                 final data = jsonDecode(response.body);
-                setModalState(() { localCrimes = data['crimes']; isFetching = false; });
+                setModalState(() {
+                  localCrimes = data['crimes'] ?? [];
+
+                  // FIX: Sort crimes globally by their stat requirement (lowest to highest).
+                  // This ensures the easiest crimes dictate the category order.
+                  localCrimes.sort((a, b) {
+                    int reqA = int.tryParse(a['req_stat_value']?.toString() ?? '0') ?? 0;
+                    int reqB = int.tryParse(b['req_stat_value']?.toString() ?? '0') ?? 0;
+                    return reqA.compareTo(reqB);
+                  });
+
+                  isFetching = false;
+                });
               }
+            }).catchError((_) {
+              setModalState(() => isFetching = false);
             });
           }
 
+          // Because localCrimes is now sorted by difficulty, this Map will dynamically
+          // construct its keys from easiest category to hardest category.
           Map<String, List<dynamic>> groupedCrimes = {};
           for (var crime in localCrimes) {
-            String cat = crime['category'] ?? "General";
+            String cat = crime['category']?.toString() ?? "General";
             groupedCrimes.putIfAbsent(cat, () => []).add(crime);
           }
 
@@ -267,7 +312,8 @@ class _SyndicateViewState extends State<SyndicateView> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Container(
-                  padding: const EdgeInsets.all(16), decoration: const BoxDecoration(border: Border(bottom: BorderSide(color: Color(0xFF333333)))),
+                  padding: const EdgeInsets.all(16),
+                  decoration: const BoxDecoration(border: Border(bottom: BorderSide(color: Color(0xFF333333)))),
                   child: Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
@@ -279,7 +325,8 @@ class _SyndicateViewState extends State<SyndicateView> {
                 if (isFetching) const Expanded(child: Center(child: CircularProgressIndicator(color: Color(0xFF39FF14))))
                 else Expanded(
                   child: ListView.builder(
-                    padding: const EdgeInsets.all(10), itemCount: groupedCrimes.keys.length,
+                    padding: const EdgeInsets.all(10),
+                    itemCount: groupedCrimes.keys.length,
                     itemBuilder: (context, index) {
                       String category = groupedCrimes.keys.elementAt(index);
                       List<dynamic> categoryCrimes = groupedCrimes[category]!;
@@ -325,9 +372,14 @@ class _SyndicateViewState extends State<SyndicateView> {
                                     ),
                                     ElevatedButton(
                                       onPressed: () async {
-                                        await http.post(Uri.parse('$apiUrl/assign_job'), headers: {"Content-Type": "application/json"}, body: jsonEncode({"user_id": widget.userId, "crew_id": npc['crew_id'], "crime_title": crime['title']}));
+                                        await http.post(
+                                            Uri.parse('$apiUrl/assign_job'),
+                                            headers: {"Content-Type": "application/json"},
+                                            body: jsonEncode({"user_id": widget.userId, "crew_id": npc['crew_id'], "crime_title": crime['title']})
+                                        );
                                         _fetchActiveCrew();
-                                        if (!context.mounted) return; Navigator.pop(context);
+                                        if (!context.mounted) return;
+                                        Navigator.pop(context);
                                       },
                                       style: ElevatedButton.styleFrom(backgroundColor: Colors.transparent, side: const BorderSide(color: Colors.white54)),
                                       child: Text(assignedCrew != null ? "SWAP" : "ASSIGN", style: const TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.bold)),
@@ -472,12 +524,12 @@ class _SyndicateViewState extends State<SyndicateView> {
           const SizedBox(height: 12),
           const Divider(color: Color(0xFF333333), height: 1),
           const SizedBox(height: 12),
-          _buildStatBar("STR", npc["cur_str"], npc["max_str"], barMax),
-          _buildStatBar("DEF", npc["cur_def"], npc["max_def"], barMax),
-          _buildStatBar("DEX", npc["cur_dex"], npc["max_dex"], barMax),
-          _buildStatBar("SPD", npc["cur_spd"], npc["max_spd"], barMax),
-          // FIXED: Now accurately displays the V2 Acumen Stat
-          _buildStatBar("ACU", npc["cur_acu"], npc["max_acu"], barMax),
+          // FIX: Added '?? 0' null-coalescing. Older crew rows in PostgreSQL will have NULL for new columns and crash the UI without this!
+          _buildStatBar("STR", npc["cur_str"] ?? 0, npc["max_str"] ?? 0, barMax),
+          _buildStatBar("DEF", npc["cur_def"] ?? 0, npc["max_def"] ?? 0, barMax),
+          _buildStatBar("DEX", npc["cur_dex"] ?? 0, npc["max_dex"] ?? 0, barMax),
+          _buildStatBar("SPD", npc["cur_spd"] ?? 0, npc["max_spd"] ?? 0, barMax),
+          _buildStatBar("ACU", npc["cur_acu"] ?? 0, npc["max_acu"] ?? 0, barMax),
         ],
       ),
     );
@@ -524,20 +576,20 @@ class _SyndicateViewState extends State<SyndicateView> {
           const SizedBox(height: 12),
           const Divider(color: Color(0xFF333333), height: 1),
           const SizedBox(height: 12),
-          _buildStatBar("STR", stats["str"]["cur"], stats["str"]["max"], barMax),
-          _buildStatBar("DEF", stats["def"]["cur"], stats["def"]["max"], barMax),
-          _buildStatBar("DEX", stats["dex"]["cur"], stats["dex"]["max"], barMax),
-          _buildStatBar("SPD", stats["spd"]["cur"], stats["spd"]["max"], barMax),
-          // FIXED: Now reads the new JSON payload properly
-          _buildStatBar("ACU", stats["acu"]["cur"], stats["acu"]["max"], barMax),
+          // FIX: Added '?? 0' here as well for consistency against malformed payloads.
+          _buildStatBar("STR", stats["str"]["cur"] ?? 0, stats["str"]["max"] ?? 0, barMax),
+          _buildStatBar("DEF", stats["def"]["cur"] ?? 0, stats["def"]["max"] ?? 0, barMax),
+          _buildStatBar("DEX", stats["dex"]["cur"] ?? 0, stats["dex"]["max"] ?? 0, barMax),
+          _buildStatBar("SPD", stats["spd"]["cur"] ?? 0, stats["spd"]["max"] ?? 0, barMax),
+          _buildStatBar("ACU", stats["acu"]["cur"] ?? 0, stats["acu"]["max"] ?? 0, barMax),
         ],
       ),
     );
   }
 
   Widget _buildStatBar(String label, int current, int max, int tierAbsoluteMax) {
-    double currentPct = current / tierAbsoluteMax;
-    double maxPct = max / tierAbsoluteMax;
+    double currentPct = tierAbsoluteMax > 0 ? current / tierAbsoluteMax : 0.0;
+    double maxPct = tierAbsoluteMax > 0 ? max / tierAbsoluteMax : 0.0;
     return Padding(
       padding: const EdgeInsets.only(bottom: 6.0),
       child: Row(

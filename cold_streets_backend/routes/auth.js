@@ -1,3 +1,5 @@
+// File Path: cold_streets_backend/routes/auth.js
+
 const express = require('express');
 const bcrypt = require('bcrypt');
 const pool = require('../db');
@@ -11,7 +13,7 @@ router.post('/register', async (req, res) => {
 
     try {
         const { username, password } = req.body;
-        const email = req.body.email.toLowerCase(); // Ensure email is always lowercase
+        const email = req.body.email.toLowerCase();
 
         // 1. Check if Email or Username is taken
         const userCheck = await client.query(
@@ -32,13 +34,19 @@ router.post('/register', async (req, res) => {
         // --- BEGIN TRANSACTION ---
         await client.query('BEGIN');
 
-        // 3. Create the Main User Record
-        const newUserQuery = await client.query(
-            `INSERT INTO users (email, username, password_hash, role)
-             VALUES ($1, $2, $3, $4)
-             RETURNING user_id, username, dirty_cash, level, hp, energy, nerve`,
-            [email, username, hashedPassword, 'player']
-        );
+        // 3. Create the Main User Record (NOW WITH 10.00 DEFAULT STATS)
+                const newUserQuery = await client.query(
+                    `INSERT INTO users (
+                        email, username, password_hash, role,
+                        stat_str, stat_def, stat_dex, stat_spd, stat_acu, stat_ops, stat_pre, stat_res
+                    ) VALUES (
+                        $1, $2, $3, $4,
+                        10, 10, 10, 10, 10, 10, 10, 10
+                    ) RETURNING
+                        user_id, username, dirty_cash, clean_cash, level, hp, energy, nerve, max_nerve,
+                        stat_str, stat_def, stat_dex, stat_spd, stat_acu, stat_ops, stat_pre, stat_res`,
+                    [email, username, hashedPassword, 'player']
+                );
 
         const newUser = newUserQuery.rows[0];
         const newUserId = newUser.user_id;
@@ -47,7 +55,10 @@ router.post('/register', async (req, res) => {
         await client.query("INSERT INTO user_equipment (user_id) VALUES ($1)", [newUserId]);
         await client.query("INSERT INTO user_crime_records (user_id) VALUES ($1)", [newUserId]);
         await client.query("INSERT INTO user_properties (user_id) VALUES ($1)", [newUserId]);
-        await client.query("INSERT INTO user_gym_stats (user_id) VALUES ($1)", [newUserId]);
+
+        // FIX: Give them the default Gym #1 (Playground Park)
+        await client.query("INSERT INTO user_gym_stats (user_id, active_gym_id, gym_exp) VALUES ($1, 1, 0)", [newUserId]);
+        await client.query("INSERT INTO user_owned_gyms (user_id, gym_id) VALUES ($1, 1)", [newUserId]);
 
         // 5. Inject their first event
         await client.query(
@@ -93,7 +104,6 @@ router.post('/login', async (req, res) => {
             return res.status(401).json({ error: "Invalid credentials. Wrong password." });
         }
 
-        // Return ALL stats to populate the Dashboard
         res.json({
             message: "Authentication successful.",
             user: {
@@ -108,13 +118,11 @@ router.post('/login', async (req, res) => {
                 max_nerve: user.max_nerve,
                 hp: user.hp,
 
-                // Combat Stats (D.I.S.S.)
                 stat_str: user.stat_str,
                 stat_def: user.stat_def,
                 stat_dex: user.stat_dex,
                 stat_spd: user.stat_spd,
 
-                // Working Stats (V2.0 Kingpin Diamond)
                 stat_acu: user.stat_acu,
                 stat_ops: user.stat_ops,
                 stat_pre: user.stat_pre,

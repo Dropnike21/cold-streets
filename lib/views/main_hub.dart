@@ -6,6 +6,7 @@ import 'auth_view.dart';
 import 'dashboard_view.dart';
 import 'streets_view.dart';
 import 'market_view.dart';
+import 'gym_view.dart';
 import 'syndicate_view.dart';
 import 'inventory_view.dart';
 
@@ -339,7 +340,16 @@ class _MainHubState extends State<MainHub> {
                     title: const Text("The Gym", style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
                     onTap: () {
                       Navigator.pop(context); // Close Drawer
-                      // Navigator.push(context, MaterialPageRoute(builder: (context) => const GymView())); // Uncomment when Gym is ready
+                      // FIX: Route to the GymView and pass the state controllers
+                      Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                              builder: (context) => GymView(
+                                  userData: widget.userData,
+                                  onStateChange: _updateUserStats
+                              )
+                          )
+                      );
                     },
                   ),
                   ListTile(

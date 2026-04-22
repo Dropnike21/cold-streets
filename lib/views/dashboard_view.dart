@@ -1,3 +1,5 @@
+// File Path: lib/views/dashboard_view.dart
+
 import 'package:flutter/material.dart';
 
 class DashboardView extends StatelessWidget {
@@ -8,13 +10,18 @@ class DashboardView extends StatelessWidget {
   // Helper for safe strings
   String _safeStr(dynamic value, String fallback) => value?.toString() ?? fallback;
 
-  // NEW: Bulletproof Integer Parser to prevent the Red Screen
-  int _parseSafeInt(dynamic value, int fallback) {
-    if (value == null) return fallback;
-    if (value is int) return value;
-    if (value is double) return value.toInt();
-    if (value is String) return int.tryParse(value) ?? fallback;
-    return fallback;
+  // Bulletproof parsers
+  double _parseSafeDouble(dynamic value) => (value is num) ? value.toDouble() : double.tryParse(value?.toString() ?? '0.0') ?? 0.0;
+  int _parseSafeInt(dynamic value) => (value is int) ? value : int.tryParse(value?.toString() ?? '0') ?? 0;
+
+  String _formatWholeNumber(dynamic value) {
+    double val = _parseSafeDouble(value);
+    return val.toInt().toString().replaceAllMapped(RegExp(r'(\d{1,3})(?=(\d{3})+(?!\d))'), (m) => '${m[1]},');
+  }
+
+  String _formatMoney(dynamic value) {
+    int val = _parseSafeInt(value);
+    return "\$" + val.toString().replaceAllMapped(RegExp(r'(\d{1,3})(?=(\d{3})+(?!\d))'), (m) => '${m[1]},');
   }
 
   @override
@@ -40,6 +47,7 @@ class DashboardView extends StatelessWidget {
           ),
           const SizedBox(height: 12),
 
+          // Note: The below sections are UI Mocks waiting for their respective backend modules
           _buildEquippedGear(),
           const SizedBox(height: 12),
 
@@ -62,7 +70,7 @@ class DashboardView extends StatelessWidget {
           const SizedBox(height: 12),
 
           _buildPersonalPerks(),
-          const SizedBox(height: 30), // Bottom padding
+          const SizedBox(height: 30),
         ],
       ),
     );
@@ -105,34 +113,36 @@ class DashboardView extends StatelessWidget {
   }
 
   Widget _buildGeneralInfo() {
-    // FIXED: Now we safely parse these values so they never crash!
-    int dirtyCash = _parseSafeInt(userData['dirty_cash'], 0);
-    int level = _parseSafeInt(userData['level'], 1);
+    int dirtyCash = _parseSafeInt(userData['dirty_cash']);
+    int cleanCash = _parseSafeInt(userData['clean_cash']);
+    int level = _parseSafeInt(userData['level']);
+    String role = _safeStr(userData['role'], "player");
 
     return _buildCard("GENERAL INFO", [
-      _buildRow("Money on Hand:", "\$${dirtyCash.toString().replaceAllMapped(RegExp(r'(\d{1,3})(?=(\d{3})+(?!\d))'), (Match m) => '${m[1]},')}"),
+      _buildRow("Dirty Cash:", _formatMoney(dirtyCash), valueColor: const Color(0xFF39FF14)),
+      _buildRow("Clean Cash:", _formatMoney(cleanCash), valueColor: Colors.white),
       _buildRow("Level:", "$level"),
-      _buildRow("Rank:", "Street Rat"),
-      _buildRow("Age:", "Day 1"),
-      _buildRow("Marital Status:", "Single"),
-      _buildRow("Networth:", "\$0"),
+      _buildRow("Role:", role.toUpperCase()),
+      _buildRow("Marital Status:", "Single"), // Will wire up with Marriage module
+      _buildRow("Networth:", "\$0"), // Will calculate later based on items/properties
     ]);
   }
 
   Widget _buildBattleStats() {
     return _buildCard("BATTLE STATS", [
-      _buildRow("STR:", _safeStr(userData['stat_str'], "10"), valueColor: const Color(0xFF39FF14)),
-      _buildRow("DEF:", _safeStr(userData['stat_def'], "10"), valueColor: const Color(0xFF39FF14)),
-      _buildRow("DEX:", _safeStr(userData['stat_dex'], "10"), valueColor: const Color(0xFF39FF14)),
-      _buildRow("SPD:", _safeStr(userData['stat_spd'], "10"), valueColor: const Color(0xFF39FF14)),
+      _buildRow("STR:", _formatWholeNumber(userData['stat_str']), valueColor: const Color(0xFF39FF14)),
+      _buildRow("DEF:", _formatWholeNumber(userData['stat_def']), valueColor: const Color(0xFF39FF14)),
+      _buildRow("DEX:", _formatWholeNumber(userData['stat_dex']), valueColor: const Color(0xFF39FF14)),
+      _buildRow("SPD:", _formatWholeNumber(userData['stat_spd']), valueColor: const Color(0xFF39FF14)),
     ]);
   }
 
   Widget _buildWorkingStats() {
     return _buildCard("WORKING STATS", [
-      _buildRow("INT:", _safeStr(userData['stat_int'], "10"), valueColor: Colors.orangeAccent),
-      _buildRow("LAB:", "10", valueColor: Colors.orangeAccent), // TODO: V2 DB Column
-      _buildRow("LOG:", "10", valueColor: Colors.orangeAccent), // TODO: V2 DB Column
+      _buildRow("ACU:", _formatWholeNumber(userData['stat_acu']), valueColor: Colors.orangeAccent),
+      _buildRow("OPS:", _formatWholeNumber(userData['stat_ops']), valueColor: Colors.orangeAccent),
+      _buildRow("PRE:", _formatWholeNumber(userData['stat_pre']), valueColor: Colors.orangeAccent),
+      _buildRow("RES:", _formatWholeNumber(userData['stat_res']), valueColor: Colors.orangeAccent),
     ]);
   }
 
@@ -196,7 +206,7 @@ class DashboardView extends StatelessWidget {
   }
 
   Widget _buildPersonalPerks() {
-    return _buildCard("PERSONAL PERKS (V2)", [
+    return _buildCard("PERSONAL PERKS", [
       _buildRow("Active Perks:", "0", valueColor: Colors.white24),
     ]);
   }
