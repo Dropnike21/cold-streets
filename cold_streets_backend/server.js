@@ -1,6 +1,7 @@
 const express = require('express');
 const cors = require('cors');
 const pool = require('./db');
+
 require('dotenv').config();
 
 const app = express();
@@ -18,6 +19,7 @@ app.use('/auth', require('./routes/auth'));
 app.use('/crimes', require('./routes/crimes'));
 app.use('/market', require('./routes/market'));
 app.use('/inventory', require('./routes/inventory'));
+app.use('/syndicate', require('./routes/syndicate'));
 
 // --- THE VITAL TICK & WARDEN (Cron Job) ---
 // Runs every 1 minute for testing (Change to 5 minutes for production: 5 * 60 * 1000)

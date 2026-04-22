@@ -32,7 +32,7 @@ class _MarketViewState extends State<MarketView> {
   List<dynamic> _allItems = [];
   List<dynamic> _filteredItems = [];
 
-  Map<int, int> _cart = {};
+  final Map<int, int> _cart = {};
 
   @override
   void initState() {

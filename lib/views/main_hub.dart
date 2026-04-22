@@ -55,14 +55,14 @@ class _MainHubState extends State<MainHub> {
 
     _startTelemetrySync();
   }
-  // 🔥 MMO Number Formatter (Prevents Billionaire UI Overflow)
+  //  MMO Number Formatter (Prevents Billionaire UI Overflow)
   String _formatCash(int amount) {
     if (amount >= 1000000000) {
-      return '\$${(amount / 1000000000).toStringAsFixed(2)}B'; // 1.32B
+      return '\$${(amount / 1000000000).toStringAsFixed(2)}b'; // 1.32B
     } else if (amount >= 1000000) {
-      return '\$${(amount / 1000000).toStringAsFixed(2)}M';    // 1.25M
+      return '\$${(amount / 1000000).toStringAsFixed(2)}m';    // 1.25M
     } else if (amount >= 1000) {
-      return '\$${(amount / 1000).toStringAsFixed(1)}K';       // 15.5K
+      return '\$${(amount / 1000).toStringAsFixed(1)}k';       // 15.5K
     } else {
       return '\$$amount';                                      // $500
     }
@@ -170,21 +170,18 @@ class _MainHubState extends State<MainHub> {
     });
   }
 
+  // FIXED: IndexedStack keeps all tabs alive in the background simultaneously
   Widget _buildCurrentScreen() {
-    switch (_selectedIndex) {
-      case 0:
-        return const DashboardView();
-      case 1:
-        return StreetsView(userData: widget.userData, onStateChange: _updateUserStats);
-      case 2:
-        return MarketView(userData: widget.userData, onStateChange: _updateUserStats);
-      case 3:
-        return const SyndicateView();
-      case 4: // <-- NEW INVENTORY MODULE
-        return InventoryView(userData: widget.userData, onStateChange: _updateUserStats);
-      default:
-        return const DashboardView();
-    }
+    return IndexedStack(
+      index: _selectedIndex,
+      children: [
+        const DashboardView(),
+        StreetsView(userData: widget.userData, onStateChange: _updateUserStats),
+        MarketView(userData: widget.userData, onStateChange: _updateUserStats),
+        SyndicateView(userId: widget.userData['user_id'].toString()),
+        InventoryView(userData: widget.userData, onStateChange: _updateUserStats),
+      ],
+    );
   }
 
   // FIXED: Formats time to H:MM:SS or MM:SS dynamically
@@ -235,7 +232,6 @@ class _MainHubState extends State<MainHub> {
               ),
               child: Row(
                 children: [
-                  const Icon(Icons.attach_money, size: 14, color: Color(0xFF39FF14)),
                   Text(
                     _formatCash(dirtyCash), // 🔥 Your formatted billion-dollar variable
                     style: const TextStyle(
