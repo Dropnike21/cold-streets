@@ -7,7 +7,6 @@ router.get('/:user_id', async (req, res) => {
     try {
         const { user_id } = req.params;
 
-        // This query perfectly calculates the dynamic Street Value and Circulation
         const query = `
             SELECT
                 ui.inventory_id, ui.quantity, im.*,
@@ -48,7 +47,7 @@ router.post('/use', async (req, res) => {
             throw new Error("This item cannot be consumed.");
         }
 
-        // C. Check Cooldown Overlaps (e.g., Can't use 2 Medical items back to back)
+        // C. Check Cooldown Overlaps
         if (item.cooldown_type && item.cooldown_type !== 'none') {
             const cdCheck = await pool.query("SELECT * FROM user_cooldowns WHERE user_id = $1 AND type = $2 AND expires_at > NOW()", [user_id, item.cooldown_type]);
             if (cdCheck.rows.length > 0) {
@@ -66,19 +65,19 @@ router.post('/use', async (req, res) => {
             updateQuery = "UPDATE users SET nerve = LEAST(nerve + $1, max_nerve) WHERE user_id = $2 RETURNING dirty_cash, energy, nerve, max_nerve, hp";
         }
 
-        const updatedUser = await pool.query(updateQuery, [parseInt(item.description.replace(/[^0-9]/g, '')) || 50, user_id]); // Quick regex to pull number from description for MVP
+        const updatedUser = await pool.query(updateQuery, [parseInt(item.description.replace(/[^0-9]/g, '')) || 50, user_id]);
 
-        // E. Apply Cooldown (If applicable)
-        // Hardcoding 60 seconds (1 minute) for testing. Later change to item.cooldown_seconds
+        // E. Apply Cooldown
         if (item.cooldown_type && item.cooldown_type !== 'none') {
-            await pool.query("INSERT INTO user_cooldowns (user_id, type, expires_at) VALUES ($1, $2, NOW() + INTERVAL '1 minute')", [user_id, item.cooldown_type]);
+            // FIXED: Added the 'reason' column so players know why they have a timer!
+            await pool.query("INSERT INTO user_cooldowns (user_id, type, expires_at, reason) VALUES ($1, $2, NOW() + INTERVAL '1 minute', 'Consumable sickness.')", [user_id, item.cooldown_type]);
         }
 
         // F. Deduct Item
         await pool.query("UPDATE user_inventory SET quantity = quantity - 1 WHERE user_id = $1 AND item_id = $2", [user_id, item_id]);
 
-        // Clean up empty rows
-        await pool.query("DELETE FROM user_inventory WHERE quantity <= 0");
+        // FIXED: Only delete empty items for THIS specific user, preventing global lag spikes!
+        await pool.query("DELETE FROM user_inventory WHERE user_id = $1 AND quantity <= 0", [user_id]);
 
         await pool.query('COMMIT');
 

@@ -175,7 +175,7 @@ class _MainHubState extends State<MainHub> {
     return IndexedStack(
       index: _selectedIndex,
       children: [
-        const DashboardView(),
+        DashboardView(userData: widget.userData),
         StreetsView(userData: widget.userData, onStateChange: _updateUserStats),
         MarketView(userData: widget.userData, onStateChange: _updateUserStats),
         SyndicateView(userId: widget.userData['user_id'].toString()),
@@ -329,16 +329,46 @@ class _MainHubState extends State<MainHub> {
               child: ListView(
                 padding: EdgeInsets.zero,
                 children: [
-                  // NEW INVENTORY BUTTON
+                  // --- CITY NAVIGATION ---
+                  const Padding(
+                    padding: EdgeInsets.only(left: 16, top: 16, bottom: 8),
+                    child: Text("CITY NAVIGATION", style: TextStyle(color: Colors.grey, fontSize: 10, letterSpacing: 1.5, fontWeight: FontWeight.bold)),
+                  ),
+                  ListTile(
+                    leading: const Icon(Icons.fitness_center, color: Colors.orangeAccent),
+                    title: const Text("The Gym", style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+                    onTap: () {
+                      Navigator.pop(context); // Close Drawer
+                      // Navigator.push(context, MaterialPageRoute(builder: (context) => const GymView())); // Uncomment when Gym is ready
+                    },
+                  ),
+                  ListTile(
+                    leading: const Icon(Icons.local_hospital, color: Colors.redAccent),
+                    title: const Text("Hospital", style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+                    onTap: () {},
+                  ),
+                  ListTile(
+                    leading: const Icon(Icons.account_balance, color: Colors.blueAccent),
+                    title: const Text("Bank", style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+                    onTap: () {},
+                  ),
+                  ListTile(
+                    leading: const Icon(Icons.gavel, color: Colors.grey),
+                    title: const Text("Jail", style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+                    onTap: () {},
+                  ),
+
+                  const Divider(color: Color(0xFF333333)),
+
+                  // --- PLAYER MENUS ---
                   ListTile(
                     leading: const Icon(Icons.backpack, color: Colors.white),
                     title: const Text("Stash / Inventory", style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
                     onTap: () {
-                      setState(() => _selectedIndex = 4); // Switch screen
-                      Navigator.pop(context); // Close Drawer
+                      setState(() => _selectedIndex = 4); // Switch to Inventory Tab
+                      Navigator.pop(context);
                     },
                   ),
-
                   ListTile(
                     leading: const Icon(Icons.settings, color: Colors.grey),
                     title: const Text("Settings", style: TextStyle(color: Colors.white)),

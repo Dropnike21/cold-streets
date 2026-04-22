@@ -11,6 +11,8 @@ class AuthView extends StatefulWidget {
 }
 
 class _AuthViewState extends State<AuthView> {
+  // We separate the controllers so the data doesn't get tangled
+  final TextEditingController _loginIdController = TextEditingController();
   final TextEditingController _emailController = TextEditingController();
   final TextEditingController _usernameController = TextEditingController();
   final TextEditingController _passwordController = TextEditingController();
@@ -23,20 +25,23 @@ class _AuthViewState extends State<AuthView> {
   Future<void> _submitAuth() async {
     setState(() => _isLoading = true);
 
-    final String email = _emailController.text.trim();
-    final String password = _passwordController.text.trim();
-    final String username = _usernameController.text.trim();
-
     final String endpoint = _isLogin ? '/auth/login' : '/auth/register';
     final Uri url = Uri.parse('$apiUrl$endpoint');
 
-    // Build payload dynamically based on login vs register
-    final Map<String, dynamic> payload = {
-      "email": email,
-      "password": password,
-    };
-    if (!_isLogin) {
-      payload["username"] = username;
+    Map<String, dynamic> payload = {};
+
+    // Build the dynamic payload based on our new backend rules
+    if (_isLogin) {
+      payload = {
+        "login_id": _loginIdController.text.trim(), // The 3-Way Login!
+        "password": _passwordController.text.trim(),
+      };
+    } else {
+      payload = {
+        "email": _emailController.text.trim(),
+        "username": _usernameController.text.trim(),
+        "password": _passwordController.text.trim(),
+      };
     }
 
     try {
@@ -59,7 +64,7 @@ class _AuthViewState extends State<AuthView> {
 
         Navigator.pushReplacement(
           context,
-          MaterialPageRoute(builder: (context) => MainHub(userData: activeUser)), // <-- UPDATED
+          MaterialPageRoute(builder: (context) => MainHub(userData: activeUser)),
         );
       } else {
         if (!mounted) return;
@@ -92,24 +97,37 @@ class _AuthViewState extends State<AuthView> {
               const Text("COLD STREETS", style: TextStyle(fontSize: 28, fontWeight: FontWeight.bold, color: Colors.white, letterSpacing: 2)),
               const SizedBox(height: 40),
 
-              // EMAIL FIELD (Always visible)
-              TextField(
-                controller: _emailController,
-                style: const TextStyle(color: Colors.white),
-                keyboardType: TextInputType.emailAddress,
-                decoration: InputDecoration(
-                  labelText: "Secure Email",
-                  labelStyle: const TextStyle(color: Colors.grey),
-                  filled: true,
-                  fillColor: Colors.grey[900],
-                  border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
-                  focusedBorder: OutlineInputBorder(borderSide: const BorderSide(color: Color(0xFF39FF14))),
+              if (_isLogin) ...[
+                // THE 3-WAY LOGIN FIELD
+                TextField(
+                  controller: _loginIdController,
+                  style: const TextStyle(color: Colors.white),
+                  decoration: InputDecoration(
+                    labelText: "Email, Street Name, or ID",
+                    labelStyle: const TextStyle(color: Colors.grey),
+                    filled: true,
+                    fillColor: Colors.grey[900],
+                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+                    focusedBorder: const OutlineInputBorder(borderSide: BorderSide(color: Color(0xFF39FF14))),
+                  ),
                 ),
-              ),
-              const SizedBox(height: 16),
-
-              // USERNAME FIELD (Only visible during registration)
-              if (!_isLogin) ...[
+              ] else ...[
+                // SECURE EMAIL FIELD (Registration)
+                TextField(
+                  controller: _emailController,
+                  style: const TextStyle(color: Colors.white),
+                  keyboardType: TextInputType.emailAddress,
+                  decoration: InputDecoration(
+                    labelText: "Secure Email",
+                    labelStyle: const TextStyle(color: Colors.grey),
+                    filled: true,
+                    fillColor: Colors.grey[900],
+                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+                    focusedBorder: const OutlineInputBorder(borderSide: BorderSide(color: Color(0xFF39FF14))),
+                  ),
+                ),
+                const SizedBox(height: 16),
+                // USERNAME FIELD (Registration)
                 TextField(
                   controller: _usernameController,
                   style: const TextStyle(color: Colors.white),
@@ -119,11 +137,12 @@ class _AuthViewState extends State<AuthView> {
                     filled: true,
                     fillColor: Colors.grey[900],
                     border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
-                    focusedBorder: OutlineInputBorder(borderSide: const BorderSide(color: Color(0xFF39FF14))),
+                    focusedBorder: const OutlineInputBorder(borderSide: BorderSide(color: Color(0xFF39FF14))),
                   ),
                 ),
-                const SizedBox(height: 16),
               ],
+
+              const SizedBox(height: 16),
 
               // PASSWORD FIELD (Always visible)
               TextField(
@@ -136,7 +155,7 @@ class _AuthViewState extends State<AuthView> {
                   filled: true,
                   fillColor: Colors.grey[900],
                   border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
-                  focusedBorder: OutlineInputBorder(borderSide: const BorderSide(color: Color(0xFF39FF14))),
+                  focusedBorder: const OutlineInputBorder(borderSide: BorderSide(color: Color(0xFF39FF14))),
                 ),
               ),
               const SizedBox(height: 30),
@@ -156,8 +175,18 @@ class _AuthViewState extends State<AuthView> {
                 ),
               ),
               const SizedBox(height: 20),
+
               TextButton(
-                onPressed: () => setState(() => _isLogin = !_isLogin),
+                onPressed: () {
+                  setState(() {
+                    _isLogin = !_isLogin;
+                    // Clean up fields when swapping modes
+                    _loginIdController.clear();
+                    _emailController.clear();
+                    _usernameController.clear();
+                    _passwordController.clear();
+                  });
+                },
                 child: Text(
                   _isLogin ? "Need an account? Register here." : "Already have an empire? Log in.",
                   style: const TextStyle(color: Color(0xFF39FF14)),

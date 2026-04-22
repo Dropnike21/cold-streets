@@ -17,16 +17,16 @@ router.post('/execute', async (req, res) => {
         const { user_id, crime_id } = req.body;
 
         // 1. Check if player is locked in Hospital or Jail
-                const cooldownCheck = await pool.query("SELECT * FROM user_cooldowns WHERE user_id = $1 AND expires_at > NOW()", [user_id]);
-                if (cooldownCheck.rows.length > 0) {
-                    // FIXED: Narrative text update for hospital vs jail
-                    const activeCd = cooldownCheck.rows[0].type;
-                    if (activeCd === 'hospital') {
-                        return res.status(403).json({ error: "You are still lying in a hospital bed. You cannot do this activity yet." });
-                    } else {
-                        return res.status(403).json({ error: "You are locked behind bars. Do your time." });
-                    }
-                }
+        const cooldownCheck = await pool.query("SELECT * FROM user_cooldowns WHERE user_id = $1 AND expires_at > NOW()", [user_id]);
+        if (cooldownCheck.rows.length > 0) {
+            const activeCd = cooldownCheck.rows[0].type;
+            const reason = cooldownCheck.rows[0].reason || "Unknown";
+            if (activeCd === 'hospital') {
+                return res.status(403).json({ error: `You are in the hospital. Reason: ${reason}` });
+            } else {
+                return res.status(403).json({ error: `You are locked behind bars. Reason: ${reason}` });
+            }
+        }
 
         const userCheck = await pool.query("SELECT * FROM users WHERE user_id = $1", [user_id]);
         if (userCheck.rows.length === 0) return res.status(404).json({ error: "Ghost account." });
@@ -44,6 +44,7 @@ router.post('/execute', async (req, res) => {
         if (user.energy < crime.energy_cost) return res.status(400).json({ error: "Not enough Energy." });
         if (user.nerve < crime.nerve_cost) return res.status(400).json({ error: "Not enough Nerve." });
 
+        // Checks user['stat_str'], user['stat_acu'], etc dynamically!
         const playerStat = user[`stat_${crime.req_stat_type}`] || 10;
         let successChance = (playerStat / crime.req_stat_value) * 100;
         if (successChance < 5) successChance = 5;
@@ -68,12 +69,14 @@ router.post('/execute', async (req, res) => {
             } else if (failRoll <= 66) {
                 // HOSPITALIZED (Drops to 1 HP, 1 Minute Cooldown)
                 const updatedUser = await pool.query("UPDATE users SET energy = energy - $1, nerve = nerve - $2, hp = 1 WHERE user_id = $3 RETURNING dirty_cash, energy, nerve, max_nerve, hp", [crime.energy_cost, crime.nerve_cost, user_id]);
-                await pool.query("INSERT INTO user_cooldowns (user_id, type, expires_at) VALUES ($1, 'hospital', NOW() + INTERVAL '1 minute')", [user_id]);
+                // FIXED: Injected the 'reason' column!
+                await pool.query("INSERT INTO user_cooldowns (user_id, type, expires_at, reason) VALUES ($1, 'hospital', NOW() + INTERVAL '1 minute', 'Botched a street hustle.')", [user_id]);
                 return res.json({ status: "hospitalized", message: crime.hosp_text, user: updatedUser.rows[0] });
             } else {
                 // JAILED (1 Minute Cooldown for MVP testing)
                 const updatedUser = await pool.query("UPDATE users SET energy = energy - $1, nerve = nerve - $2 WHERE user_id = $3 RETURNING dirty_cash, energy, nerve, max_nerve, hp", [crime.energy_cost, crime.nerve_cost, user_id]);
-                await pool.query("INSERT INTO user_cooldowns (user_id, type, expires_at) VALUES ($1, 'jail', NOW() + INTERVAL '1 minute')", [user_id]);
+                // FIXED: Injected the 'reason' column!
+                await pool.query("INSERT INTO user_cooldowns (user_id, type, expires_at, reason) VALUES ($1, 'jail', NOW() + INTERVAL '1 minute', 'Busted by the police.')", [user_id]);
                 return res.json({ status: "jailed", message: crime.jail_text, user: updatedUser.rows[0] });
             }
         }

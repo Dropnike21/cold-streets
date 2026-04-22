@@ -15,7 +15,7 @@ class _SyndicateViewState extends State<SyndicateView> {
 
   List<dynamic> _activeCrew = [];
   List<dynamic> _recruitmentBoard = [];
-  List<String> _ownedTools = []; // NEW: Tracks inventory
+  List<String> _ownedTools = [];
 
   int dailyRefreshes = 0;
   bool isLoading = true;
@@ -409,11 +409,9 @@ class _SyndicateViewState extends State<SyndicateView> {
 
     bool isAssigned = npc["assignment"] != 'UNASSIGNED';
 
-    // NEW: Check if Tool is Missing
     String? reqTool = npc['tool_req']?.toString().toUpperCase();
     bool isToolMissing = isAssigned && reqTool != null && reqTool != 'NONE' && !_ownedTools.contains(reqTool);
 
-    // Styling Dynamics
     Color cardBorderColor = isAssigned
         ? (isToolMissing ? Colors.redAccent : Colors.orangeAccent.withValues(alpha: 0.3))
         : const Color(0xFF39FF14).withValues(alpha: 0.3);
@@ -478,7 +476,8 @@ class _SyndicateViewState extends State<SyndicateView> {
           _buildStatBar("DEF", npc["cur_def"], npc["max_def"], barMax),
           _buildStatBar("DEX", npc["cur_dex"], npc["max_dex"], barMax),
           _buildStatBar("SPD", npc["cur_spd"], npc["max_spd"], barMax),
-          _buildStatBar("INT", npc["cur_int"], npc["max_int"], barMax),
+          // FIXED: Now accurately displays the V2 Acumen Stat
+          _buildStatBar("ACU", npc["cur_acu"], npc["max_acu"], barMax),
         ],
       ),
     );
@@ -529,7 +528,8 @@ class _SyndicateViewState extends State<SyndicateView> {
           _buildStatBar("DEF", stats["def"]["cur"], stats["def"]["max"], barMax),
           _buildStatBar("DEX", stats["dex"]["cur"], stats["dex"]["max"], barMax),
           _buildStatBar("SPD", stats["spd"]["cur"], stats["spd"]["max"], barMax),
-          _buildStatBar("INT", stats["int"]["cur"], stats["int"]["max"], barMax),
+          // FIXED: Now reads the new JSON payload properly
+          _buildStatBar("ACU", stats["acu"]["cur"], stats["acu"]["max"], barMax),
         ],
       ),
     );
