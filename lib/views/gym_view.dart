@@ -35,6 +35,10 @@ class _GymViewState extends State<GymView> {
   final TextEditingController _dexController = TextEditingController(text: '1');
   final TextEditingController _spdController = TextEditingController(text: '1');
 
+  // V1.2 CONSTANT: The absolute maximum percent achievable in the game (Cartel Training Compound)
+  // Used purely to scale the UI progress bars cleanly from 1 to 10
+  final double MAX_GAME_PERCENT = 0.0001;
+
   @override
   void initState() {
     super.initState();
@@ -120,21 +124,18 @@ class _GymViewState extends State<GymView> {
     } catch (e) {} finally { if (mounted) setState(() => isTraining = false); }
   }
 
-  // UPDATED: Energy Auto-Clamping Math
   Future<void> _trainStat(String statType, String statName, TextEditingController controller) async {
     int currentEnergy = _parseSafeInt(widget.userData['energy']);
     int requestedEnergy = int.tryParse(controller.text) ?? 1;
 
     Map<String, dynamic> currentGym = gymList.firstWhere((g) => g['id'] == activeGymId);
     int gymCost = _parseSafeInt(currentGym['energy_cost']);
-    if (gymCost <= 0) gymCost = 1; // Failsafe
+    if (gymCost <= 0) gymCost = 1;
 
-    // If they ask to spend more than they have, clamp it down to their current energy
     if (requestedEnergy > currentEnergy) {
       requestedEnergy = currentEnergy;
     }
 
-    // Calculate how many times they can actually train based on the gym's cost
     int trainCount = requestedEnergy ~/ gymCost;
 
     if (trainCount < 1) {
@@ -145,7 +146,6 @@ class _GymViewState extends State<GymView> {
       return;
     }
 
-    // This is the EXACT amount of energy that will be deducted and used for math
     int finalEnergySpent = trainCount * gymCost;
 
     setState(() => isTraining = true);
@@ -235,13 +235,14 @@ class _GymViewState extends State<GymView> {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Expanded(child: Column(children: [
-                      _buildStatCard("Increases raw damage and brutality.", "str", str, Icons.fitness_center, _parseSafeDouble(activeGym['mult_str']), _strController, "STR"),
-                      _buildStatCard("Mitigates incoming combat damage.", "def", def, Icons.shield, _parseSafeDouble(activeGym['mult_def']), _defController, "DEF")
+                      // V1.2 FIX: Points to str_percent instead of mult_str
+                      _buildStatCard("Increases raw damage and brutality.", "str", str, Icons.fitness_center, _parseSafeDouble(activeGym['str_percent']), _strController, "STR"),
+                      _buildStatCard("Mitigates incoming combat damage.", "def", def, Icons.shield, _parseSafeDouble(activeGym['def_percent']), _defController, "DEF")
                     ])),
                     const SizedBox(width: 12),
                     Expanded(child: Column(children: [
-                      _buildStatCard("Improves accuracy and stealth actions.", "dex", dex, Icons.track_changes, _parseSafeDouble(activeGym['mult_dex']), _dexController, "DEX"),
-                      _buildStatCard("Increases evasion and escape chances.", "spd", spd, Icons.directions_run, _parseSafeDouble(activeGym['mult_spd']), _spdController, "SPD")
+                      _buildStatCard("Improves accuracy and stealth actions.", "dex", dex, Icons.track_changes, _parseSafeDouble(activeGym['dex_percent']), _dexController, "DEX"),
+                      _buildStatCard("Increases evasion and escape chances.", "spd", spd, Icons.directions_run, _parseSafeDouble(activeGym['spd_percent']), _spdController, "SPD")
                     ])),
                   ],
                 ),
@@ -296,7 +297,7 @@ class _GymViewState extends State<GymView> {
     );
   }
 
-  Widget _buildStatCard(String desc, String statCode, dynamic currentStat, IconData icon, double activeMultiplier, TextEditingController controller, String nameLabel) {
+  Widget _buildStatCard(String desc, String statCode, dynamic currentStat, IconData icon, double activePercent, TextEditingController controller, String nameLabel) {
     return Container(
       margin: const EdgeInsets.only(bottom: 12), padding: const EdgeInsets.all(10),
       decoration: BoxDecoration(color: const Color(0xFF1E1E1E), border: Border.all(color: const Color(0xFF333333)), borderRadius: BorderRadius.circular(6)),
@@ -310,12 +311,15 @@ class _GymViewState extends State<GymView> {
           const SizedBox(height: 6),
           Text(desc, style: const TextStyle(color: Colors.white24, fontSize: 8, fontStyle: FontStyle.italic), maxLines: 2),
           const SizedBox(height: 8),
-          _buildMultiplierBars(activeMultiplier),
+
+          // Render the bars based on the new percentage
+          _buildMultiplierBars(activePercent),
+
           const SizedBox(height: 10),
           Row(children: [
             Expanded(flex: 2, child: Container(
                 height: 28,
-                alignment: Alignment.center, // FIX: Forces the TextField to center perfectly
+                alignment: Alignment.center,
                 decoration: BoxDecoration(color: const Color(0xFF121212), border: Border.all(color: const Color(0xFF333333)), borderRadius: BorderRadius.circular(4)),
                 child: TextField(
                     controller: controller,
@@ -325,7 +329,7 @@ class _GymViewState extends State<GymView> {
                     decoration: const InputDecoration(
                         border: InputBorder.none,
                         isDense: true,
-                        contentPadding: EdgeInsets.zero // FIX: Strips Flutter's default weird padding
+                        contentPadding: EdgeInsets.zero
                     )
                 )
             )),
@@ -340,7 +344,6 @@ class _GymViewState extends State<GymView> {
     );
   }
 
-  // ... (Keep _buildGymGridBox, _buildGymDetailsCard, _buildEffectiveStatRow, _buildStatBarRow, _buildMultiplierBars the same) ...
   Widget _buildGymGridBox(Map<String, dynamic> gym) {
     bool isUndiscovered = playerGymExp < (gym['unlock_exp_req'] ?? 0);
     bool isActive = gym['id'] == activeGymId;
@@ -393,11 +396,22 @@ class _GymViewState extends State<GymView> {
           ] else ...[
             Text(gym['desc'] ?? "", style: const TextStyle(color: Colors.white70, fontSize: 9, fontStyle: FontStyle.italic)),
             const SizedBox(height: 12),
-            _buildStatBarRow("STR", _parseSafeDouble(gym['mult_str'])), const SizedBox(height: 4),
-            _buildStatBarRow("DEF", _parseSafeDouble(gym['mult_def'])), const SizedBox(height: 4),
-            _buildStatBarRow("DEX", _parseSafeDouble(gym['mult_dex'])), const SizedBox(height: 4),
-            _buildStatBarRow("SPD", _parseSafeDouble(gym['mult_spd'])), const SizedBox(height: 12),
-            Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [const Text("DAILY FEE:", style: TextStyle(color: Colors.white54, fontSize: 9, fontWeight: FontWeight.bold)), Text("\$${_formatNumber(gym['daily_fee'])}", style: const TextStyle(color: Colors.redAccent, fontSize: 9, fontWeight: FontWeight.bold))]),
+
+            // V1.2 FIX: Now parses _percent values properly
+            _buildStatBarRow("STR", _parseSafeDouble(gym['str_percent'])), const SizedBox(height: 4),
+            _buildStatBarRow("DEF", _parseSafeDouble(gym['def_percent'])), const SizedBox(height: 4),
+            _buildStatBarRow("DEX", _parseSafeDouble(gym['dex_percent'])), const SizedBox(height: 4),
+            _buildStatBarRow("SPD", _parseSafeDouble(gym['spd_percent'])), const SizedBox(height: 12),
+
+            Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+              const Text("BASE RATE:", style: TextStyle(color: Colors.white24, fontSize: 9, fontWeight: FontWeight.bold)),
+              const Text("+0.05 / Energy", style: TextStyle(color: Colors.white54, fontSize: 9, fontWeight: FontWeight.bold))
+            ]),
+            const SizedBox(height: 4),
+            Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+              const Text("DAILY FEE:", style: TextStyle(color: Colors.white54, fontSize: 9, fontWeight: FontWeight.bold)),
+              Text("\$${_formatNumber(gym['daily_fee'])}", style: const TextStyle(color: Colors.redAccent, fontSize: 9, fontWeight: FontWeight.bold))
+            ]),
           ],
           const SizedBox(height: 12),
           if (!isActive && !isOwned)
@@ -427,16 +441,33 @@ class _GymViewState extends State<GymView> {
     );
   }
 
-  Widget _buildStatBarRow(String statName, double multiplier) {
-    return Row(children: [SizedBox(width: 25, child: Text(statName, style: const TextStyle(color: Colors.white54, fontSize: 8, fontWeight: FontWeight.bold))), Expanded(child: _buildMultiplierBars(multiplier))]);
+  Widget _buildStatBarRow(String statName, double percent) {
+    return Row(children: [
+      SizedBox(width: 25, child: Text(statName, style: const TextStyle(color: Colors.white54, fontSize: 8, fontWeight: FontWeight.bold))),
+      Expanded(child: _buildMultiplierBars(percent))
+    ]);
   }
 
-  Widget _buildMultiplierBars(double multiplier) {
+  // V1.2 FIX: Translates a tiny decimal (e.g. 0.0001) into a clean 10-box visual progress bar
+  Widget _buildMultiplierBars(double currentPercent) {
+    // Calculates how "full" the 10 boxes should be based on the game's absolute maximum
+    double scale = (currentPercent / MAX_GAME_PERCENT) * 10;
+
     return Row(
       children: List.generate(10, (index) {
-        double fillRatio = (multiplier - index).clamp(0.0, 1.0);
-        return Expanded(child: Container(margin: const EdgeInsets.only(right: 2), height: 3, decoration: BoxDecoration(color: const Color(0xFF121212), borderRadius: BorderRadius.circular(1)),
-            child: FractionallySizedBox(alignment: Alignment.centerLeft, widthFactor: fillRatio, child: Container(decoration: BoxDecoration(color: const Color(0xFF39FF14).withOpacity(0.7), borderRadius: BorderRadius.circular(1))))));
+        double fillRatio = (scale - index).clamp(0.0, 1.0);
+        return Expanded(
+            child: Container(
+                margin: const EdgeInsets.only(right: 2),
+                height: 3,
+                decoration: BoxDecoration(color: const Color(0xFF121212), borderRadius: BorderRadius.circular(1)),
+                child: FractionallySizedBox(
+                    alignment: Alignment.centerLeft,
+                    widthFactor: fillRatio,
+                    child: Container(decoration: BoxDecoration(color: const Color(0xFF39FF14).withOpacity(0.7), borderRadius: BorderRadius.circular(1)))
+                )
+            )
+        );
       }),
     );
   }

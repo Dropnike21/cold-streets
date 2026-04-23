@@ -34,12 +34,13 @@ const lastNames = [
     "Silva", "Solis", "Soto", "Suarez", "Tapia", "Torres", "Trevino", "Trujillo", "Valdez", "Valenzuela"
 ];
 
+// V1.2 FIX: Massive Stat Boost & Progression Scaling
 const TIER_DATA = {
-    1: { name: "Runner", minLvl: 1, curRange: [5, 25], maxRange: [40, 95], barMax: 100 },
-    2: { name: "Hustler", minLvl: 15, curRange: [15, 40], maxRange: [70, 120], barMax: 150 },
-    3: { name: "Enforcer", minLvl: 25, curRange: [25, 60], maxRange: [100, 160], barMax: 200 },
-    4: { name: "Specialist", minLvl: 35, curRange: [30, 80], maxRange: [120, 180], barMax: 200 },
-    5: { name: "Lieutenant", minLvl: 50, curRange: [50, 100], maxRange: [180, 250], barMax: 250 }
+    1: { name: "Runner", minLvl: 1, curRange: [10, 50], maxRange: [100, 1000], barMax: 1000 },
+    2: { name: "Hustler", minLvl: 15, curRange: [100, 500], maxRange: [2000, 10000], barMax: 10000 },
+    3: { name: "Enforcer", minLvl: 25, curRange: [1000, 5000], maxRange: [20000, 80000], barMax: 80000 },
+    4: { name: "Specialist", minLvl: 35, curRange: [10000, 25000], maxRange: [100000, 350000], barMax: 350000 },
+    5: { name: "Lieutenant", minLvl: 50, curRange: [50000, 100000], maxRange: [500000, 1000000], barMax: 1000000 }
 };
 
 const getRnd = (min, max) => Math.floor(Math.random() * (max - min + 1)) + min;
@@ -55,43 +56,22 @@ async function generateUniqueName(userId) {
     return newName;
 }
 
-async function checkAndResetRefreshes(user_id) {
-    const now = new Date();
-    let reset = new Date();
-    reset.setUTCHours(22, 0, 0, 0);
-
-    if (now.getTime() < reset.getTime()) {
-        reset.setUTCDate(reset.getUTCDate() - 1);
-    }
-
-    const userRes = await pool.query('SELECT recruit_refreshes, last_refresh_reset FROM users WHERE user_id = $1', [user_id]);
-    if (userRes.rows.length === 0) return 0;
-
-    let { recruit_refreshes, last_refresh_reset } = userRes.rows[0];
-
-    if (!last_refresh_reset || new Date(last_refresh_reset).getTime() < reset.getTime()) {
-        await pool.query('UPDATE users SET recruit_refreshes = 5, last_refresh_reset = NOW() WHERE user_id = $1', [user_id]);
-        return 5;
-    }
-
-    return recruit_refreshes;
-}
-
 // --- ROUTES ---
 
 // FETCH ACTIVE CREW & OWNED TOOLS
 router.get('/:user_id', async (req, res) => {
     try {
         const { user_id } = req.params;
-        await checkAndResetRefreshes(user_id);
 
-        // FIXED: Sort includes max_acu now!
+        const userRes = await pool.query('SELECT recruit_refreshes FROM users WHERE user_id = $1', [user_id]);
+        const refreshesLeft = userRes.rows.length > 0 ? userRes.rows[0].recruit_refreshes : 0;
+
         const crewQuery = `
             SELECT uc.*, cm.tool_req
             FROM user_crew uc
             LEFT JOIN crimes_master cm ON uc.assignment = cm.title
             WHERE uc.user_id = $1
-            ORDER BY uc.max_str + uc.max_def + uc.max_dex + uc.max_spd + uc.max_acu DESC
+            ORDER BY (uc.max_str + uc.max_def + uc.max_dex + uc.max_spd + uc.max_acu + uc.max_ops + uc.max_pre + uc.max_res) DESC
         `;
         const crew = await pool.query(crewQuery, [user_id]);
 
@@ -104,7 +84,7 @@ router.get('/:user_id', async (req, res) => {
         const tools = await pool.query(toolsQuery, [user_id]);
         const ownedTools = tools.rows.map(t => t.name);
 
-        res.json({ success: true, crew: crew.rows, refreshesLeft: 99, ownedTools });
+        res.json({ success: true, crew: crew.rows, refreshesLeft, ownedTools });
     } catch (err) {
         console.error("GET Crew Error:", err);
         res.status(500).json({ error: "Server error" });
@@ -121,16 +101,21 @@ router.get('/crimes_board/:user_id', async (req, res) => {
 });
 
 router.post('/assign_job', async (req, res) => {
+    const client = await pool.connect();
     try {
         const { user_id, crew_id, crime_title } = req.body;
-        await pool.query('BEGIN');
-        await pool.query("UPDATE user_crew SET assignment = 'UNASSIGNED' WHERE user_id = $1 AND assignment = $2", [user_id, crime_title]);
-        await pool.query("UPDATE user_crew SET assignment = $1 WHERE user_id = $2 AND crew_id = $3", [crime_title, user_id, crew_id]);
-        await pool.query('COMMIT');
+        await client.query('BEGIN');
+
+        await client.query("UPDATE user_crew SET assignment = 'UNASSIGNED' WHERE user_id = $1 AND assignment = $2", [user_id, crime_title]);
+        await client.query("UPDATE user_crew SET assignment = $1 WHERE user_id = $2 AND crew_id = $3", [crime_title, user_id, crew_id]);
+
+        await client.query('COMMIT');
         res.json({ success: true, message: `Assigned to ${crime_title}.` });
     } catch (err) {
-        await pool.query('ROLLBACK');
-        res.status(500).json({ error: "Server error" });
+        await client.query('ROLLBACK');
+        res.status(500).json({ error: "Server error assigning job." });
+    } finally {
+        client.release();
     }
 });
 
@@ -145,11 +130,34 @@ router.post('/unassign_job', async (req, res) => {
 });
 
 router.post('/generate_board', async (req, res) => {
+    const client = await pool.connect();
     try {
         const { user_id } = req.body;
-        const userRes = await pool.query('SELECT level FROM users WHERE user_id = $1', [user_id]);
-        if (userRes.rows.length === 0) return res.status(404).json({ error: "User not found" });
-        let { level } = userRes.rows[0];
+
+        await client.query('BEGIN');
+
+        // V1.2 FIX: Cooldown Check! If active, board refuses to generate.
+        const cdCheck = await client.query("SELECT EXTRACT(EPOCH FROM (expires_at - NOW())) AS seconds_left FROM user_cooldowns WHERE user_id = $1 AND type = 'recruitment' AND expires_at > NOW()", [user_id]);
+        if (cdCheck.rows.length > 0) {
+            await client.query('ROLLBACK');
+            return res.status(403).json({
+                error: "Scouts are on cooldown.",
+                seconds_left: cdCheck.rows[0].seconds_left
+            });
+        }
+
+        const userRes = await client.query('SELECT level, recruit_refreshes FROM users WHERE user_id = $1 FOR UPDATE', [user_id]);
+        if (userRes.rows.length === 0) throw new Error("User not found");
+
+        let { level, recruit_refreshes } = userRes.rows[0];
+
+        if (recruit_refreshes <= 0) {
+            await client.query('ROLLBACK');
+            return res.status(403).json({ error: "No refreshes remaining today." });
+        }
+
+        await client.query('UPDATE users SET recruit_refreshes = recruit_refreshes - 1 WHERE user_id = $1', [user_id]);
+        const refreshesLeft = recruit_refreshes - 1;
 
         let board = [];
         for (let i = 0; i < 5; i++) {
@@ -165,81 +173,111 @@ router.post('/generate_board', async (req, res) => {
             const tierMeta = TIER_DATA[selectedTier];
             const name = await generateUniqueName(user_id);
 
-            // FIXED: Acumen is generated here!
             const stats = {
                 str: { cur: getRnd(tierMeta.curRange[0], tierMeta.curRange[1]), max: getRnd(tierMeta.maxRange[0], tierMeta.maxRange[1]) },
                 def: { cur: getRnd(tierMeta.curRange[0], tierMeta.curRange[1]), max: getRnd(tierMeta.maxRange[0], tierMeta.maxRange[1]) },
                 dex: { cur: getRnd(tierMeta.curRange[0], tierMeta.curRange[1]), max: getRnd(tierMeta.maxRange[0], tierMeta.maxRange[1]) },
                 spd: { cur: getRnd(tierMeta.curRange[0], tierMeta.curRange[1]), max: getRnd(tierMeta.maxRange[0], tierMeta.maxRange[1]) },
-                acu: { cur: getRnd(tierMeta.curRange[0], tierMeta.curRange[1]), max: getRnd(tierMeta.maxRange[0], tierMeta.maxRange[1]) }
+                acu: { cur: getRnd(tierMeta.curRange[0], tierMeta.curRange[1]), max: getRnd(tierMeta.maxRange[0], tierMeta.maxRange[1]) },
+                ops: { cur: getRnd(tierMeta.curRange[0], tierMeta.curRange[1]), max: getRnd(tierMeta.maxRange[0], tierMeta.maxRange[1]) },
+                pre: { cur: getRnd(tierMeta.curRange[0], tierMeta.curRange[1]), max: getRnd(tierMeta.maxRange[0], tierMeta.maxRange[1]) },
+                res: { cur: getRnd(tierMeta.curRange[0], tierMeta.curRange[1]), max: getRnd(tierMeta.maxRange[0], tierMeta.maxRange[1]) }
             };
 
-            const totalCur = stats.str.cur + stats.def.cur + stats.dex.cur + stats.spd.cur + stats.acu.cur;
-            const price = (totalCur * 10) * selectedTier;
+            const totalCur = stats.str.cur + stats.def.cur + stats.dex.cur + stats.spd.cur + stats.acu.cur + stats.ops.cur + stats.pre.cur + stats.res.cur;
+
+            // V1.2 FIX: Price Multiplier adjusted to reflect the massive stat boosts
+            const price = (totalCur * 50) * selectedTier;
 
             board.push({ name, tier: tierMeta.name, barMax: tierMeta.barMax, stats, price });
         }
 
-        res.json({ success: true, board, refreshesLeft: 99 });
+        await client.query('COMMIT');
+        res.json({ success: true, board, refreshesLeft });
     } catch (err) {
-        res.status(500).json({ error: "Server error" });
+        await client.query('ROLLBACK');
+        res.status(500).json({ error: err.message || "Server error" });
+    } finally {
+        client.release();
     }
 });
 
 router.post('/hire', async (req, res) => {
+    const client = await pool.connect();
     try {
         const { user_id, recruit } = req.body;
-        const userCheck = await pool.query('SELECT dirty_cash FROM users WHERE user_id = $1', [user_id]);
-        if (userCheck.rows[0].dirty_cash < recruit.price) {
-            return res.status(400).json({ error: "Insufficient dirty cash." });
+
+        await client.query('BEGIN');
+
+        // Verify they aren't already on a cooldown
+        const cdCheck = await client.query("SELECT * FROM user_cooldowns WHERE user_id = $1 AND type = 'recruitment' AND expires_at > NOW()", [user_id]);
+        if (cdCheck.rows.length > 0) {
+            throw new Error("Scouts are on cooldown.");
         }
 
-        await pool.query('UPDATE users SET dirty_cash = dirty_cash - $1 WHERE user_id = $2', [recruit.price, user_id]);
+        const userCheck = await client.query('SELECT dirty_cash FROM users WHERE user_id = $1 FOR UPDATE', [user_id]);
+        if (userCheck.rows[0].dirty_cash < recruit.price) {
+            throw new Error("Insufficient dirty cash.");
+        }
 
-        // FIXED: Inserts Acumen properly!
-        await pool.query(`
-            INSERT INTO user_crew (user_id, npc_name, tier, cur_str, max_str, cur_def, max_def, cur_dex, max_dex, cur_spd, max_spd, cur_acu, max_acu)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+        await client.query('UPDATE users SET dirty_cash = dirty_cash - $1 WHERE user_id = $2', [recruit.price, user_id]);
+
+        await client.query(`
+            INSERT INTO user_crew (
+                user_id, npc_name, tier,
+                cur_str, max_str, cur_def, max_def, cur_dex, max_dex, cur_spd, max_spd,
+                cur_acu, max_acu, cur_ops, max_ops, cur_pre, max_pre, cur_res, max_res
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
         `, [
             user_id, recruit.name, recruit.tier,
             recruit.stats.str.cur, recruit.stats.str.max,
             recruit.stats.def.cur, recruit.stats.def.max,
             recruit.stats.dex.cur, recruit.stats.dex.max,
             recruit.stats.spd.cur, recruit.stats.spd.max,
-            recruit.stats.acu.cur, recruit.stats.acu.max
+            recruit.stats.acu.cur, recruit.stats.acu.max,
+            recruit.stats.ops.cur, recruit.stats.ops.max,
+            recruit.stats.pre.cur, recruit.stats.pre.max,
+            recruit.stats.res.cur, recruit.stats.res.max
         ]);
 
+        // V1.2 FIX: Inject the 2-Minute Cooldown immediately after hiring
+        await client.query("INSERT INTO user_cooldowns (user_id, type, expires_at, reason) VALUES ($1, 'recruitment', NOW() + INTERVAL '2 minutes', 'Your scouts are out looking for new prospects.')", [user_id]);
+
+        await client.query('COMMIT');
         res.json({ success: true, message: `${recruit.name} joined the crew.` });
     } catch (err) {
-        res.status(500).json({ error: "Server error" });
+        await client.query('ROLLBACK');
+        res.status(400).json({ error: err.message || "Server error" });
+    } finally {
+        client.release();
     }
 });
 
 router.post('/complete_job', async (req, res) => {
+    const client = await pool.connect();
     try {
-        const { user_id, crew_id, crime_category, payout } = req.body;
-        await pool.query('BEGIN');
+        const { user_id, crew_id, payout } = req.body;
 
-        const crewCheck = await pool.query('SELECT * FROM user_crew WHERE crew_id = $1 AND user_id = $2', [crew_id, user_id]);
+        await client.query('BEGIN');
+
+        const crewCheck = await client.query('SELECT * FROM user_crew WHERE crew_id = $1 AND user_id = $2 FOR UPDATE', [crew_id, user_id]);
         if (crewCheck.rows.length === 0) {
-            await pool.query('ROLLBACK');
-            return res.status(400).json({ error: "Crew member not found or recalled." });
+            throw new Error("Crew member not found or recalled.");
         }
         const crew = crewCheck.rows[0];
 
-        const crimeData = await pool.query('SELECT tool_req FROM crimes_master WHERE title = $1', [crew.assignment]);
+        const crimeData = await client.query('SELECT tool_req FROM crimes_master WHERE title = $1', [crew.assignment]);
         if (crimeData.rows.length > 0) {
             const toolReq = crimeData.rows[0].tool_req;
             if (toolReq && toolReq !== 'NONE') {
-                const invCheck = await pool.query(`
+                const invCheck = await client.query(`
                     SELECT 1 FROM user_inventory ui
                     JOIN items_master im ON ui.item_id = im.item_id
                     WHERE ui.user_id = $1 AND UPPER(im.name) = UPPER($2) AND ui.quantity > 0
                 `, [user_id, toolReq]);
 
                 if (invCheck.rows.length === 0) {
-                    await pool.query('ROLLBACK');
-                    return res.status(400).json({ error: `Job Failed. Missing required tool: ${toolReq}` });
+                    throw new Error(`Job Failed. Missing required tool: ${toolReq}`);
                 }
             }
         }
@@ -253,8 +291,8 @@ router.post('/complete_job', async (req, res) => {
             ];
             const reason = disasterReasons[getRnd(0, disasterReasons.length - 1)];
 
-            await pool.query('DELETE FROM user_crew WHERE crew_id = $1', [crew_id]);
-            await pool.query('COMMIT');
+            await client.query('DELETE FROM user_crew WHERE crew_id = $1', [crew_id]);
+            await client.query('COMMIT');
 
             return res.json({
                 success: true,
@@ -263,43 +301,44 @@ router.post('/complete_job', async (req, res) => {
             });
         }
 
-        await pool.query('UPDATE users SET dirty_cash = dirty_cash + $1 WHERE user_id = $2', [payout, user_id]);
+        await client.query('UPDATE users SET dirty_cash = dirty_cash + $1 WHERE user_id = $2', [payout, user_id]);
 
-        // FIXED: Crew now gains Acumen perfectly!
-        let strGain = 0, defGain = 0, dexGain = 0, spdGain = 0, acuGain = 0;
-
-        const allStats = ['str', 'def', 'dex', 'spd', 'acu'];
-
+        let statGains = { str: 0, def: 0, dex: 0, spd: 0, acu: 0, ops: 0, pre: 0, res: 0 };
+        const allStats = ['str', 'def', 'dex', 'spd', 'acu', 'ops', 'pre', 'res'];
         const shuffledStats = allStats.sort(() => 0.5 - Math.random());
-        const stat1 = shuffledStats[0];
-        const stat2 = shuffledStats[1];
 
-        if (stat1 === 'str' || stat2 === 'str') strGain = 1;
-        if (stat1 === 'def' || stat2 === 'def') defGain = 1;
-        if (stat1 === 'dex' || stat2 === 'dex') dexGain = 1;
-        if (stat1 === 'spd' || stat2 === 'spd') spdGain = 1;
-        if (stat1 === 'acu' || stat2 === 'acu') acuGain = 1;
+        statGains[shuffledStats[0]] = 1;
+        statGains[shuffledStats[1]] = 1;
 
         const updateQuery = `
             UPDATE user_crew
             SET cur_str = LEAST(cur_str + $1, max_str), cur_def = LEAST(cur_def + $2, max_def),
                 cur_dex = LEAST(cur_dex + $3, max_dex), cur_spd = LEAST(cur_spd + $4, max_spd),
-                cur_acu = LEAST(cur_acu + $5, max_acu)
-            WHERE crew_id = $6 AND user_id = $7 RETURNING cur_str, cur_def, cur_dex, cur_spd, cur_acu
+                cur_acu = LEAST(cur_acu + $5, max_acu), cur_ops = LEAST(cur_ops + $6, max_ops),
+                cur_pre = LEAST(cur_pre + $7, max_pre), cur_res = LEAST(cur_res + $8, max_res)
+            WHERE crew_id = $9 AND user_id = $10
+            RETURNING cur_str, cur_def, cur_dex, cur_spd, cur_acu, cur_ops, cur_pre, cur_res
         `;
-        const updatedCrew = await pool.query(updateQuery, [strGain, defGain, dexGain, spdGain, acuGain, crew_id, user_id]);
+        const updatedCrew = await client.query(updateQuery, [
+            statGains.str, statGains.def, statGains.dex, statGains.spd,
+            statGains.acu, statGains.ops, statGains.pre, statGains.res,
+            crew_id, user_id
+        ]);
 
-        await pool.query('COMMIT');
+        await client.query('COMMIT');
         res.json({
             success: true,
             status: 'success',
             message: `${crew.npc_name} finished the job and returned $${payout}.`,
             newStats: updatedCrew.rows[0]
         });
+
     } catch (err) {
-        await pool.query('ROLLBACK');
+        await client.query('ROLLBACK');
         console.error("Job Completion Error:", err);
-        res.status(500).json({ error: "Failed to process job completion." });
+        res.status(400).json({ error: err.message || "Failed to process job completion." });
+    } finally {
+        client.release();
     }
 });
 

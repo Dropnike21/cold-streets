@@ -1,3 +1,5 @@
+// File Path: lib/views/market_view.dart
+
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
@@ -51,6 +53,27 @@ class _MarketViewState extends State<MarketView> {
     super.dispose();
   }
 
+  // V1.2 FIX: Universal JSON Parser for the new Database Schema
+  String _parseEffects(dynamic item) {
+    final effects = item['effects'];
+    if (effects == null) return "NONE";
+
+    Map<String, dynamic> effMap = {};
+    if (effects is String) {
+      if (effects.isEmpty || effects == "{}") return "NONE";
+      try { effMap = jsonDecode(effects); } catch (_) { return "NONE"; }
+    } else if (effects is Map) {
+      effMap = Map<String, dynamic>.from(effects);
+    }
+
+    if (effMap.isEmpty) return "NONE";
+
+    return effMap.entries.map((e) {
+      num val = e.value is num ? e.value : num.tryParse(e.value.toString()) ?? 0;
+      return "${val > 0 ? '+' : ''}$val ${e.key.toUpperCase()}";
+    }).join(", ");
+  }
+
   Future<void> _fetchMarket() async {
     try {
       final response = await http.get(Uri.parse('$apiUrl/list'));
@@ -77,7 +100,11 @@ class _MarketViewState extends State<MarketView> {
       _filteredItems = _allItems.where((item) {
         bool matchesSearch = item['name'].toString().toLowerCase().contains(query);
         bool matchesMain = _selectedCategory == "ALL" || item['category'].toString().toUpperCase() == _selectedCategory;
-        bool matchesSub = _selectedSubCategory == "ALL" || item['stat_modifier'].toString().toUpperCase().contains(_selectedSubCategory);
+
+        // V1.2 FIX: Expanded search string to catch SubCategories in Names, Categories, or the new Parsed JSON
+        String searchable = "${item['category']} ${item['name']} ${_parseEffects(item)}".toUpperCase();
+        bool matchesSub = _selectedSubCategory == "ALL" || searchable.contains(_selectedSubCategory);
+
         return matchesSearch && matchesMain && matchesSub;
       }).toList();
     });
@@ -104,7 +131,6 @@ class _MarketViewState extends State<MarketView> {
     return total;
   }
 
-  // 🔥 Dynamic Ceiling Algorithm
   int _getMaxAllowed(Map<String, dynamic> currentItem) {
     int itemId = currentItem['item_id'];
     int itemPrice = currentItem['base_value'];
@@ -123,10 +149,8 @@ class _MarketViewState extends State<MarketView> {
     int remainingCash = widget.userData['dirty_cash'] - costOfOtherItems;
     if (remainingCash < 0) remainingCash = 0; // Failsafe
 
-    // Prevent divide by zero error if base_value is ever 0
     int affordableQty = itemPrice > 0 ? remainingCash ~/ itemPrice : currentStock;
 
-    // Return whichever is smaller: what they can afford, or what is actually in stock
     return affordableQty < currentStock ? affordableQty : currentStock;
   }
 
@@ -275,6 +299,8 @@ class _MarketViewState extends State<MarketView> {
                   maxAllowed: maxAllowed,
                   onQuantityChanged: (newQty) => _updateCart(itemId, newQty),
                   onBuy: () => _processPurchase(singleItem: item, singleQty: currentQty),
+                  // V1.2: Pass down the parsed effects so the card can display it natively
+                  parsedEffects: _parseEffects(item),
                 );
               },
             ),
@@ -353,6 +379,7 @@ class _MarketItemCard extends StatefulWidget {
   final int maxAllowed;
   final Function(int) onQuantityChanged;
   final VoidCallback onBuy;
+  final String parsedEffects; // V1.2 Prop
 
   const _MarketItemCard({
     required this.itemData,
@@ -360,6 +387,7 @@ class _MarketItemCard extends StatefulWidget {
     required this.maxAllowed,
     required this.onQuantityChanged,
     required this.onBuy,
+    required this.parsedEffects,
   });
 
   @override
@@ -399,12 +427,10 @@ class _MarketItemCardState extends State<_MarketItemCard> {
     int basePrice = widget.itemData['base_value'] as int;
     int totalPrice = widget.currentQuantity * basePrice;
 
-    // FIXED: Safely parses the PostgreSQL BigInt string into a Dart integer
     int circulation = int.tryParse(widget.itemData['circulation']?.toString() ?? '0') ?? 0;
 
     String name = widget.itemData['name'].toString().toUpperCase();
     String type = widget.itemData['category'].toString().toUpperCase();
-    String stat = widget.itemData['stat_modifier']?.toString().toUpperCase() ?? "NONE";
     String desc = widget.itemData['description']?.toString() ?? "No description available.";
 
     bool canBuy = !isOutOfStock && widget.currentQuantity > 0;
@@ -497,7 +523,8 @@ class _MarketItemCardState extends State<_MarketItemCard> {
               const SizedBox(height: 12),
               Align(
                 alignment: Alignment.centerLeft,
-                child: Text("EFFECT: $stat", style: const TextStyle(color: Color(0xFF39FF14), fontSize: 11, fontWeight: FontWeight.bold)),
+                // V1.2 FIX: Displays the parsed JSON object cleanly
+                child: Text("EFFECT: ${widget.parsedEffects}", style: const TextStyle(color: Color(0xFF39FF14), fontSize: 11, fontWeight: FontWeight.bold)),
               ),
               const SizedBox(height: 8),
               Align(

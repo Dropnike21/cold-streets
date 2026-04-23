@@ -1,3 +1,5 @@
+// File Path: lib/views/streets_view.dart
+
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
@@ -20,7 +22,7 @@ class _StreetsViewState extends State<StreetsView> {
   bool _isLoading = true;
   Map<String, List<dynamic>> _groupedCrimes = {};
   List<dynamic> _activeCrew = [];
-  List<String> _ownedTools = []; // NEW: Tracks inventory
+  List<String> _ownedTools = [];
 
   String _headerTitle = "THE STREETS";
   String _headerBody = "Welcome to the gritty streets. Execute crimes manually to build your empire, or assign NPC Crew members to automate your hustle.";
@@ -44,6 +46,21 @@ class _StreetsViewState extends State<StreetsView> {
     _revertTimer?.cancel();
     _hustleTimer?.cancel();
     super.dispose();
+  }
+
+  // V1.2 FIX: Helper to format massive late-game payouts to prevent UI overflow
+  String _formatStat(dynamic value) {
+    double val = double.tryParse(value.toString()) ?? 0.0;
+    if (val >= 1000000) return '${(val / 1000000).toStringAsFixed(1)}M';
+    if (val >= 1000) return '${(val / 1000).toStringAsFixed(1)}K';
+    return val.toInt().toString();
+  }
+
+  // V1.2 FIX: Standardized check to see if a tool is actually required
+  bool _isToolRequired(dynamic toolReq) {
+    if (toolReq == null) return false;
+    String req = toolReq.toString().toUpperCase().trim();
+    return req != 'NONE' && req != '' && req != 'NULL';
   }
 
   Future<void> _initializeData() async {
@@ -70,19 +87,16 @@ class _StreetsViewState extends State<StreetsView> {
       List<String> finishedJobs = [];
 
       for (String crimeTitle in _automatedTimers.keys) {
-        // CHECK 1: Find the actual crime data to see if it requires a tool
         dynamic targetCrime;
         for (var category in _groupedCrimes.values) {
           try { targetCrime = category.firstWhere((c) => c['title'] == crimeTitle); break; } catch (e) {}
         }
 
-        // CHECK 2: Does the player have the tool?
         bool hasTool = true;
-        if (targetCrime != null && targetCrime['tool_req'] != 'NONE') {
+        if (targetCrime != null && _isToolRequired(targetCrime['tool_req'])) {
           hasTool = _ownedTools.contains(targetCrime['tool_req'].toString().toUpperCase());
         }
 
-        // Only tick down if they actually possess the tool!
         if (hasTool) {
           if (_automatedTimers[crimeTitle]! > 0) {
             _automatedTimers[crimeTitle] = _automatedTimers[crimeTitle]! - 1;
@@ -91,7 +105,6 @@ class _StreetsViewState extends State<StreetsView> {
             finishedJobs.add(crimeTitle);
           }
         } else {
-          // If paused, force UI redraw to show the red warning state
           needsUpdate = true;
         }
       }
@@ -132,11 +145,17 @@ class _StreetsViewState extends State<StreetsView> {
 
       if (response.statusCode == 200) {
         final result = jsonDecode(response.body);
-        _showDynamicResult("AUTOMATION COMPLETE", result['message'], Colors.orangeAccent);
 
-        Map<String, dynamic> updatedUser = Map.from(widget.userData);
-        updatedUser['dirty_cash'] = (updatedUser['dirty_cash'] ?? 0) + payout;
-        widget.onStateChange(updatedUser);
+        if (result['status'] == 'lost') {
+          _showDynamicResult("CREW CASUALTY", result['message'], Colors.redAccent);
+          setState(() { _automatedTimers.remove(crimeTitle); });
+          _fetchActiveCrew();
+        } else {
+          _showDynamicResult("AUTOMATION COMPLETE", result['message'], Colors.orangeAccent);
+          Map<String, dynamic> updatedUser = Map.from(widget.userData);
+          updatedUser['dirty_cash'] = (updatedUser['dirty_cash'] ?? 0) + payout;
+          widget.onStateChange(updatedUser);
+        }
       }
     } catch (e) {
       debugPrint("Automated job failed: $e");
@@ -170,7 +189,6 @@ class _StreetsViewState extends State<StreetsView> {
         if (mounted) {
           setState(() {
             _activeCrew = data['crew'];
-            // Store Owned Tools
             _ownedTools = List<String>.from(data['ownedTools'] ?? []).map((t) => t.toUpperCase()).toList();
 
             Set<String> activeAssignments = {};
@@ -225,11 +243,12 @@ class _StreetsViewState extends State<StreetsView> {
   }
 
   Future<void> _executeCrime(Map<String, dynamic> crime) async {
-    // Basic Manual Checking
-    if (crime['tool_req'] != 'NONE' && !_ownedTools.contains(crime['tool_req'].toString().toUpperCase())) {
+    // V1.2 FIX: Use the standardized tool check helper to prevent false "Blocked" actions
+    if (_isToolRequired(crime['tool_req']) && !_ownedTools.contains(crime['tool_req'].toString().toUpperCase())) {
       _showDynamicResult("MISSING EQUIPMENT", "You need a ${crime['tool_req']} to pull this off.", Colors.redAccent);
       return;
     }
+
     if (widget.userData['hp'] < 25) {
       _showDynamicResult("TOO WEAK", "You need at least 25 HP.", Colors.redAccent);
       return;
@@ -252,6 +271,7 @@ class _StreetsViewState extends State<StreetsView> {
 
       if (!mounted) return;
       final result = jsonDecode(response.body);
+
       if (result['user'] != null) widget.onStateChange(result['user']);
 
       if (response.statusCode == 200) {
@@ -271,10 +291,26 @@ class _StreetsViewState extends State<StreetsView> {
     Color outColor = Colors.white;
 
     switch (result['status']) {
-      case "success": outTitle = "SUCCESS"; outColor = const Color(0xFF39FF14); outBody += "+ \$${result['gained_cash']} Dirty Cash"; break;
-      case "escaped": outTitle = "ESCAPED (FAILURE)"; outColor = Colors.yellowAccent; outBody += "- 10 HP"; break;
-      case "hospitalized": outTitle = "HOSPITALIZED (FAILURE)"; outColor = Colors.orangeAccent; outBody += "HP dropped to 1. Locked in Hospital."; break;
-      case "jailed": outTitle = "JAILED (FAILURE)"; outColor = Colors.redAccent; outBody += "Locked in Jail."; break;
+      case "success":
+        outTitle = "SUCCESS";
+        outColor = const Color(0xFF39FF14);
+        outBody += "+ \$${_formatStat(result['gained_cash'])} Dirty Cash";
+        break;
+      case "escaped":
+        outTitle = "ESCAPED (FAILURE)";
+        outColor = Colors.yellowAccent;
+        outBody += "- 10 HP";
+        break;
+      case "hospitalized":
+        outTitle = "HOSPITALIZED (FAILURE)";
+        outColor = Colors.orangeAccent;
+        outBody += "HP dropped to 1. Locked in Hospital.";
+        break;
+      case "jailed":
+        outTitle = "JAILED (FAILURE)";
+        outColor = Colors.redAccent;
+        outBody += "Locked in Jail.";
+        break;
     }
     _showDynamicResult(outTitle, outBody, outColor);
   }
@@ -432,11 +468,10 @@ class _StreetsViewState extends State<StreetsView> {
     bool isAutomated = activeWorker != null;
     int timeLeft = _automatedTimers[crime['title']] ?? 0;
 
-    // NEW: Tool Check Logic
-    String reqTool = crime['tool_req'].toString().toUpperCase();
-    bool isToolMissing = reqTool != 'NONE' && !_ownedTools.contains(reqTool);
+    String reqTool = (crime['tool_req']?.toString() ?? 'NONE').toUpperCase();
+    bool hasRequirement = _isToolRequired(reqTool);
+    bool isToolMissing = hasRequirement && !_ownedTools.contains(reqTool);
 
-    // Dynamic Card Styling based on Tool Missing status
     Color cardBorderColor = isAutomated
         ? (isToolMissing ? Colors.redAccent : Colors.orangeAccent)
         : const Color(0xFF39FF14);
@@ -470,14 +505,16 @@ class _StreetsViewState extends State<StreetsView> {
               Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text("PAYOUT: \$${crime['min_payout']} - \$${crime['max_payout']}", style: const TextStyle(color: Color(0xFF39FF14), fontSize: 10, fontWeight: FontWeight.bold)),
+                  Text("PAYOUT: \$${_formatStat(crime['min_payout'])} - \$${_formatStat(crime['max_payout'])}", style: const TextStyle(color: Color(0xFF39FF14), fontSize: 10, fontWeight: FontWeight.bold)),
                   const SizedBox(height: 4),
+
                   if (isAutomated && !isToolMissing)
                     Text("ACTIVE: ${activeWorker['npc_name']}", style: const TextStyle(color: Colors.orangeAccent, fontSize: 9, fontWeight: FontWeight.bold))
                   else if (isAutomated && isToolMissing)
                     Text("PAUSED: MISSING $reqTool", style: const TextStyle(color: Colors.redAccent, fontSize: 9, fontWeight: FontWeight.bold))
-                  else
-                    Text("TOOL REQ: $reqTool", style: TextStyle(color: reqTool == "NONE" ? Colors.white24 : (isToolMissing ? Colors.redAccent : Colors.orangeAccent), fontSize: 9, fontWeight: FontWeight.bold)),
+                  else if (hasRequirement)
+                    // V1.2 FIX: Only displays if a tool is actually required
+                      Text("TOOL REQ: $reqTool", style: TextStyle(color: isToolMissing ? Colors.redAccent : Colors.orangeAccent, fontSize: 9, fontWeight: FontWeight.bold)),
                 ],
               ),
 
@@ -498,7 +535,6 @@ class _StreetsViewState extends State<StreetsView> {
 
                   if (isAutomated)
                     if (isToolMissing)
-                    // RED WARNING BUTTON
                       Container(
                         height: 28, padding: const EdgeInsets.symmetric(horizontal: 10),
                         decoration: BoxDecoration(color: Colors.redAccent.withValues(alpha: 0.2), border: Border.all(color: Colors.redAccent), borderRadius: BorderRadius.circular(4)),
@@ -506,7 +542,6 @@ class _StreetsViewState extends State<StreetsView> {
                         child: const Text("HALTED", style: TextStyle(color: Colors.redAccent, fontSize: 10, fontWeight: FontWeight.bold)),
                       )
                     else
-                    // NORMAL TIMER
                       SizedBox(
                         height: 28, width: 70,
                         child: Container(

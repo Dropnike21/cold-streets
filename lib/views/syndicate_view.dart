@@ -49,6 +49,28 @@ class _SyndicateViewState extends State<SyndicateView> {
     return "${m.toString().padLeft(2, '0')}:${s.toString().padLeft(2, '0')}";
   }
 
+  // V1.2 FIX: Helper to abbreviate God-Tier stats (e.g. 1000000 -> 1.0M) preventing UI overflows
+  String _formatStat(int value) {
+    if (value >= 1000000) return '${(value / 1000000).toStringAsFixed(1)}M';
+    if (value >= 1000) return '${(value / 1000).toStringAsFixed(1)}K';
+    return value.toString();
+  }
+
+  // V1.2 FIX: Centralized timer logic to sync between Hire and Generate
+  void _startCooldownTimer(StateSetter setModalState) {
+    _recruitTimer?.cancel();
+    _recruitTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
+      if (recruitCooldownSeconds > 0) {
+        if (mounted) {
+          setModalState(() => recruitCooldownSeconds--);
+          setState(() {}); // Update the background UI
+        }
+      } else {
+        timer.cancel();
+      }
+    });
+  }
+
   Future<void> _fetchActiveCrew({bool isBackground = false}) async {
     if (_isFetching) return;
     _isFetching = true;
@@ -56,7 +78,6 @@ class _SyndicateViewState extends State<SyndicateView> {
     if (!isBackground && mounted) setState(() => isLoading = true);
 
     try {
-      // FIX: Added an 8-second timeout so the UI doesn't hang indefinitely on bad connections
       final response = await http
           .get(Uri.parse('$apiUrl/${widget.userId}'))
           .timeout(const Duration(seconds: 8));
@@ -76,7 +97,6 @@ class _SyndicateViewState extends State<SyndicateView> {
     } catch (e) {
       debugPrint("Fetch Crew Error: $e");
     } finally {
-      // FIX: Ensure isLoading is ALWAYS set to false, regardless of network or JSON errors
       _isFetching = false;
       if (!isBackground && mounted) {
         setState(() => isLoading = false);
@@ -101,7 +121,21 @@ class _SyndicateViewState extends State<SyndicateView> {
           dailyRefreshes = data['refreshesLeft'];
           isLoading = false;
         });
-        setState(() {}); // Update the background UI as well
+        setState(() {});
+      }
+      // V1.2 FIX: Explicitly handle the 403 Cooldown lock from the backend
+      else if (response.statusCode == 403) {
+        final data = jsonDecode(response.body);
+        if (data['seconds_left'] != null) {
+          setModalState(() {
+            recruitCooldownSeconds = data['seconds_left'].toInt();
+            _recruitmentBoard.clear();
+            isLoading = false;
+          });
+          _startCooldownTimer(setModalState);
+        } else {
+          setModalState(() => isLoading = false);
+        }
       } else {
         setModalState(() => isLoading = false);
       }
@@ -120,14 +154,12 @@ class _SyndicateViewState extends State<SyndicateView> {
       ).timeout(const Duration(seconds: 8));
 
       if (response.statusCode == 200) {
-        setModalState(() { _recruitmentBoard.remove(recruit); recruitCooldownSeconds = 120; });
-        _fetchActiveCrew();
-        _recruitTimer?.cancel();
-        _recruitTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
-          if (recruitCooldownSeconds > 0) {
-            if (mounted) { setModalState(() => recruitCooldownSeconds--); setState(() {}); }
-          } else { timer.cancel(); }
+        setModalState(() {
+          _recruitmentBoard.remove(recruit);
+          recruitCooldownSeconds = 120; // Explicit 2-minute default per backend
         });
+        _fetchActiveCrew();
+        _startCooldownTimer(setModalState);
       }
     } catch (e) {
       debugPrint("Hire Error: $e");
@@ -281,15 +313,11 @@ class _SyndicateViewState extends State<SyndicateView> {
                 final data = jsonDecode(response.body);
                 setModalState(() {
                   localCrimes = data['crimes'] ?? [];
-
-                  // FIX: Sort crimes globally by their stat requirement (lowest to highest).
-                  // This ensures the easiest crimes dictate the category order.
                   localCrimes.sort((a, b) {
                     int reqA = int.tryParse(a['req_stat_value']?.toString() ?? '0') ?? 0;
                     int reqB = int.tryParse(b['req_stat_value']?.toString() ?? '0') ?? 0;
                     return reqA.compareTo(reqB);
                   });
-
                   isFetching = false;
                 });
               }
@@ -298,8 +326,6 @@ class _SyndicateViewState extends State<SyndicateView> {
             });
           }
 
-          // Because localCrimes is now sorted by difficulty, this Map will dynamically
-          // construct its keys from easiest category to hardest category.
           Map<String, List<dynamic>> groupedCrimes = {};
           for (var crime in localCrimes) {
             String cat = crime['category']?.toString() ?? "General";
@@ -364,8 +390,8 @@ class _SyndicateViewState extends State<SyndicateView> {
                                         children: [
                                           Text(crime['title'].toString().toUpperCase(), style: const TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.bold)),
                                           const SizedBox(height: 4),
-                                          Text("REQ: ${crime['req_stat_value']} ${crime['req_stat_type'].toString().replaceAll('stat_', '').toUpperCase()}", style: const TextStyle(color: Colors.white54, fontSize: 9, fontWeight: FontWeight.bold)),
-                                          Text("PAYOUT: \$${crime['min_payout']} - \$${crime['max_payout']}", style: const TextStyle(color: Color(0xFF39FF14), fontSize: 9, fontWeight: FontWeight.bold)),
+                                          Text("REQ: ${_formatStat(int.tryParse(crime['req_stat_value'].toString()) ?? 0)} ${crime['req_stat_type'].toString().replaceAll('stat_', '').toUpperCase()}", style: const TextStyle(color: Colors.white54, fontSize: 9, fontWeight: FontWeight.bold)),
+                                          Text("PAYOUT: \$${_formatStat(int.tryParse(crime['min_payout'].toString()) ?? 0)} - \$${_formatStat(int.tryParse(crime['max_payout'].toString()) ?? 0)}", style: const TextStyle(color: Color(0xFF39FF14), fontSize: 9, fontWeight: FontWeight.bold)),
                                           if (assignedCrew != null) ...[ const SizedBox(height: 4), Text("ACTIVE: ${assignedCrew['npc_name']}", style: const TextStyle(color: Colors.orangeAccent, fontSize: 9, fontWeight: FontWeight.bold)) ]
                                         ],
                                       ),
@@ -454,10 +480,12 @@ class _SyndicateViewState extends State<SyndicateView> {
   }
 
   Widget _buildActiveCrewCard(Map<String, dynamic> npc) {
-    int barMax = 100;
-    if (npc["tier"] == "Hustler") barMax = 150;
-    if (npc["tier"] == "Enforcer" || npc["tier"] == "Specialist") barMax = 200;
-    if (npc["tier"] == "Lieutenant") barMax = 250;
+    // V1.2 FIX: Adjusted barMax dynamically to match the backend's new million-stat scaling
+    int barMax = 1000;
+    if (npc["tier"] == "Hustler") barMax = 10000;
+    if (npc["tier"] == "Enforcer") barMax = 80000;
+    if (npc["tier"] == "Specialist") barMax = 350000;
+    if (npc["tier"] == "Lieutenant") barMax = 1000000;
 
     bool isAssigned = npc["assignment"] != 'UNASSIGNED';
 
@@ -524,12 +552,16 @@ class _SyndicateViewState extends State<SyndicateView> {
           const SizedBox(height: 12),
           const Divider(color: Color(0xFF333333), height: 1),
           const SizedBox(height: 12),
-          // FIX: Added '?? 0' null-coalescing. Older crew rows in PostgreSQL will have NULL for new columns and crash the UI without this!
+
+          // V1.2 FIX: Fully Implemented all 8 stats
           _buildStatBar("STR", npc["cur_str"] ?? 0, npc["max_str"] ?? 0, barMax),
           _buildStatBar("DEF", npc["cur_def"] ?? 0, npc["max_def"] ?? 0, barMax),
           _buildStatBar("DEX", npc["cur_dex"] ?? 0, npc["max_dex"] ?? 0, barMax),
           _buildStatBar("SPD", npc["cur_spd"] ?? 0, npc["max_spd"] ?? 0, barMax),
           _buildStatBar("ACU", npc["cur_acu"] ?? 0, npc["max_acu"] ?? 0, barMax),
+          _buildStatBar("OPS", npc["cur_ops"] ?? 0, npc["max_ops"] ?? 0, barMax),
+          _buildStatBar("PRE", npc["cur_pre"] ?? 0, npc["max_pre"] ?? 0, barMax),
+          _buildStatBar("RES", npc["cur_res"] ?? 0, npc["max_res"] ?? 0, barMax),
         ],
       ),
     );
@@ -559,7 +591,7 @@ class _SyndicateViewState extends State<SyndicateView> {
               Column(
                 crossAxisAlignment: CrossAxisAlignment.end,
                 children: [
-                  Text("COST: \$${recruit["price"]}", style: const TextStyle(color: Color(0xFF39FF14), fontSize: 10, fontWeight: FontWeight.bold)),
+                  Text("COST: \$${_formatStat(recruit["price"])}", style: const TextStyle(color: Color(0xFF39FF14), fontSize: 10, fontWeight: FontWeight.bold)),
                   const SizedBox(height: 6),
                   SizedBox(
                     height: 24,
@@ -576,12 +608,16 @@ class _SyndicateViewState extends State<SyndicateView> {
           const SizedBox(height: 12),
           const Divider(color: Color(0xFF333333), height: 1),
           const SizedBox(height: 12),
-          // FIX: Added '?? 0' here as well for consistency against malformed payloads.
+
+          // V1.2 FIX: Fully Implemented all 8 stats here as well
           _buildStatBar("STR", stats["str"]["cur"] ?? 0, stats["str"]["max"] ?? 0, barMax),
           _buildStatBar("DEF", stats["def"]["cur"] ?? 0, stats["def"]["max"] ?? 0, barMax),
           _buildStatBar("DEX", stats["dex"]["cur"] ?? 0, stats["dex"]["max"] ?? 0, barMax),
           _buildStatBar("SPD", stats["spd"]["cur"] ?? 0, stats["spd"]["max"] ?? 0, barMax),
           _buildStatBar("ACU", stats["acu"]["cur"] ?? 0, stats["acu"]["max"] ?? 0, barMax),
+          _buildStatBar("OPS", stats["ops"]["cur"] ?? 0, stats["ops"]["max"] ?? 0, barMax),
+          _buildStatBar("PRE", stats["pre"]["cur"] ?? 0, stats["pre"]["max"] ?? 0, barMax),
+          _buildStatBar("RES", stats["res"]["cur"] ?? 0, stats["res"]["max"] ?? 0, barMax),
         ],
       ),
     );
@@ -608,7 +644,8 @@ class _SyndicateViewState extends State<SyndicateView> {
             ),
           ),
           const SizedBox(width: 8),
-          SizedBox(width: 45, child: Text("$current / $max", textAlign: TextAlign.right, style: const TextStyle(color: Color(0xFF39FF14), fontSize: 9, fontWeight: FontWeight.bold))),
+          // V1.2 FIX: Increased width from 45 to 65, and used _formatStat to cleanly fit massive numbers like "100.5K / 1.0M"
+          SizedBox(width: 65, child: Text("${_formatStat(current)} / ${_formatStat(max)}", textAlign: TextAlign.right, style: const TextStyle(color: Color(0xFF39FF14), fontSize: 9, fontWeight: FontWeight.bold))),
         ],
       ),
     );

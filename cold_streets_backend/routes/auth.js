@@ -1,5 +1,3 @@
-// File Path: cold_streets_backend/routes/auth.js
-
 const express = require('express');
 const bcrypt = require('bcrypt');
 const pool = require('../db');
@@ -34,29 +32,31 @@ router.post('/register', async (req, res) => {
         // --- BEGIN TRANSACTION ---
         await client.query('BEGIN');
 
-        // 3. Create the Main User Record (NOW WITH 10.00 DEFAULT STATS)
-                const newUserQuery = await client.query(
-                    `INSERT INTO users (
-                        email, username, password_hash, role,
-                        stat_str, stat_def, stat_dex, stat_spd, stat_acu, stat_ops, stat_pre, stat_res
-                    ) VALUES (
-                        $1, $2, $3, $4,
-                        10, 10, 10, 10, 10, 10, 10, 10
-                    ) RETURNING
-                        user_id, username, dirty_cash, clean_cash, level, hp, energy, nerve, max_nerve,
-                        stat_str, stat_def, stat_dex, stat_spd, stat_acu, stat_ops, stat_pre, stat_res`,
-                    [email, username, hashedPassword, 'player']
-                );
+        // 3. Create the Main User Record (V1.1 Stat Split & Crime EXP Added)
+        const newUserQuery = await client.query(
+            `INSERT INTO users (
+                email, username, password_hash, role, crime_exp,
+                stat_str, stat_def, stat_dex, stat_spd, stat_acu, stat_ops, stat_pre, stat_res
+            ) VALUES (
+                $1, $2, $3, $4, 0,
+                10, 10, 10, 10, 10, 10, 10, 10
+            ) RETURNING
+                user_id, username, dirty_cash, clean_cash, level, hp, energy, nerve, max_nerve, crime_exp,
+                stat_str, stat_def, stat_dex, stat_spd, stat_acu, stat_ops, stat_pre, stat_res`,
+            [email, username, hashedPassword, 'player']
+        );
 
         const newUser = newUserQuery.rows[0];
         const newUserId = newUser.user_id;
 
         // 4. Generate all the linked Relational Tables
         await client.query("INSERT INTO user_equipment (user_id) VALUES ($1)", [newUserId]);
-        await client.query("INSERT INTO user_crime_records (user_id) VALUES ($1)", [newUserId]);
         await client.query("INSERT INTO user_properties (user_id) VALUES ($1)", [newUserId]);
 
-        // FIX: Give them the default Gym #1 (Playground Park)
+        // Setup Crime Records for Achievement Statistics
+        await client.query("INSERT INTO user_crime_records (user_id, total_crimes, total_successes, total_fails, total_jailed, skill_searching, skill_pickpocketing, skill_shoplifting, skill_mugging, skill_hacking) VALUES ($1, 0, 0, 0, 0, 0, 0, 0, 0, 0)", [newUserId]);
+
+        // Auto-seed Gym #1 (Abandoned Warehouse per V1.1 Assets Canvas)
         await client.query("INSERT INTO user_gym_stats (user_id, active_gym_id, gym_exp) VALUES ($1, 1, 0)", [newUserId]);
         await client.query("INSERT INTO user_owned_gyms (user_id, gym_id) VALUES ($1, 1)", [newUserId]);
 
@@ -111,6 +111,7 @@ router.post('/login', async (req, res) => {
                 username: user.username,
                 role: user.role,
                 level: user.level,
+                crime_exp: user.crime_exp,
                 dirty_cash: user.dirty_cash,
                 clean_cash: user.clean_cash,
                 energy: user.energy,
@@ -143,7 +144,7 @@ router.get('/status/:user_id', async (req, res) => {
         const { user_id } = req.params;
 
         const userQuery = await pool.query(
-            "SELECT dirty_cash, energy, nerve, max_nerve, hp, level FROM users WHERE user_id = $1",
+            "SELECT dirty_cash, clean_cash, energy, nerve, max_nerve, hp, level, exp, crime_exp FROM users WHERE user_id = $1",
             [user_id]
         );
         if (userQuery.rows.length === 0) return res.status(404).json({ error: "Ghost account." });

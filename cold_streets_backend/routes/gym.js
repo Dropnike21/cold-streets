@@ -1,8 +1,9 @@
-// File Path: cold_streets_backend/routes/gym.js
-
 const express = require('express');
 const router = express.Router();
 const pool = require('../db');
+
+// The Level 1 safety net for the Hybrid Math Engine
+const GLOBAL_FLAT_RATE = 0.05;
 
 // --- 1. FETCH GYM DASHBOARD ---
 router.get('/:user_id', async (req, res) => {
@@ -10,6 +11,7 @@ router.get('/:user_id', async (req, res) => {
         const { user_id } = req.params;
         let gymStatsRes = await pool.query('SELECT gym_exp, active_gym_id FROM user_gym_stats WHERE user_id = $1', [user_id]);
 
+        // Auto-seed Level 1 Gym for new users
         if (gymStatsRes.rows.length === 0) {
             await pool.query('INSERT INTO user_gym_stats (user_id, gym_exp, active_gym_id, daily_gym_fee) VALUES ($1, 0, 1, 0)', [user_id]);
             await pool.query('INSERT INTO user_owned_gyms (user_id, gym_id) VALUES ($1, 1)', [user_id]);
@@ -23,16 +25,28 @@ router.get('/:user_id', async (req, res) => {
 
         const mappedGyms = masterRes.rows.map(gym => {
             return {
-                id: gym.gym_id, name: gym.gym_name, zone: gym.zone, desc: gym.description, focus: gym.focus,
-                mult_str: parseFloat(gym.mult_str), mult_def: parseFloat(gym.mult_def), mult_dex: parseFloat(gym.mult_dex), mult_spd: parseFloat(gym.mult_spd),
-                str_action: gym.str_action || 'lifted weights', def_action: gym.def_action || 'hit the heavy bag', dex_action: gym.dex_action || 'practiced form', spd_action: gym.spd_action || 'ran laps',
-                unlock_cost: parseInt(gym.unlock_cost), daily_fee: parseInt(gym.daily_fee), unlock_exp_req: parseInt(gym.unlock_exp_req),
+                id: gym.gym_id,
+                name: gym.gym_name,
+                zone: gym.zone,
+                desc: gym.description,
+                str_percent: parseFloat(gym.str_percent),
+                def_percent: parseFloat(gym.def_percent),
+                dex_percent: parseFloat(gym.dex_percent),
+                spd_percent: parseFloat(gym.spd_percent),
+                str_action: gym.str_action || 'lifted weights',
+                def_action: gym.def_action || 'hit the heavy bag',
+                dex_action: gym.dex_action || 'practiced form',
+                spd_action: gym.spd_action || 'ran laps',
+                unlock_cost: parseInt(gym.unlock_cost),
+                daily_fee: parseInt(gym.daily_fee),
+                unlock_exp_req: parseInt(gym.unlock_exp_req),
                 is_owned: ownedGymIds.includes(gym.gym_id)
             };
         });
 
         res.json({ success: true, gym_exp, active_gym_id, gyms: mappedGyms });
     } catch (err) {
+        console.error(err);
         res.status(500).json({ error: "Server error fetching gym data." });
     }
 });
@@ -79,14 +93,14 @@ router.post('/activate', async (req, res) => {
     }
 });
 
-// --- 4. BULK TRAIN (COMPOUND MATH) ---
+// --- 4. BULK TRAIN (V1.1 HYBRID ENGINE) ---
 router.post('/train', async (req, res) => {
     const { user_id, stat_type, energy_spent, gym_id } = req.body;
     const validStats = ['str', 'def', 'dex', 'spd'];
     if (!validStats.includes(stat_type)) return res.status(400).json({ error: "Invalid stat." });
 
     const statColumn = `stat_${stat_type}`;
-    const multColumn = `mult_${stat_type}`;
+    const percentColumn = `${stat_type}_percent`;
 
     try {
         await pool.query('BEGIN');
@@ -101,16 +115,24 @@ router.post('/train', async (req, res) => {
             return res.status(400).json({ error: "Not enough energy." });
         }
 
-        let gymMultiplier = 1.0;
-        const gymRes = await pool.query(`SELECT ${multColumn} FROM gyms_master WHERE gym_id = $1`, [gym_id]);
-        if (gymRes.rows.length > 0 && gymRes.rows[0][multColumn] !== null) {
-            gymMultiplier = parseFloat(gymRes.rows[0][multColumn]);
+        let gymPercentRate = 0;
+        const gymRes = await pool.query(`SELECT ${percentColumn} FROM gyms_master WHERE gym_id = $1`, [gym_id]);
+        if (gymRes.rows.length > 0 && gymRes.rows[0][percentColumn] !== null) {
+            gymPercentRate = parseFloat(gymRes.rows[0][percentColumn]);
         }
 
-        // COMPOUND EXPONENTIAL MATH
-        const baseGymRate = gymMultiplier / 100; // 1.5 multiplier becomes 0.015 (1.5%)
-        const newStat = currentStat * Math.pow((1 + baseGymRate), energy_spent);
-        const totalStatGain = (newStat - currentStat).toFixed(2);
+        // External modifiers (Properties, Perks). Hard-capped at 10% max bonus per GDD.
+        // NOTE: Stubbed until Property tables are active.
+        let externalBonus = 0.0;
+        if (externalBonus > 0.10) {
+            externalBonus = 0.10;
+        }
+        const totalMultiplier = 1.0 + externalBonus;
+
+        // V1.1 THE HYBRID MATH FORMULA
+        // Stat Gain = ((Current Stat * Gym Percent Rate) + Global Flat Rate) * Total Multiplier * Energy Spent
+        const rawGain = ((currentStat * gymPercentRate) + GLOBAL_FLAT_RATE) * totalMultiplier * energy_spent;
+        const totalStatGain = rawGain.toFixed(2);
 
         const playerExpGain = 5 * energy_spent;
         const gymExpGain = 1 * energy_spent;
@@ -119,7 +141,7 @@ router.post('/train', async (req, res) => {
             UPDATE users SET energy = energy - $1, exp = exp + $2, ${statColumn} = ${statColumn} + $3
             WHERE user_id = $4 RETURNING *;
         `;
-        const updatedUser = await pool.query(updateQuery, [energy_spent, playerExpGain, totalStatGain, user_id]);
+        const updatedUser = await pool.query(updateQuery, [energy_spent, playerExpGain, parseFloat(totalStatGain), user_id]);
         const gymExpUpdate = `UPDATE user_gym_stats SET gym_exp = gym_exp + $1 WHERE user_id = $2 RETURNING gym_exp;`;
         const expRes = await pool.query(gymExpUpdate, [gymExpGain, user_id]);
 
@@ -130,6 +152,7 @@ router.post('/train', async (req, res) => {
         res.json({ success: true, gained: totalStatGain, user: userPayload });
     } catch (err) {
         await pool.query('ROLLBACK');
+        console.error(err);
         res.status(500).json({ error: "Server error during training." });
     }
 });

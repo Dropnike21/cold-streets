@@ -1,3 +1,5 @@
+// File Path: lib/views/inventory_view.dart
+
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
@@ -27,8 +29,8 @@ class _InventoryViewState extends State<InventoryView> {
 
   final List<String> _mainCategories = ["ALL", "WEAPONS", "GEAR", "CONSUMABLES", "TECH"];
   final Map<String, List<String>> _subCategories = {
-    "WEAPONS": ["ALL", "MELEE", "HANDGUNS", "SMG"],
-    "GEAR": ["ALL", "VESTS", "GLOVES", "TOPS"],
+    "WEAPONS": ["ALL", "MELEE", "PRIMARY", "SECONDARY"],
+    "GEAR": ["ALL", "ARMOR"],
     "TECH": ["ALL", "HARDWARE", "SOFTWARE"],
     "CONSUMABLES": ["ALL", "BOOSTS", "MEDICAL"],
   };
@@ -73,11 +75,41 @@ class _InventoryViewState extends State<InventoryView> {
 
   void _applyFilters() {
     String query = _searchController.text.toLowerCase();
+
     setState(() {
       _filteredItems = _allItems.where((item) {
-        bool matchesSearch = item['name'].toString().toLowerCase().contains(query);
-        bool matchesMain = _selectedCategory == "ALL" || item['category'].toString().toUpperCase() == _selectedCategory;
-        bool matchesSub = _selectedSubCategory == "ALL" || item['stat_modifier'].toString().toUpperCase().contains(_selectedSubCategory);
+        String dbCat = item['category'].toString().toUpperCase();
+        String itemName = item['name'].toString().toLowerCase();
+
+        bool matchesSearch = itemName.contains(query);
+
+        // V1.2 FIX: Map UI Categories to actual Database Categories
+        bool matchesMain = false;
+        if (_selectedCategory == "ALL") {
+          matchesMain = true;
+        } else if (_selectedCategory == "WEAPONS" && ["PRIMARY", "SECONDARY", "MELEE"].contains(dbCat)) {
+          matchesMain = true;
+        } else if (_selectedCategory == "GEAR" && dbCat == "ARMOR") {
+          matchesMain = true;
+        } else if (_selectedCategory == dbCat) {
+          matchesMain = true;
+        }
+
+        // V1.2 FIX: Sub-filters now intelligently inspect the new JSONB Effects payload
+        bool matchesSub = false;
+        if (_selectedSubCategory == "ALL") {
+          matchesSub = true;
+        } else if (_selectedSubCategory == "MEDICAL") {
+          // Checks if the JSON effects map has 'hp'
+          matchesSub = item['effects'] != null && item['effects'].toString().contains('hp');
+        } else if (_selectedSubCategory == "BOOSTS") {
+          // Checks if the JSON effects map has 'energy' or 'nerve'
+          matchesSub = item['effects'] != null && (item['effects'].toString().contains('energy') || item['effects'].toString().contains('nerve'));
+        } else {
+          // General match for weapon types
+          matchesSub = dbCat.contains(_selectedSubCategory) || itemName.toUpperCase().contains(_selectedSubCategory);
+        }
+
         return matchesSearch && matchesMain && matchesSub;
       }).toList();
     });
@@ -254,18 +286,51 @@ class _InventoryItemCard extends StatefulWidget {
 class _InventoryItemCardState extends State<_InventoryItemCard> {
   bool _isExpanded = false;
 
+  // V1.2 FIX: Universal parser for the new PostgreSQL JSONB "effects" column
+  String _formatEffects(dynamic effectsObj) {
+    if (effectsObj == null) return "NONE";
+
+    Map<String, dynamic> effectMap = {};
+
+    // Safely parse regardless of how the http client decoded the JSONB
+    if (effectsObj is String) {
+      if (effectsObj.isEmpty) return "NONE";
+      try { effectMap = jsonDecode(effectsObj); } catch (_) { return "NONE"; }
+    } else if (effectsObj is Map) {
+      effectMap = Map<String, dynamic>.from(effectsObj);
+    }
+
+    if (effectMap.isEmpty) return "NONE";
+
+    List<String> formattedParts = [];
+    effectMap.forEach((key, value) {
+      String sign = (value is num && value > 0) ? "+" : "";
+
+      // If it's a battle stat modifier (like weapons), append a % sign for UI clarity
+      String suffix = "";
+      if (['str', 'def', 'dex', 'spd'].contains(key.toLowerCase())) {
+        suffix = "%";
+      }
+
+      formattedParts.add("$sign$value$suffix ${key.toUpperCase()}");
+    });
+
+    return formattedParts.join(", ");
+  }
+
   @override
   Widget build(BuildContext context) {
     int quantity = widget.itemData['quantity'] ?? 0;
 
-    // 🔥 THE FIXES: Read the dynamic Street Value, and safely parse Circulation!
-    // FIXED: Safely parses the PostgreSQL NUMERIC string into a Dart integer
     int streetValue = int.tryParse(widget.itemData['current_value']?.toString() ?? widget.itemData['base_value']?.toString() ?? '0') ?? 0;
     int circulation = int.tryParse(widget.itemData['circulation']?.toString() ?? '0') ?? 0;
 
     String name = widget.itemData['name'].toString().toUpperCase();
     String type = widget.itemData['category'].toString().toUpperCase();
-    String stat = widget.itemData['stat_modifier']?.toString().toUpperCase() ?? "NONE";
+
+    // V1.2 FIX: Extract data using the new JSON parser
+    String stat = _formatEffects(widget.itemData['effects']);
+
     String desc = widget.itemData['description']?.toString() ?? "No description available.";
 
     bool isConsumable = type == 'CONSUMABLES';
@@ -338,6 +403,7 @@ class _InventoryItemCardState extends State<_InventoryItemCard> {
               const SizedBox(height: 12),
               Align(
                 alignment: Alignment.centerLeft,
+                // V1.2 Fix: Displays parsed JSON data
                 child: Text("EFFECT: $stat", style: const TextStyle(color: Color(0xFF39FF14), fontSize: 11, fontWeight: FontWeight.bold)),
               ),
               const SizedBox(height: 8),
@@ -350,7 +416,6 @@ class _InventoryItemCardState extends State<_InventoryItemCard> {
               Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
-                  // 🔥 RENAMED TO STREET VALUE
                   Text("STREET VALUE: \$$streetValue", style: const TextStyle(color: Colors.white54, fontSize: 10, fontWeight: FontWeight.bold)),
                   Text("CIRCULATION: $circulation", style: const TextStyle(color: Colors.white54, fontSize: 10, fontWeight: FontWeight.bold)),
                   Text("TYPE: $type", style: const TextStyle(color: Colors.white54, fontSize: 10, fontWeight: FontWeight.bold)),
