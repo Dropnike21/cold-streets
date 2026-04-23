@@ -1,6 +1,7 @@
 const express = require('express');
 const pool = require('../db');
 const router = express.Router();
+const { trackAndCheckAchievement } = require('../utils/achievement_engine'); // INJECTED ACHIEVEMENT ENGINE
 
 // --- FETCH CRIME LIST ---
 router.get('/list', async (req, res) => {
@@ -13,7 +14,7 @@ router.get('/list', async (req, res) => {
     }
 });
 
-// --- EXECUTE MANUAL CRIME (V1.2 DEBUGGED) ---
+// --- EXECUTE MANUAL CRIME (V1.3 FIXED) ---
 router.post('/execute', async (req, res) => {
     const client = await pool.connect();
 
@@ -57,8 +58,7 @@ router.post('/execute', async (req, res) => {
         if (user.energy < crime.energy_cost) { await client.query('ROLLBACK'); return res.status(400).json({ error: "Not enough Energy." }); }
         if (user.nerve < crime.nerve_cost) { await client.query('ROLLBACK'); return res.status(400).json({ error: "Not enough Nerve." }); }
 
-        // 6. V1.2 FIXED TOOL VERIFICATION
-        // We now check if tool_req is a real item name and NOT 'NONE' or 'NULL'
+        // 6. TOOL VERIFICATION
         const rawToolReq = crime.tool_req ? crime.tool_req.trim().toUpperCase() : "NONE";
         const isToolActuallyRequired = rawToolReq !== "NONE" && rawToolReq !== "NULL" && rawToolReq !== "";
 
@@ -79,14 +79,14 @@ router.post('/execute', async (req, res) => {
         // 7. Dynamic Math & RNG Engine
         const playerStat = parseFloat(user[`stat_${crime.req_stat_type}`]) || 10.0;
         let successChance = (playerStat / crime.req_stat_value) * 100;
-        if (successChance < 5) successChance = 5;
-        if (successChance > 95) successChance = 95;
+        if (successChance < 5) successChance = 5;   // 5% minimum chance
+        if (successChance > 95) successChance = 95; // 95% maximum chance
 
         const roll = Math.floor(Math.random() * 100) + 1;
 
         // 8. OUTCOME PROCESSING
         if (roll <= successChance) {
-            // SUCCESS
+            // SUCCESS BRANCH (Restored from the missing block)
             const payout = Math.floor(Math.random() * (crime.max_payout - crime.min_payout + 1)) + crime.min_payout;
             const expGain = 10;
             const crimeExpGain = 5;
@@ -99,29 +99,63 @@ router.post('/execute', async (req, res) => {
             await client.query("UPDATE user_crime_records SET total_crimes = total_crimes + 1, total_successes = total_successes + 1 WHERE user_id = $1", [user_id]);
 
             await client.query('COMMIT');
+
+            // --- INJECTED ACHIEVEMENT ENGINE ---
+            trackAndCheckAchievement(user_id, 'total_successes', 1, 'user_crime_records');
+            trackAndCheckAchievement(user_id, 'total_nerve_spent', crime.nerve_cost, 'user_statistics');
+            trackAndCheckAchievement(user_id, 'lifetime_dirty_cash', payout, 'user_statistics');
+
             return res.json({ status: "success", message: crime.success_text, gained_cash: payout, user: updatedUser.rows[0] });
 
         } else {
-            // FAILURE BRANCHES
-            const failRoll = Math.floor(Math.random() * 100) + 1;
+            // FAILURE BRANCHES (With Dynamic Speed Mitigation)
             await client.query("UPDATE user_crime_records SET total_crimes = total_crimes + 1, total_fails = total_fails + 1 WHERE user_id = $1", [user_id]);
 
-            if (failRoll <= 33) {
+            // Calculate Escape Chance based on Player Speed vs Crime Difficulty
+            const playerSpd = parseFloat(user.stat_spd) || 10.0;
+            let escapeChance = 33 + ((playerSpd / crime.req_stat_value) * 20);
+
+            // Hard Cap: Minimum 10% chance to escape, Maximum 85% chance to escape
+            if (escapeChance < 10) escapeChance = 10;
+            if (escapeChance > 85) escapeChance = 85;
+
+            // Split the remaining percentage between Hospital and Jail
+            const remainingRisk = 100 - escapeChance;
+            const hospRisk = remainingRisk / 2;
+
+            const failRoll = Math.random() * 100;
+
+            if (failRoll <= escapeChance) {
+                // ESCAPED
                 const updatedUser = await client.query("UPDATE users SET energy = energy - $1, nerve = nerve - $2, hp = GREATEST(hp - 10, 1) WHERE user_id = $3 RETURNING dirty_cash, energy, nerve, max_nerve, hp", [crime.energy_cost, crime.nerve_cost, user_id]);
                 await client.query('COMMIT');
+
+                trackAndCheckAchievement(user_id, 'total_fails', 1, 'user_crime_records');
+                trackAndCheckAchievement(user_id, 'total_nerve_spent', crime.nerve_cost, 'user_statistics');
+
                 return res.json({ status: "escaped", message: crime.escape_text, user: updatedUser.rows[0] });
 
-            } else if (failRoll <= 66) {
+            } else if (failRoll <= (escapeChance + hospRisk)) {
+                // HOSPITALIZED
                 const updatedUser = await client.query("UPDATE users SET energy = energy - $1, nerve = nerve - $2, hp = 1 WHERE user_id = $3 RETURNING dirty_cash, energy, nerve, max_nerve, hp", [crime.energy_cost, crime.nerve_cost, user_id]);
                 await client.query("INSERT INTO user_cooldowns (user_id, type, expires_at, reason) VALUES ($1, 'hospital', NOW() + INTERVAL '1 minute', 'Botched a street hustle.')", [user_id]);
                 await client.query('COMMIT');
+
+                trackAndCheckAchievement(user_id, 'total_fails', 1, 'user_crime_records');
+                trackAndCheckAchievement(user_id, 'total_nerve_spent', crime.nerve_cost, 'user_statistics');
+
                 return res.json({ status: "hospitalized", message: crime.hosp_text, user: updatedUser.rows[0] });
 
             } else {
+                // JAILED
                 await client.query("UPDATE user_crime_records SET total_jailed = total_jailed + 1 WHERE user_id = $1", [user_id]);
                 const updatedUser = await client.query("UPDATE users SET energy = energy - $1, nerve = nerve - $2 WHERE user_id = $3 RETURNING dirty_cash, energy, nerve, max_nerve, hp", [crime.energy_cost, crime.nerve_cost, user_id]);
                 await client.query("INSERT INTO user_cooldowns (user_id, type, expires_at, reason) VALUES ($1, 'jail', NOW() + INTERVAL '1 minute', 'Busted by the police.')", [user_id]);
                 await client.query('COMMIT');
+
+                trackAndCheckAchievement(user_id, 'total_fails', 1, 'user_crime_records');
+                trackAndCheckAchievement(user_id, 'total_nerve_spent', crime.nerve_cost, 'user_statistics');
+
                 return res.json({ status: "jailed", message: crime.jail_text, user: updatedUser.rows[0] });
             }
         }

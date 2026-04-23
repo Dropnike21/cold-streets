@@ -9,6 +9,8 @@ import 'market_view.dart';
 import 'gym_view.dart';
 import 'syndicate_view.dart';
 import 'inventory_view.dart';
+import 'achievements_view.dart';
+import 'events_view.dart'; // V1.6: Added Events View import
 
 class MainHub extends StatefulWidget {
   final Map<String, dynamic> userData;
@@ -32,8 +34,10 @@ class _MainHubState extends State<MainHub> {
   Timer? _syncTimer;
   Timer? _countdownTimer;
 
-  // FIXED: Now an array of active cooldowns
   List<Map<String, dynamic>> _activeCooldowns = [];
+
+  // V1.6: Track unread events
+  int _unreadEventsCount = 0;
 
   int _parseSafeInt(dynamic value) {
     if (value == null) return 0;
@@ -56,16 +60,16 @@ class _MainHubState extends State<MainHub> {
 
     _startTelemetrySync();
   }
-  //  MMO Number Formatter (Prevents Billionaire UI Overflow)
+
   String _formatCash(int amount) {
     if (amount >= 1000000000) {
-      return '\$${(amount / 1000000000).toStringAsFixed(2)}b'; // 1.32B
+      return '\$${(amount / 1000000000).toStringAsFixed(2)}b';
     } else if (amount >= 1000000) {
-      return '\$${(amount / 1000000).toStringAsFixed(2)}m';    // 1.25M
+      return '\$${(amount / 1000000).toStringAsFixed(2)}m';
     } else if (amount >= 1000) {
-      return '\$${(amount / 1000).toStringAsFixed(1)}k';       // 15.5K
+      return '\$${(amount / 1000).toStringAsFixed(1)}k';
     } else {
-      return '\$$amount';                                      // $500
+      return '\$$amount';
     }
   }
 
@@ -79,7 +83,6 @@ class _MainHubState extends State<MainHub> {
   void _startTelemetrySync() {
     _syncTimer = Timer.periodic(const Duration(seconds: 3), (_) => _fetchLiveStatus());
 
-    // Decrement all active cooldowns by 1 second locally
     _countdownTimer = Timer.periodic(const Duration(seconds: 1), (_) {
       if (_activeCooldowns.isNotEmpty && mounted) {
         bool updated = false;
@@ -97,20 +100,22 @@ class _MainHubState extends State<MainHub> {
   Future<void> _fetchLiveStatus() async {
     try {
       final String userId = widget.userData['user_id'].toString();
-      final response = await http.get(Uri.parse('http://10.0.2.2:3000/auth/status/$userId'));
 
-      if (response.statusCode == 200) {
-        final data = jsonDecode(response.body);
+      // We can hit both endpoints in parallel to keep it fast
+      final responses = await Future.wait([
+        http.get(Uri.parse('http://10.0.2.2:3000/auth/status/$userId')),
+        http.get(Uri.parse('http://10.0.2.2:3000/events/$userId?limit=1')) // Just need the unread count
+      ]);
 
-        // 🟢 Check your Flutter console! It should print the array here.
-        debugPrint("🟢 SYNC SUCCESS: $data");
+      final statusResponse = responses[0];
+      final eventsResponse = responses[1];
 
+      if (statusResponse.statusCode == 200) {
+        final data = jsonDecode(statusResponse.body);
         if (mounted) {
           _updateUserStats(data['user']);
 
-          // Safely parse the cooldowns array without triggering Dart type errors
           List<Map<String, dynamic>> safeCooldowns = [];
-
           if (data['cooldowns'] != null) {
             for (var c in data['cooldowns']) {
               safeCooldowns.add({
@@ -118,9 +123,7 @@ class _MainHubState extends State<MainHub> {
                 'seconds_left': double.parse(c['seconds_left'].toString()).toInt(),
               });
             }
-          }
-          // Fallback just in case your Node server is still using the old code!
-          else if (data['cooldown'] != null) {
+          } else if (data['cooldown'] != null) {
             safeCooldowns.add({
               'type': data['cooldown']['type'].toString(),
               'seconds_left': double.parse(data['cooldown']['seconds_left'].toString()).toInt(),
@@ -131,9 +134,18 @@ class _MainHubState extends State<MainHub> {
             _activeCooldowns = safeCooldowns;
           });
         }
-      } else {
-        debugPrint("🔴 SYNC API ERROR: ${response.statusCode}");
       }
+
+      // Parse the unread events count
+      if (eventsResponse.statusCode == 200) {
+        final eventData = jsonDecode(eventsResponse.body);
+        if (mounted) {
+          setState(() {
+            _unreadEventsCount = eventData['unread_count'] ?? 0;
+          });
+        }
+      }
+
     } catch (e) {
       debugPrint("🔴 SYNC NETWORK ERROR: $e");
     }
@@ -171,7 +183,6 @@ class _MainHubState extends State<MainHub> {
     });
   }
 
-  // FIXED: IndexedStack keeps all tabs alive in the background simultaneously
   Widget _buildCurrentScreen() {
     return IndexedStack(
       index: _selectedIndex,
@@ -179,13 +190,12 @@ class _MainHubState extends State<MainHub> {
         DashboardView(userData: widget.userData),
         StreetsView(userData: widget.userData, onStateChange: _updateUserStats),
         MarketView(userData: widget.userData, onStateChange: _updateUserStats),
-        SyndicateView(userId: widget.userData['user_id'].toString()),
+        SyndicateView(userData: widget.userData, onStateChange: _updateUserStats),
         InventoryView(userData: widget.userData, onStateChange: _updateUserStats),
       ],
     );
   }
 
-  // FIXED: Formats time to H:MM:SS or MM:SS dynamically
   String _formatTime(int seconds) {
     int h = seconds ~/ 3600;
     int m = (seconds % 3600) ~/ 60;
@@ -205,12 +215,11 @@ class _MainHubState extends State<MainHub> {
         backgroundColor: Colors.black,
         elevation: 2,
         shadowColor: const Color(0xFF39FF14).withValues(alpha: 0.5),
-        automaticallyImplyLeading: false, // Prevents default back button spacing
-        titleSpacing: 16, // Gives clean padding on the left edge
+        automaticallyImplyLeading: false,
+        titleSpacing: 16,
 
         title: Row(
           children: [
-            // 1. THE LOGO
             const Text(
               "CS",
               style: TextStyle(
@@ -223,7 +232,6 @@ class _MainHubState extends State<MainHub> {
             ),
             const SizedBox(width: 12),
 
-            // 2. THE DYNAMIC MONEY BADGE
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
               decoration: BoxDecoration(
@@ -234,7 +242,7 @@ class _MainHubState extends State<MainHub> {
               child: Row(
                 children: [
                   Text(
-                    _formatCash(dirtyCash), // 🔥 Your formatted billion-dollar variable
+                    _formatCash(dirtyCash),
                     style: const TextStyle(
                       color: Color(0xFF39FF14),
                       fontSize: 12,
@@ -246,9 +254,8 @@ class _MainHubState extends State<MainHub> {
               ),
             ),
 
-            const Spacer(), // 🔥 Pushes the remaining stats to the right!
+            const Spacer(),
 
-            // 3. THE REMAINING STATS
             Row(
               mainAxisAlignment: MainAxisAlignment.end,
               children: [
@@ -276,9 +283,6 @@ class _MainHubState extends State<MainHub> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-
-                  // --- MULTI-COOLDOWN 2-COLUMN UI ---
-                  // --- MULTI-COOLDOWN 2-COLUMN UI ---
                   if (_activeCooldowns.any((cd) => cd['seconds_left'] > 0))
                     Padding(
                       padding: const EdgeInsets.only(bottom: 16),
@@ -288,18 +292,15 @@ class _MainHubState extends State<MainHub> {
                         children: _activeCooldowns.where((cd) => cd['seconds_left'] > 0).map((cd) {
                           String type = cd['type'];
                           int sec = cd['seconds_left'];
-
-                          // FIXED: Shortened to "Hospital"
                           String label = type == 'hospital' ? 'Hospital' : (type == 'jail' ? 'Jailed' : type[0].toUpperCase() + type.substring(1));
 
                           return SizedBox(
-                            // FIXED: Strict width guarantees no overflow tape
                             width: 130,
                             child: Row(
                               mainAxisSize: MainAxisSize.min,
                               children: [
-                                Text("$label: ", style: const TextStyle(color: Colors.grey, fontSize: 12, letterSpacing: 1)),
-                                Text(_formatTime(sec), style: const TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.bold)),
+                                Text("$label: ", style: const TextStyle(color: Colors.grey, fontSize: 11, letterSpacing: 1)),
+                                Text(_formatTime(sec), style: const TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.bold)),
                               ],
                             ),
                           );
@@ -307,19 +308,82 @@ class _MainHubState extends State<MainHub> {
                       ),
                     ),
 
-                  // --- SYNDICATE PROFILE TEXT ---
-                  const Text("SYNDICATE PROFILE", style: TextStyle(color: Colors.grey, fontSize: 12, letterSpacing: 1)),
-                  const SizedBox(height: 4),
-                  Text(username, style: const TextStyle(color: Colors.white, fontSize: 24, fontWeight: FontWeight.bold)),
-                  const SizedBox(height: 8),
-
+                  // SLEEK PROFILE HEADER WITH NOTIFICATION BELL
                   Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Icon(Icons.local_hospital, color: hp < 25 ? Colors.redAccent : Colors.grey[800], size: 20),
-                      const SizedBox(width: 8),
-                      Icon(Icons.gavel, color: _activeCooldowns.any((cd) => cd['type'] == 'jail') ? Colors.blueAccent : Colors.grey[800], size: 20),
-                      const SizedBox(width: 8),
-                      const Icon(Icons.wifi, color: Color(0xFF39FF14), size: 20),
+                      Container(
+                        width: 42,
+                        height: 42,
+                        decoration: BoxDecoration(
+                          color: const Color(0xFF252525),
+                          border: Border.all(color: const Color(0xFF39FF14), width: 1.5),
+                          borderRadius: BorderRadius.circular(6),
+                        ),
+                        child: const Icon(Icons.person, color: Colors.grey, size: 24),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(
+                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                              children: [
+                                Text(username, style: const TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold)),
+
+                                // V1.6: THE NOTIFICATION BELL
+                                GestureDetector(
+                                  onTap: () {
+                                    Navigator.pop(context); // Close Drawer
+                                    Navigator.push(
+                                        context,
+                                        MaterialPageRoute(builder: (context) => EventsView(userData: widget.userData))
+                                    ).then((_) {
+                                      // When returning from Events view, clear the badge locally immediately
+                                      setState(() { _unreadEventsCount = 0; });
+                                    });
+                                  },
+                                  child: Stack(
+                                    clipBehavior: Clip.none,
+                                    children: [
+                                      const Icon(Icons.notifications, color: Colors.white54, size: 24),
+                                      if (_unreadEventsCount > 0)
+                                        Positioned(
+                                          right: -2,
+                                          top: -2,
+                                          child: Container(
+                                            padding: const EdgeInsets.all(2),
+                                            decoration: const BoxDecoration(
+                                              color: Colors.redAccent,
+                                              shape: BoxShape.circle,
+                                            ),
+                                            constraints: const BoxConstraints(minWidth: 14, minHeight: 14),
+                                            child: Text(
+                                              _unreadEventsCount > 9 ? '9+' : '$_unreadEventsCount',
+                                              style: const TextStyle(color: Colors.white, fontSize: 8, fontWeight: FontWeight.bold),
+                                              textAlign: TextAlign.center,
+                                            ),
+                                          ),
+                                        ),
+                                    ],
+                                  ),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 4),
+                            Row(
+                              children: [
+                                Icon(Icons.local_hospital, color: hp < 25 ? Colors.redAccent : Colors.grey[800], size: 14),
+                                const SizedBox(width: 6),
+                                Icon(Icons.gavel, color: _activeCooldowns.any((cd) => cd['type'] == 'jail') ? Colors.blueAccent : Colors.grey[800], size: 14),
+                                const SizedBox(width: 6),
+                                const Icon(Icons.wifi, color: Color(0xFF39FF14), size: 14),
+                              ],
+                            ),
+                          ],
+                        ),
+                      ),
                     ],
                   ),
                 ],
@@ -330,64 +394,97 @@ class _MainHubState extends State<MainHub> {
               child: ListView(
                 padding: EdgeInsets.zero,
                 children: [
-                  // --- CITY NAVIGATION ---
-                  const Padding(
-                    padding: EdgeInsets.only(left: 16, top: 16, bottom: 8),
-                    child: Text("CITY NAVIGATION", style: TextStyle(color: Colors.grey, fontSize: 10, letterSpacing: 1.5, fontWeight: FontWeight.bold)),
-                  ),
-                  ListTile(
-                    leading: const Icon(Icons.fitness_center, color: Colors.orangeAccent),
-                    title: const Text("The Gym", style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
-                    onTap: () {
-                      Navigator.pop(context); // Close Drawer
-                      // FIX: Route to the GymView and pass the state controllers
-                      Navigator.push(
-                          context,
-                          MaterialPageRoute(
-                              builder: (context) => GymView(
-                                  userData: widget.userData,
-                                  onStateChange: _updateUserStats
-                              )
-                          )
-                      );
-                    },
-                  ),
-                  ListTile(
-                    leading: const Icon(Icons.local_hospital, color: Colors.redAccent),
-                    title: const Text("Hospital", style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
-                    onTap: () {},
-                  ),
-                  ListTile(
-                    leading: const Icon(Icons.account_balance, color: Colors.blueAccent),
-                    title: const Text("Bank", style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
-                    onTap: () {},
-                  ),
-                  ListTile(
-                    leading: const Icon(Icons.gavel, color: Colors.grey),
-                    title: const Text("Jail", style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
-                    onTap: () {},
+                  // ACCORDION CITY NAVIGATION
+                  Theme(
+                    data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
+                    child: ExpansionTile(
+                      initiallyExpanded: true,
+                      iconColor: const Color(0xFF39FF14),
+                      collapsedIconColor: Colors.grey[600],
+                      title: Row(
+                        children: [
+                          const Expanded(child: Divider(color: Color(0xFF333333))),
+                          Padding(
+                            padding: const EdgeInsets.symmetric(horizontal: 8.0),
+                            child: Text(
+                                "CITY NAVIGATION",
+                                style: TextStyle(color: Colors.grey[500], fontSize: 10, letterSpacing: 1.5, fontWeight: FontWeight.bold)
+                            ),
+                          ),
+                          const Expanded(child: Divider(color: Color(0xFF333333))),
+                        ],
+                      ),
+                      children: [
+                        _buildMenuTile(
+                            icon: Icons.fitness_center,
+                            color: Colors.orangeAccent,
+                            title: "The Gym",
+                            onTap: () {
+                              Navigator.pop(context);
+                              Navigator.push(
+                                  context,
+                                  MaterialPageRoute(builder: (context) => GymView(userData: widget.userData, onStateChange: _updateUserStats))
+                              );
+                            }
+                        ),
+                        _buildMenuTile(
+                            icon: Icons.local_hospital,
+                            color: Colors.redAccent,
+                            title: "Hospital",
+                            onTap: () {}
+                        ),
+                        _buildMenuTile(
+                            icon: Icons.account_balance,
+                            color: Colors.blueAccent,
+                            title: "Bank",
+                            onTap: () {}
+                        ),
+                        _buildMenuTile(
+                            icon: Icons.gavel,
+                            color: Colors.grey,
+                            title: "Jail",
+                            onTap: () {}
+                        ),
+                      ],
+                    ),
                   ),
 
                   const Divider(color: Color(0xFF333333)),
 
-                  // --- PLAYER MENUS ---
-                  ListTile(
-                    leading: const Icon(Icons.backpack, color: Colors.white),
-                    title: const Text("Stash / Inventory", style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
-                    onTap: () {
-                      setState(() => _selectedIndex = 4); // Switch to Inventory Tab
-                      Navigator.pop(context);
-                    },
+                  // PLAYER MENUS
+                  _buildMenuTile(
+                      icon: Icons.military_tech,
+                      color: const Color(0xFF39FF14),
+                      title: "Achievements",
+                      onTap: () {
+                        Navigator.pop(context);
+                        Navigator.push(
+                            context,
+                            MaterialPageRoute(builder: (context) => AchievementsView(userData: widget.userData))
+                        );
+                      }
                   ),
-                  ListTile(
-                    leading: const Icon(Icons.settings, color: Colors.grey),
-                    title: const Text("Settings", style: TextStyle(color: Colors.white)),
-                    onTap: () {},
+                  _buildMenuTile(
+                      icon: Icons.backpack,
+                      color: Colors.white,
+                      title: "Inventory",
+                      onTap: () {
+                        setState(() => _selectedIndex = 4);
+                        Navigator.pop(context);
+                      }
                   ),
-                  ListTile(
-                    leading: const Icon(Icons.exit_to_app, color: Colors.redAccent),
-                    title: const Text("Log Out", style: TextStyle(color: Colors.redAccent)),
-                    onTap: _logout,
+                  _buildMenuTile(
+                      icon: Icons.settings,
+                      color: Colors.grey,
+                      title: "Settings",
+                      onTap: () {}
+                  ),
+                  _buildMenuTile(
+                      icon: Icons.exit_to_app,
+                      color: Colors.redAccent,
+                      title: "Log Out",
+                      onTap: _logout,
+                      textColor: Colors.redAccent
                   ),
                 ],
               ),
@@ -407,6 +504,9 @@ class _MainHubState extends State<MainHub> {
           type: BottomNavigationBarType.fixed,
           selectedItemColor: const Color(0xFF39FF14),
           unselectedItemColor: Colors.grey[700],
+          selectedFontSize: 11,
+          unselectedFontSize: 11,
+          iconSize: 22,
           currentIndex: _selectedIndex > 3 ? 0 : _selectedIndex,
           onTap: _onNavTapped,
           items: const [
@@ -430,6 +530,18 @@ class _MainHubState extends State<MainHub> {
           style: const TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.bold),
         ),
       ],
+    );
+  }
+
+  // Reusable slim list tile for menus
+  Widget _buildMenuTile({required IconData icon, required Color color, required String title, required VoidCallback onTap, Color textColor = Colors.white}) {
+    return ListTile(
+      dense: true,
+      visualDensity: VisualDensity.compact,
+      contentPadding: const EdgeInsets.symmetric(horizontal: 24, vertical: 0),
+      leading: Icon(icon, color: color, size: 18),
+      title: Text(title, style: TextStyle(color: textColor, fontSize: 13, fontWeight: FontWeight.w600)),
+      onTap: onTap,
     );
   }
 }

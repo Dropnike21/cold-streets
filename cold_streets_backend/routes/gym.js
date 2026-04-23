@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const pool = require('../db');
+const { trackAndCheckAchievement } = require('../utils/achievement_engine'); // INJECTED ACHIEVEMENT ENGINE
 
 // The Level 1 safety net for the Hybrid Math Engine
 const GLOBAL_FLAT_RATE = 0.05;
@@ -149,6 +150,12 @@ router.post('/train', async (req, res) => {
         userPayload.gym_exp = expRes.rows[0].gym_exp;
 
         await pool.query('COMMIT');
+
+        // --- INJECTED ACHIEVEMENT ENGINE FIRE AND FORGET ---
+        trackAndCheckAchievement(user_id, 'total_gym_trains', 1, 'user_statistics');
+        trackAndCheckAchievement(user_id, 'total_energy_spent', energy_spent, 'user_statistics');
+        // ---------------------------------------------------
+
         res.json({ success: true, gained: totalStatGain, user: userPayload });
     } catch (err) {
         await pool.query('ROLLBACK');

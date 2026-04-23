@@ -1,5 +1,3 @@
-// File Path: lib/views/streets_view.dart
-
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
@@ -48,7 +46,6 @@ class _StreetsViewState extends State<StreetsView> {
     super.dispose();
   }
 
-  // V1.2 FIX: Helper to format massive late-game payouts to prevent UI overflow
   String _formatStat(dynamic value) {
     double val = double.tryParse(value.toString()) ?? 0.0;
     if (val >= 1000000) return '${(val / 1000000).toStringAsFixed(1)}M';
@@ -56,7 +53,6 @@ class _StreetsViewState extends State<StreetsView> {
     return val.toInt().toString();
   }
 
-  // V1.2 FIX: Standardized check to see if a tool is actually required
   bool _isToolRequired(dynamic toolReq) {
     if (toolReq == null) return false;
     String req = toolReq.toString().toUpperCase().trim();
@@ -72,7 +68,6 @@ class _StreetsViewState extends State<StreetsView> {
     if (mounted) setState(() => _isLoading = false);
   }
 
-  // --- AUTOMATION ENGINE ---
   void _startHustleTimer() {
     _hustleTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
       if (!mounted) return;
@@ -162,7 +157,6 @@ class _StreetsViewState extends State<StreetsView> {
     }
   }
 
-  // --- API FETCHERS ---
   Future<void> _fetchJobBoard() async {
     try {
       final response = await http.get(Uri.parse('$crimesApiUrl/list'));
@@ -243,7 +237,6 @@ class _StreetsViewState extends State<StreetsView> {
   }
 
   Future<void> _executeCrime(Map<String, dynamic> crime) async {
-    // V1.2 FIX: Use the standardized tool check helper to prevent false "Blocked" actions
     if (_isToolRequired(crime['tool_req']) && !_ownedTools.contains(crime['tool_req'].toString().toUpperCase())) {
       _showDynamicResult("MISSING EQUIPMENT", "You need a ${crime['tool_req']} to pull this off.", Colors.redAccent);
       return;
@@ -513,7 +506,6 @@ class _StreetsViewState extends State<StreetsView> {
                   else if (isAutomated && isToolMissing)
                     Text("PAUSED: MISSING $reqTool", style: const TextStyle(color: Colors.redAccent, fontSize: 9, fontWeight: FontWeight.bold))
                   else if (hasRequirement)
-                    // V1.2 FIX: Only displays if a tool is actually required
                       Text("TOOL REQ: $reqTool", style: TextStyle(color: isToolMissing ? Colors.redAccent : Colors.orangeAccent, fontSize: 9, fontWeight: FontWeight.bold)),
                 ],
               ),

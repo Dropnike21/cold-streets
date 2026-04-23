@@ -6,8 +6,12 @@ import 'dart:convert';
 import 'dart:async';
 
 class SyndicateView extends StatefulWidget {
-  final String userId;
-  const SyndicateView({super.key, required this.userId});
+  // V1.3 FIX: Accepting full userData so we can track cash for hiring
+  final Map<String, dynamic> userData;
+  final Function(Map<String, dynamic>)? onStateChange;
+
+  const SyndicateView({super.key, required this.userData, this.onStateChange});
+
   @override
   State<SyndicateView> createState() => _SyndicateViewState();
 }
@@ -50,10 +54,11 @@ class _SyndicateViewState extends State<SyndicateView> {
   }
 
   // V1.2 FIX: Helper to abbreviate God-Tier stats (e.g. 1000000 -> 1.0M) preventing UI overflows
-  String _formatStat(int value) {
-    if (value >= 1000000) return '${(value / 1000000).toStringAsFixed(1)}M';
-    if (value >= 1000) return '${(value / 1000).toStringAsFixed(1)}K';
-    return value.toString();
+  String _formatStat(dynamic value) {
+    double val = double.tryParse(value.toString()) ?? 0.0;
+    if (val >= 1000000) return '${(val / 1000000).toStringAsFixed(1)}M';
+    if (val >= 1000) return '${(val / 1000).toStringAsFixed(1)}K';
+    return val.toInt().toString();
   }
 
   // V1.2 FIX: Centralized timer logic to sync between Hire and Generate
@@ -78,8 +83,9 @@ class _SyndicateViewState extends State<SyndicateView> {
     if (!isBackground && mounted) setState(() => isLoading = true);
 
     try {
+      final String userIdStr = widget.userData['user_id'].toString();
       final response = await http
-          .get(Uri.parse('$apiUrl/${widget.userId}'))
+          .get(Uri.parse('$apiUrl/$userIdStr'))
           .timeout(const Duration(seconds: 8));
 
       if (response.statusCode == 200) {
@@ -108,10 +114,11 @@ class _SyndicateViewState extends State<SyndicateView> {
     if (dailyRefreshes <= 0) return;
     setModalState(() => isLoading = true);
     try {
+      final String userIdStr = widget.userData['user_id'].toString();
       final response = await http.post(
         Uri.parse('$apiUrl/generate_board'),
         headers: {"Content-Type": "application/json"},
-        body: jsonEncode({"user_id": widget.userId}),
+        body: jsonEncode({"user_id": userIdStr}),
       ).timeout(const Duration(seconds: 8));
 
       if (response.statusCode == 200) {
@@ -123,7 +130,6 @@ class _SyndicateViewState extends State<SyndicateView> {
         });
         setState(() {});
       }
-      // V1.2 FIX: Explicitly handle the 403 Cooldown lock from the backend
       else if (response.statusCode == 403) {
         final data = jsonDecode(response.body);
         if (data['seconds_left'] != null) {
@@ -146,14 +152,28 @@ class _SyndicateViewState extends State<SyndicateView> {
 
   Future<void> _hireRecruit(Map<String, dynamic> recruit, StateSetter setModalState) async {
     if (recruitCooldownSeconds > 0) return;
+
+    // Safety check frontend math before hitting API
+    int currentCash = int.tryParse(widget.userData['dirty_cash']?.toString() ?? '0') ?? 0;
+    int recruitPrice = int.tryParse(recruit["price"]?.toString() ?? '0') ?? 0;
+    if (currentCash < recruitPrice) return;
+
     try {
+      final String userIdStr = widget.userData['user_id'].toString();
       final response = await http.post(
         Uri.parse('$apiUrl/hire'),
         headers: {"Content-Type": "application/json"},
-        body: jsonEncode({"user_id": widget.userId, "recruit": recruit}),
+        body: jsonEncode({"user_id": userIdStr, "recruit": recruit}),
       ).timeout(const Duration(seconds: 8));
 
       if (response.statusCode == 200) {
+        // V1.3 FIX: Locally deduct cash so the UI instantly updates without waiting for sync
+        if (widget.onStateChange != null) {
+          Map<String, dynamic> updatedUser = Map.from(widget.userData);
+          updatedUser['dirty_cash'] = currentCash - recruitPrice;
+          widget.onStateChange!(updatedUser);
+        }
+
         setModalState(() {
           _recruitmentBoard.remove(recruit);
           recruitCooldownSeconds = 120; // Explicit 2-minute default per backend
@@ -169,10 +189,11 @@ class _SyndicateViewState extends State<SyndicateView> {
   Future<void> _unassignCrew(String crewId) async {
     setState(() => isLoading = true);
     try {
+      final String userIdStr = widget.userData['user_id'].toString();
       final response = await http.post(
         Uri.parse('$apiUrl/unassign_job'),
         headers: {"Content-Type": "application/json"},
-        body: jsonEncode({"user_id": widget.userId, "crew_id": crewId}),
+        body: jsonEncode({"user_id": userIdStr, "crew_id": crewId}),
       ).timeout(const Duration(seconds: 8));
 
       if (response.statusCode == 200) {
@@ -241,6 +262,11 @@ class _SyndicateViewState extends State<SyndicateView> {
 
   Widget _buildSyndicateTab() {
     final myGangCount = _activeCrew.length;
+
+    // V1.3 Dynamic Capital Tracking!
+    int currentCash = int.tryParse(widget.userData['dirty_cash']?.toString() ?? '0') ?? 0;
+    double capitalProgress = (currentCash / 500000000.0).clamp(0.0, 1.0);
+
     return ListView(
       padding: const EdgeInsets.all(10),
       children: [
@@ -252,8 +278,8 @@ class _SyndicateViewState extends State<SyndicateView> {
             children: [
               const Text("SYNDICATE ESTABLISHMENT", style: TextStyle(color: Color(0xFF39FF14), fontSize: 12, fontWeight: FontWeight.bold, letterSpacing: 1)),
               const SizedBox(height: 10),
-              _buildReqRow("GANG MEMBERS", "$myGangCount / 150", myGangCount / 150.0),
-              _buildReqRow("CAPITAL", "\$4,250 / \$500,000,000", 4250 / 500000000.0),
+              _buildReqRow("GANG MEMBERS", "$myGangCount / 150", (myGangCount / 150.0).clamp(0.0, 1.0)),
+              _buildReqRow("CAPITAL", "\$${_formatStat(currentCash)} / \$500M", capitalProgress),
               _buildReqRow("COMPLETE BUSINESSES", "0 / 2", 0.0, subtext: "Requires fully linked Production, Manufacturing & Distribution lines."),
               const SizedBox(height: 16),
               SizedBox(
@@ -299,6 +325,7 @@ class _SyndicateViewState extends State<SyndicateView> {
     bool isFetching = true;
     List<dynamic> localCrimes = [];
     String? expandedCategory;
+    final String userIdStr = widget.userData['user_id'].toString();
 
     showModalBottomSheet(
       context: context,
@@ -308,7 +335,7 @@ class _SyndicateViewState extends State<SyndicateView> {
       builder: (BuildContext context) {
         return StatefulBuilder(builder: (context, setModalState) {
           if (isFetching && localCrimes.isEmpty) {
-            http.get(Uri.parse('$apiUrl/crimes_board/${widget.userId}')).then((response) {
+            http.get(Uri.parse('$apiUrl/crimes_board/$userIdStr')).then((response) {
               if (response.statusCode == 200) {
                 final data = jsonDecode(response.body);
                 setModalState(() {
@@ -401,7 +428,7 @@ class _SyndicateViewState extends State<SyndicateView> {
                                         await http.post(
                                             Uri.parse('$apiUrl/assign_job'),
                                             headers: {"Content-Type": "application/json"},
-                                            body: jsonEncode({"user_id": widget.userId, "crew_id": npc['crew_id'], "crime_title": crime['title']})
+                                            body: jsonEncode({"user_id": userIdStr, "crew_id": npc['crew_id'], "crime_title": crime['title']})
                                         );
                                         _fetchActiveCrew();
                                         if (!context.mounted) return;
@@ -480,7 +507,6 @@ class _SyndicateViewState extends State<SyndicateView> {
   }
 
   Widget _buildActiveCrewCard(Map<String, dynamic> npc) {
-    // V1.2 FIX: Adjusted barMax dynamically to match the backend's new million-stat scaling
     int barMax = 1000;
     if (npc["tier"] == "Hustler") barMax = 10000;
     if (npc["tier"] == "Enforcer") barMax = 80000;
@@ -553,7 +579,6 @@ class _SyndicateViewState extends State<SyndicateView> {
           const Divider(color: Color(0xFF333333), height: 1),
           const SizedBox(height: 12),
 
-          // V1.2 FIX: Fully Implemented all 8 stats
           _buildStatBar("STR", npc["cur_str"] ?? 0, npc["max_str"] ?? 0, barMax),
           _buildStatBar("DEF", npc["cur_def"] ?? 0, npc["max_def"] ?? 0, barMax),
           _buildStatBar("DEX", npc["cur_dex"] ?? 0, npc["max_dex"] ?? 0, barMax),
@@ -570,6 +595,15 @@ class _SyndicateViewState extends State<SyndicateView> {
   Widget _buildRecruitCard(Map<String, dynamic> recruit, StateSetter setModalState) {
     Map<String, dynamic> stats = recruit["stats"];
     int barMax = recruit["barMax"];
+
+    // V1.3 FIX: Dynamic affordability logic
+    int currentCash = int.tryParse(widget.userData['dirty_cash']?.toString() ?? '0') ?? 0;
+    int recruitPrice = int.tryParse(recruit["price"]?.toString() ?? '0') ?? 0;
+    bool canAfford = currentCash >= recruitPrice;
+
+    // Combine cooldown lock with affordability lock
+    bool isButtonDisabled = recruitCooldownSeconds > 0 || !canAfford;
+
     return Container(
       margin: const EdgeInsets.only(bottom: 12), padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(color: const Color(0xFF1E1E1E), border: Border.all(color: const Color(0xFF333333)), borderRadius: BorderRadius.circular(4)),
@@ -591,14 +625,22 @@ class _SyndicateViewState extends State<SyndicateView> {
               Column(
                 crossAxisAlignment: CrossAxisAlignment.end,
                 children: [
-                  Text("COST: \$${_formatStat(recruit["price"])}", style: const TextStyle(color: Color(0xFF39FF14), fontSize: 10, fontWeight: FontWeight.bold)),
+                  Text("COST: \$${_formatStat(recruitPrice)}", style: TextStyle(color: canAfford ? const Color(0xFF39FF14) : Colors.redAccent, fontSize: 10, fontWeight: FontWeight.bold)),
                   const SizedBox(height: 6),
                   SizedBox(
                     height: 24,
                     child: ElevatedButton(
-                      onPressed: recruitCooldownSeconds > 0 ? null : () => _hireRecruit(recruit, setModalState),
-                      style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF39FF14).withValues(alpha: 0.1), padding: const EdgeInsets.symmetric(horizontal: 12), side: BorderSide(color: recruitCooldownSeconds > 0 ? Colors.grey : const Color(0xFF39FF14))),
-                      child: const Text("HIRE", style: TextStyle(color: Color(0xFF39FF14), fontSize: 10, fontWeight: FontWeight.bold)),
+                      onPressed: isButtonDisabled ? null : () => _hireRecruit(recruit, setModalState),
+                      style: ElevatedButton.styleFrom(
+                          backgroundColor: isButtonDisabled ? const Color(0xFF121212) : const Color(0xFF39FF14).withValues(alpha: 0.1),
+                          disabledBackgroundColor: const Color(0xFF121212),
+                          padding: const EdgeInsets.symmetric(horizontal: 12),
+                          side: BorderSide(color: isButtonDisabled ? Colors.grey[800]! : const Color(0xFF39FF14))
+                      ),
+                      child: Text(
+                          !canAfford ? "NO FUNDS" : "HIRE",
+                          style: TextStyle(color: isButtonDisabled ? Colors.grey[600] : const Color(0xFF39FF14), fontSize: 10, fontWeight: FontWeight.bold)
+                      ),
                     ),
                   ),
                 ],
@@ -609,7 +651,6 @@ class _SyndicateViewState extends State<SyndicateView> {
           const Divider(color: Color(0xFF333333), height: 1),
           const SizedBox(height: 12),
 
-          // V1.2 FIX: Fully Implemented all 8 stats here as well
           _buildStatBar("STR", stats["str"]["cur"] ?? 0, stats["str"]["max"] ?? 0, barMax),
           _buildStatBar("DEF", stats["def"]["cur"] ?? 0, stats["def"]["max"] ?? 0, barMax),
           _buildStatBar("DEX", stats["dex"]["cur"] ?? 0, stats["dex"]["max"] ?? 0, barMax),
@@ -644,7 +685,6 @@ class _SyndicateViewState extends State<SyndicateView> {
             ),
           ),
           const SizedBox(width: 8),
-          // V1.2 FIX: Increased width from 45 to 65, and used _formatStat to cleanly fit massive numbers like "100.5K / 1.0M"
           SizedBox(width: 65, child: Text("${_formatStat(current)} / ${_formatStat(max)}", textAlign: TextAlign.right, style: const TextStyle(color: Color(0xFF39FF14), fontSize: 9, fontWeight: FontWeight.bold))),
         ],
       ),
