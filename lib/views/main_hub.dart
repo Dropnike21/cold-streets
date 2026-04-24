@@ -10,7 +10,8 @@ import 'gym_view.dart';
 import 'syndicate_view.dart';
 import 'inventory_view.dart';
 import 'achievements_view.dart';
-import 'events_view.dart'; // V1.6: Added Events View import
+import 'events_view.dart';
+import 'credit_broker_view.dart'; // 🔥 NEW: Imported the Credit Broker
 
 class MainHub extends StatefulWidget {
   final Map<String, dynamic> userData;
@@ -22,8 +23,17 @@ class MainHub extends StatefulWidget {
 }
 
 class _MainHubState extends State<MainHub> {
+  late String userId;
   late String username;
   late int dirtyCash;
+  late int cleanCash;
+  late int creds;
+
+  int goldBars = 0;
+  int influence = 0;
+
+  bool hasBazaar = false;
+
   late int energy;
   late int nerve;
   late int maxNerve;
@@ -34,9 +44,9 @@ class _MainHubState extends State<MainHub> {
   Timer? _syncTimer;
   Timer? _countdownTimer;
 
-  List<Map<String, dynamic>> _activeCooldowns = [];
+  int _regenSecondsLeft = 30;
 
-  // V1.6: Track unread events
+  List<Map<String, dynamic>> _activeCooldowns = [];
   int _unreadEventsCount = 0;
 
   int _parseSafeInt(dynamic value) {
@@ -50,8 +60,15 @@ class _MainHubState extends State<MainHub> {
   @override
   void initState() {
     super.initState();
+    userId = widget.userData['user_id']?.toString() ?? "0";
     username = widget.userData['username']?.toString() ?? "Unknown";
+
+    hasBazaar = widget.userData['has_bazaar'] == true;
+
     dirtyCash = _parseSafeInt(widget.userData['dirty_cash']);
+    cleanCash = _parseSafeInt(widget.userData['clean_cash']);
+    creds = _parseSafeInt(widget.userData['cred']);
+
     energy = _parseSafeInt(widget.userData['energy']);
     nerve = _parseSafeInt(widget.userData['nerve']);
     hp = _parseSafeInt(widget.userData['hp']);
@@ -66,10 +83,12 @@ class _MainHubState extends State<MainHub> {
       return '\$${(amount / 1000000000).toStringAsFixed(2)}b';
     } else if (amount >= 1000000) {
       return '\$${(amount / 1000000).toStringAsFixed(2)}m';
-    } else if (amount >= 1000) {
-      return '\$${(amount / 1000).toStringAsFixed(1)}k';
     } else {
-      return '\$$amount';
+      String formatted = amount.toString().replaceAllMapped(
+          RegExp(r'(\d{1,3})(?=(\d{3})+(?!\d))'),
+              (Match m) => '${m[1]},'
+      );
+      return '\$$formatted';
     }
   }
 
@@ -84,27 +103,37 @@ class _MainHubState extends State<MainHub> {
     _syncTimer = Timer.periodic(const Duration(seconds: 3), (_) => _fetchLiveStatus());
 
     _countdownTimer = Timer.periodic(const Duration(seconds: 1), (_) {
-      if (_activeCooldowns.isNotEmpty && mounted) {
-        bool updated = false;
+      if (!mounted) return;
+      bool updated = false;
+
+      if (_regenSecondsLeft > 0) {
+        _regenSecondsLeft--;
+        updated = true;
+      } else {
+        _regenSecondsLeft = 30;
+        updated = true;
+      }
+
+      if (_activeCooldowns.isNotEmpty) {
         for (var cd in _activeCooldowns) {
           if (cd['seconds_left'] > 0) {
             cd['seconds_left']--;
             updated = true;
           }
         }
-        if (updated) setState(() {});
       }
+
+      if (updated) setState(() {});
     });
   }
 
   Future<void> _fetchLiveStatus() async {
     try {
-      final String userId = widget.userData['user_id'].toString();
+      final String id = widget.userData['user_id'].toString();
 
-      // We can hit both endpoints in parallel to keep it fast
       final responses = await Future.wait([
-        http.get(Uri.parse('http://10.0.2.2:3000/auth/status/$userId')),
-        http.get(Uri.parse('http://10.0.2.2:3000/events/$userId?limit=1')) // Just need the unread count
+        http.get(Uri.parse('http://10.0.2.2:3000/auth/status/$id')),
+        http.get(Uri.parse('http://10.0.2.2:3000/events/$id?limit=1'))
       ]);
 
       final statusResponse = responses[0];
@@ -136,7 +165,6 @@ class _MainHubState extends State<MainHub> {
         }
       }
 
-      // Parse the unread events count
       if (eventsResponse.statusCode == 200) {
         final eventData = jsonDecode(eventsResponse.body);
         if (mounted) {
@@ -155,12 +183,17 @@ class _MainHubState extends State<MainHub> {
     if (!mounted) return;
     setState(() {
       dirtyCash = _parseSafeInt(updatedStats['dirty_cash'] ?? dirtyCash);
+      cleanCash = _parseSafeInt(updatedStats['clean_cash'] ?? cleanCash);
+      creds = _parseSafeInt(updatedStats['cred'] ?? creds);
+
       energy = _parseSafeInt(updatedStats['energy'] ?? energy);
       nerve = _parseSafeInt(updatedStats['nerve'] ?? nerve);
       maxNerve = _parseSafeInt(updatedStats['max_nerve'] ?? maxNerve);
       hp = _parseSafeInt(updatedStats['hp'] ?? hp);
 
       widget.userData['dirty_cash'] = dirtyCash;
+      widget.userData['clean_cash'] = cleanCash;
+      widget.userData['cred'] = creds;
       widget.userData['energy'] = energy;
       widget.userData['nerve'] = nerve;
       widget.userData['max_nerve'] = maxNerve;
@@ -214,56 +247,70 @@ class _MainHubState extends State<MainHub> {
       appBar: AppBar(
         backgroundColor: Colors.black,
         elevation: 2,
+        toolbarHeight: 65,
         shadowColor: const Color(0xFF39FF14).withValues(alpha: 0.5),
         automaticallyImplyLeading: false,
         titleSpacing: 16,
 
-        title: Row(
+        title: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Text(
-              "CS",
-              style: TextStyle(
-                  color: Color(0xFF39FF14),
-                  fontSize: 22,
-                  fontWeight: FontWeight.w900,
-                  letterSpacing: 2,
-                  fontStyle: FontStyle.italic
-              ),
-            ),
-            const SizedBox(width: 12),
-
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-              decoration: BoxDecoration(
-                color: const Color(0xFF39FF14).withValues(alpha: 0.1),
-                border: Border.all(color: const Color(0xFF39FF14).withValues(alpha: 0.5)),
-                borderRadius: BorderRadius.circular(4),
-              ),
-              child: Row(
-                children: [
-                  Text(
-                    _formatCash(dirtyCash),
-                    style: const TextStyle(
+            Row(
+              children: [
+                const Text(
+                  "CS",
+                  style: TextStyle(
                       color: Color(0xFF39FF14),
-                      fontSize: 12,
-                      fontWeight: FontWeight.bold,
-                      letterSpacing: 0.5,
-                    ),
+                      fontSize: 18,
+                      fontWeight: FontWeight.w900,
+                      letterSpacing: 2,
+                      fontStyle: FontStyle.italic
                   ),
-                ],
-              ),
+                ),
+                const SizedBox(width: 8),
+                Text(
+                  "$username [$userId]",
+                  style: const TextStyle(color: Colors.white70, fontSize: 13, fontWeight: FontWeight.bold),
+                ),
+                const Spacer(),
+
+                _buildStatItem(
+                    Icons.bolt,
+                    "$energy/100",
+                    Colors.yellowAccent,
+                    "ENERGY\nUsed for committing crimes.\nRegens +5 in ${_formatTime(_regenSecondsLeft)}"
+                ),
+                const SizedBox(width: 8),
+                _buildStatItem(
+                    Icons.psychology,
+                    "$nerve/$maxNerve",
+                    Colors.purpleAccent,
+                    "NERVE\nUsed for serious crimes.\nRegens +2 in ${_formatTime(_regenSecondsLeft)}"
+                ),
+                const SizedBox(width: 8),
+                _buildStatItem(
+                    Icons.favorite,
+                    "$hp",
+                    Colors.redAccent,
+                    "HEALTH POINTS\nDon't let this hit 0.\nRegens +10 in ${_formatTime(_regenSecondsLeft)}"
+                ),
+              ],
             ),
 
-            const Spacer(),
+            const SizedBox(height: 6),
 
             Row(
-              mainAxisAlignment: MainAxisAlignment.end,
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
-                _buildStatItem(Icons.bolt, "$energy/100", Colors.yellowAccent),
-                const SizedBox(width: 8),
-                _buildStatItem(Icons.psychology, "$nerve/$maxNerve", Colors.purpleAccent),
-                const SizedBox(width: 8),
-                _buildStatItem(Icons.favorite, "$hp", Colors.redAccent),
+                _buildCurrencyItem(Icons.view_agenda, "$goldBars", Colors.amber, "GOLD BARS\nPremium currency."),
+                _buildCurrencyItem(Icons.attach_money, _formatCash(dirtyCash), const Color(0xFF39FF14), "DIRTY CASH\nUntraceable street money."),
+                _buildCurrencyItem(Icons.attach_money, _formatCash(cleanCash), Colors.white, "CLEAN CASH\nSafely laundered in the bank."),
+
+                if (creds > 0)
+                  _buildCurrencyItem(Icons.diamond, "$creds", Colors.cyanAccent, "CREDS\nEarned from achievements."),
+
+                _buildCurrencyItem(Icons.how_to_vote, "$influence", Colors.deepPurpleAccent, "INFLUENCE\nSyndicate political power."),
               ],
             ),
           ],
@@ -274,6 +321,9 @@ class _MainHubState extends State<MainHub> {
         backgroundColor: const Color(0xFF1A1A1A),
         child: Column(
           children: [
+            // ==========================================
+            // 1. PROFILE HEADER
+            // ==========================================
             Container(
               width: double.infinity,
               padding: EdgeInsets.only(top: MediaQuery.of(context).padding.top + 16, left: 16, right: 16, bottom: 16),
@@ -308,7 +358,6 @@ class _MainHubState extends State<MainHub> {
                       ),
                     ),
 
-                  // SLEEK PROFILE HEADER WITH NOTIFICATION BELL
                   Row(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
@@ -332,15 +381,13 @@ class _MainHubState extends State<MainHub> {
                               children: [
                                 Text(username, style: const TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold)),
 
-                                // V1.6: THE NOTIFICATION BELL
                                 GestureDetector(
                                   onTap: () {
-                                    Navigator.pop(context); // Close Drawer
+                                    Navigator.pop(context);
                                     Navigator.push(
                                         context,
                                         MaterialPageRoute(builder: (context) => EventsView(userData: widget.userData))
                                     ).then((_) {
-                                      // When returning from Events view, clear the badge locally immediately
                                       setState(() { _unreadEventsCount = 0; });
                                     });
                                   },
@@ -390,103 +437,128 @@ class _MainHubState extends State<MainHub> {
               ),
             ),
 
+            // ==========================================
+            // 2. CITY NAVIGATION (Scrollable Accordions)
+            // ==========================================
             Expanded(
               child: ListView(
                 padding: EdgeInsets.zero,
                 children: [
-                  // ACCORDION CITY NAVIGATION
-                  Theme(
-                    data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
-                    child: ExpansionTile(
+
+                  // ACCORDION: LOCAL NEIGHBORHOOD
+                  _buildDistrictAccordion(
+                      title: "LOCAL NEIGHBORHOOD",
                       initiallyExpanded: true,
-                      iconColor: const Color(0xFF39FF14),
-                      collapsedIconColor: Colors.grey[600],
-                      title: Row(
-                        children: [
-                          const Expanded(child: Divider(color: Color(0xFF333333))),
-                          Padding(
-                            padding: const EdgeInsets.symmetric(horizontal: 8.0),
-                            child: Text(
-                                "CITY NAVIGATION",
-                                style: TextStyle(color: Colors.grey[500], fontSize: 10, letterSpacing: 1.5, fontWeight: FontWeight.bold)
-                            ),
-                          ),
-                          const Expanded(child: Divider(color: Color(0xFF333333))),
-                        ],
-                      ),
                       children: [
-                        _buildMenuTile(
-                            icon: Icons.fitness_center,
-                            color: Colors.orangeAccent,
-                            title: "The Gym",
-                            onTap: () {
-                              Navigator.pop(context);
-                              Navigator.push(
-                                  context,
-                                  MaterialPageRoute(builder: (context) => GymView(userData: widget.userData, onStateChange: _updateUserStats))
-                              );
-                            }
-                        ),
-                        _buildMenuTile(
-                            icon: Icons.local_hospital,
-                            color: Colors.redAccent,
-                            title: "Hospital",
-                            onTap: () {}
-                        ),
-                        _buildMenuTile(
-                            icon: Icons.account_balance,
-                            color: Colors.blueAccent,
-                            title: "Bank",
-                            onTap: () {}
-                        ),
-                        _buildMenuTile(
-                            icon: Icons.gavel,
-                            color: Colors.grey,
-                            title: "Jail",
-                            onTap: () {}
-                        ),
-                      ],
-                    ),
+                        _buildMenuTile(icon: Icons.fitness_center, color: Colors.orangeAccent, title: "The Gym", onTap: () {
+                          Navigator.pop(context);
+                          Navigator.push(context, MaterialPageRoute(builder: (context) => GymView(userData: widget.userData, onStateChange: _updateUserStats)));
+                        }),
+                        _buildMenuTile(icon: Icons.local_hospital, color: Colors.redAccent, title: "The Clinic", onTap: () {}),
+                        _buildMenuTile(icon: Icons.church, color: Colors.yellow, title: "Church", onTap: () {}),
+                      ]
                   ),
 
-                  const Divider(color: Color(0xFF333333)),
+                  // ACCORDION: THE UNDERWORLD
+                  _buildDistrictAccordion(
+                      title: "THE UNDERWORLD",
+                      children: [
+                        // 🔥 CONNECTED: Navigate to Credit Broker!
+                        _buildMenuTile(icon: Icons.diamond, color: Colors.cyanAccent, title: "Credit Broker", onTap: () {
+                          Navigator.pop(context);
+                          Navigator.push(context, MaterialPageRoute(builder: (context) => CreditBrokerView(userData: widget.userData)));
+                        }),
+                        _buildMenuTile(icon: Icons.security, color: Colors.grey, title: "Underground Munitions", onTap: () {}),
+                        _buildMenuTile(icon: Icons.casino, color: Colors.purpleAccent, title: "The Casino", onTap: () {}),
+                      ]
+                  ),
 
-                  // PLAYER MENUS
-                  _buildMenuTile(
-                      icon: Icons.military_tech,
-                      color: const Color(0xFF39FF14),
-                      title: "Achievements",
-                      onTap: () {
-                        Navigator.pop(context);
-                        Navigator.push(
-                            context,
-                            MaterialPageRoute(builder: (context) => AchievementsView(userData: widget.userData))
-                        );
-                      }
+                  // ACCORDION: FINANCIAL DISTRICT
+                  _buildDistrictAccordion(
+                      title: "FINANCIAL DISTRICT",
+                      children: [
+                        _buildMenuTile(icon: Icons.account_balance, color: Colors.blueAccent, title: "The Bank", onTap: () {}),
+                        _buildMenuTile(icon: Icons.show_chart, color: Colors.greenAccent, title: "Stock Market", onTap: () {}),
+                        _buildMenuTile(icon: Icons.domain, color: Colors.tealAccent, title: "Real Estate", onTap: () {}),
+                        _buildMenuTile(icon: Icons.shopping_bag, color: Colors.amber, title: "Trade Network", onTap: () {}),
+                        _buildMenuTile(icon: Icons.gavel, color: Colors.orange, title: "Auction House", onTap: () {}),
+                      ]
                   ),
-                  _buildMenuTile(
-                      icon: Icons.backpack,
-                      color: Colors.white,
-                      title: "Inventory",
-                      onTap: () {
-                        setState(() => _selectedIndex = 4);
-                        Navigator.pop(context);
-                      }
+
+                  // ACCORDION: CIVIC CENTER
+                  _buildDistrictAccordion(
+                      title: "CIVIC CENTER",
+                      children: [
+                        _buildMenuTile(icon: Icons.newspaper, color: Colors.white, title: "Info Broker", onTap: () {}),
+                        _buildMenuTile(icon: Icons.school, color: Colors.lightBlueAccent, title: "University", onTap: () {}),
+                        _buildMenuTile(icon: Icons.local_hospital, color: Colors.redAccent, title: "City Hospital", onTap: () {}),
+                        _buildMenuTile(icon: Icons.gavel, color: Colors.grey, title: "State Jail", onTap: () {}),
+                        _buildMenuTile(icon: Icons.location_city, color: Colors.deepPurpleAccent, title: "City Hall", onTap: () {}),
+                      ]
                   ),
-                  _buildMenuTile(
-                      icon: Icons.settings,
-                      color: Colors.grey,
-                      title: "Settings",
-                      onTap: () {}
+
+                  // ACCORDION: TRANSIT & AUTO
+                  _buildDistrictAccordion(
+                      title: "TRANSIT & AUTO",
+                      children: [
+                        _buildMenuTile(icon: Icons.map, color: const Color(0xFF39FF14), title: "City Map", onTap: () {}),
+                        _buildMenuTile(icon: Icons.flight_takeoff, color: Colors.white70, title: "Airport", onTap: () {}),
+                        _buildMenuTile(icon: Icons.car_repair, color: Colors.grey, title: "The Chop Shop", onTap: () {}),
+                        _buildMenuTile(icon: Icons.sports_score, color: Colors.yellow, title: "The Street Circuit", onTap: () {}),
+                      ]
                   ),
-                  _buildMenuTile(
-                      icon: Icons.exit_to_app,
-                      color: Colors.redAccent,
-                      title: "Log Out",
-                      onTap: _logout,
-                      textColor: Colors.redAccent
-                  ),
+
+                  const SizedBox(height: 16),
                 ],
+              ),
+            ),
+
+            // ==========================================
+            // 3. PERSONAL MENU (Fixed at bottom)
+            // ==========================================
+            Container(
+              decoration: BoxDecoration(
+                color: const Color(0xFF121212),
+                border: Border(top: BorderSide(color: Colors.grey.shade800, width: 1)),
+              ),
+              child: SafeArea(
+                top: false,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    // LEFT ALIGNED HEADER
+                    Container(
+                      width: double.infinity,
+                      padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 16),
+                      color: const Color(0xFF1A1A1A),
+                      child: Text(
+                        "PERSONAL DASHBOARD",
+                        style: TextStyle(color: Colors.grey[500], fontSize: 9, letterSpacing: 1.5, fontWeight: FontWeight.bold),
+                        textAlign: TextAlign.left,
+                      ),
+                    ),
+
+                    _buildMenuTile(icon: Icons.backpack, color: Colors.white, title: "Inventory", onTap: () {
+                      setState(() => _selectedIndex = 4);
+                      Navigator.pop(context);
+                    }),
+
+                    _buildMenuTile(icon: Icons.military_tech, color: const Color(0xFF39FF14), title: "Achievements", onTap: () {
+                      Navigator.pop(context);
+                      Navigator.push(context, MaterialPageRoute(builder: (context) => AchievementsView(userData: widget.userData)));
+                    }),
+
+                    _buildMenuTile(icon: Icons.house, color: Colors.brown.shade300, title: "My Properties", onTap: () {}),
+
+                    if (hasBazaar)
+                      _buildMenuTile(icon: Icons.storefront, color: Colors.amber, title: "My Bazaar", onTap: () {}),
+
+                    _buildMenuTile(icon: Icons.assignment, color: Colors.amberAccent, title: "Mission Board", onTap: () {}),
+
+                    _buildMenuTile(icon: Icons.settings, color: Colors.grey, title: "Settings", onTap: () {}),
+                    _buildMenuTile(icon: Icons.exit_to_app, color: Colors.redAccent, title: "Log Out", onTap: _logout, textColor: Colors.redAccent),
+                  ],
+                ),
               ),
             ),
           ],
@@ -520,27 +592,91 @@ class _MainHubState extends State<MainHub> {
     );
   }
 
-  Widget _buildStatItem(IconData icon, String value, Color color) {
-    return Row(
-      children: [
-        Icon(icon, color: color, size: 16),
-        const SizedBox(width: 2),
-        Text(
-          value,
-          style: const TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.bold),
-        ),
-      ],
+  Widget _buildStatItem(IconData icon, String value, Color color, String tooltipText) {
+    return Tooltip(
+      message: tooltipText,
+      showDuration: const Duration(seconds: 10),
+      triggerMode: TooltipTriggerMode.longPress,
+      padding: const EdgeInsets.all(12),
+      margin: const EdgeInsets.symmetric(horizontal: 16),
+      textStyle: const TextStyle(color: Colors.white, fontSize: 12, height: 1.4),
+      decoration: BoxDecoration(
+        color: const Color(0xFF1E1E1E),
+        border: Border.all(color: const Color(0xFF39FF14), width: 1),
+        borderRadius: BorderRadius.circular(6),
+      ),
+      child: Row(
+        children: [
+          Icon(icon, color: color, size: 16),
+          const SizedBox(width: 2),
+          Text(
+            value,
+            style: const TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.bold),
+          ),
+        ],
+      ),
     );
   }
 
-  // Reusable slim list tile for menus
+  Widget _buildCurrencyItem(IconData icon, String value, Color color, String tooltipText) {
+    return Tooltip(
+      message: tooltipText,
+      showDuration: const Duration(seconds: 10),
+      triggerMode: TooltipTriggerMode.longPress,
+      padding: const EdgeInsets.all(12),
+      margin: const EdgeInsets.symmetric(horizontal: 16),
+      textStyle: const TextStyle(color: Colors.white, fontSize: 12, height: 1.4),
+      decoration: BoxDecoration(
+        color: const Color(0xFF1E1E1E),
+        border: Border.all(color: const Color(0xFF39FF14), width: 1),
+        borderRadius: BorderRadius.circular(6),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, color: color, size: 14),
+          const SizedBox(width: 2),
+          Text(
+            value,
+            style: TextStyle(color: color, fontSize: 11, fontWeight: FontWeight.bold),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildDistrictAccordion({required String title, required List<Widget> children, bool initiallyExpanded = false}) {
+    return Theme(
+      data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
+      child: ExpansionTile(
+        initiallyExpanded: initiallyExpanded,
+        iconColor: const Color(0xFF39FF14),
+        collapsedIconColor: Colors.grey[600],
+        tilePadding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 0),
+        title: Row(
+          children: [
+            Padding(
+              padding: const EdgeInsets.only(right: 8.0),
+              child: Text(
+                  title,
+                  style: TextStyle(color: Colors.grey[500], fontSize: 10, letterSpacing: 1.5, fontWeight: FontWeight.bold)
+              ),
+            ),
+            const Expanded(child: Divider(color: Color(0xFF333333))),
+          ],
+        ),
+        children: children,
+      ),
+    );
+  }
+
   Widget _buildMenuTile({required IconData icon, required Color color, required String title, required VoidCallback onTap, Color textColor = Colors.white}) {
     return ListTile(
       dense: true,
-      visualDensity: VisualDensity.compact,
-      contentPadding: const EdgeInsets.symmetric(horizontal: 24, vertical: 0),
-      leading: Icon(icon, color: color, size: 18),
-      title: Text(title, style: TextStyle(color: textColor, fontSize: 13, fontWeight: FontWeight.w600)),
+      visualDensity: const VisualDensity(horizontal: 0, vertical: -4),
+      contentPadding: const EdgeInsets.symmetric(horizontal: 32, vertical: 0),
+      leading: Icon(icon, color: color, size: 16),
+      title: Text(title, style: TextStyle(color: textColor, fontSize: 12, fontWeight: FontWeight.w600)),
       onTap: onTap,
     );
   }

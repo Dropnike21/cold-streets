@@ -1,4 +1,3 @@
-// cold_streets_backend/utils/achievement_engine.js
 const pool = require('../db');
 
 async function trackAndCheckAchievement(userId, statColumn, incrementValue, targetTable = 'user_statistics') {
@@ -6,21 +5,22 @@ async function trackAndCheckAchievement(userId, statColumn, incrementValue, targ
     try {
         await client.query('BEGIN');
 
-        // 1. Update the Tracker Table
+        // 1. Update the Tracker Table (SAFE UPSERT FOR BOTH TABLES)
         let updateQuery = "";
         if (targetTable === 'user_statistics') {
             updateQuery = `
                 INSERT INTO user_statistics (user_id, ${statColumn})
                 VALUES ($1, $2)
                 ON CONFLICT (user_id)
-                DO UPDATE SET ${statColumn} = user_statistics.${statColumn} + $2
+                DO UPDATE SET ${statColumn} = COALESCE(user_statistics.${statColumn}, 0) + $2
                 RETURNING ${statColumn} AS new_total;
             `;
         } else if (targetTable === 'user_crime_records') {
             updateQuery = `
-                UPDATE user_crime_records
-                SET ${statColumn} = ${statColumn} + $2
-                WHERE user_id = $1
+                INSERT INTO user_crime_records (user_id, ${statColumn})
+                VALUES ($1, $2)
+                ON CONFLICT (user_id)
+                DO UPDATE SET ${statColumn} = COALESCE(user_crime_records.${statColumn}, 0) + $2
                 RETURNING ${statColumn} AS new_total;
             `;
         }
@@ -29,7 +29,6 @@ async function trackAndCheckAchievement(userId, statColumn, incrementValue, targ
         const newTotal = updateRes.rows[0].new_total;
 
         // 2. Fetch unearned achievements crossed by this new total
-        // Notice we no longer ask the DB for a reward value!
         const checkQuery = `
             SELECT am.achievement_id, am.title
             FROM achievements_master am

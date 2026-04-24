@@ -1,4 +1,3 @@
-// cold_streets_backend/routes/achievements.js
 const express = require('express');
 const pool = require('../db');
 const router = express.Router();
@@ -20,10 +19,17 @@ router.get('/:user_id', async (req, res) => {
             FROM achievements_master am
             LEFT JOIN user_achievements ua ON am.achievement_id = ua.achievement_id AND ua.user_id = $1
         `;
-        const { rows: achievements } = await pool.query(achQuery, [user_id]);
 
-        const { rows: stats } = await pool.query('SELECT * FROM user_statistics WHERE user_id = $1', [user_id]);
-        const { rows: crimes } = await pool.query('SELECT * FROM user_crime_records WHERE user_id = $1', [user_id]);
+        // 🔥 THE OPTIMIZATION: Fire all 3 database queries concurrently!
+        const [
+            { rows: achievements },
+            { rows: stats },
+            { rows: crimes }
+        ] = await Promise.all([
+            pool.query(achQuery, [user_id]),
+            pool.query('SELECT * FROM user_statistics WHERE user_id = $1', [user_id]),
+            pool.query('SELECT * FROM user_crime_records WHERE user_id = $1', [user_id])
+        ]);
 
         const userStats = { ...(stats[0] || {}), ...(crimes[0] || {}) };
 

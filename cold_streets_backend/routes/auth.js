@@ -55,7 +55,7 @@ router.post('/register', async (req, res) => {
 
         // Setup Crime Records for Achievement Statistics
         await client.query("INSERT INTO user_crime_records (user_id, total_crimes, total_successes, total_fails, total_jailed, skill_searching, skill_pickpocketing, skill_shoplifting, skill_mugging, skill_hacking) VALUES ($1, 0, 0, 0, 0, 0, 0, 0, 0, 0)", [newUserId]);
-
+        await client.query("INSERT INTO user_statistics (user_id, total_energy_spent, total_nerve_spent, total_gym_trains, lifetime_dirty_cash, lifetime_clean_cash, total_items_bought, recruits_hired, recruits_lost) VALUES ($1, 0, 0, 0, 0, 0, 0, 0, 0)", [newUserId]);
         // Auto-seed Gym #1 (Abandoned Warehouse per V1.1 Assets Canvas)
         await client.query("INSERT INTO user_gym_stats (user_id, active_gym_id, gym_exp) VALUES ($1, 1, 0)", [newUserId]);
         await client.query("INSERT INTO user_owned_gyms (user_id, gym_id) VALUES ($1, 1)", [newUserId]);
@@ -115,6 +115,7 @@ router.post('/login', async (req, res) => {
                 dirty_cash: user.dirty_cash,
                 clean_cash: user.clean_cash,
                 energy: user.energy,
+                cred: user.cred,
                 nerve: user.nerve,
                 max_nerve: user.max_nerve,
                 hp: user.hp,
@@ -144,7 +145,7 @@ router.get('/status/:user_id', async (req, res) => {
         const { user_id } = req.params;
 
         const userQuery = await pool.query(
-            "SELECT dirty_cash, clean_cash, energy, nerve, max_nerve, hp, level, exp, crime_exp FROM users WHERE user_id = $1",
+            "SELECT dirty_cash, clean_cash,cred, energy, nerve, max_nerve, hp, level, exp, crime_exp FROM users WHERE user_id = $1",
             [user_id]
         );
         if (userQuery.rows.length === 0) return res.status(404).json({ error: "Ghost account." });

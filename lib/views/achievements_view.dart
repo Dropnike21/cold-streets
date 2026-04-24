@@ -285,35 +285,35 @@ class _AchievementsViewState extends State<AchievementsView> {
   }
 
   Widget _buildExpandedDetails(Map<String, dynamic> ach) {
-    // Note: This panel will now ONLY ever render for unlocked achievements
-    double cur = double.tryParse(ach["cur"].toString()) ?? 0;
-    double max = double.tryParse(ach["max"].toString()) ?? 1;
-    double progress = (cur / max).clamp(0.0, 1.0);
+    // Safe parsing for text
+    String titleText = ach["title"]?.toString().toUpperCase() ?? "UNKNOWN ACHIEVEMENT";
+    String descText = ach["desc"]?.toString() ?? "No description available.";
 
-    return Container(
-      margin: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 4.0),
-      padding: const EdgeInsets.all(16.0),
-      decoration: BoxDecoration(
-        color: cDarkGrey,
-        border: Border(
-          left: const BorderSide(color: cNeonGreen, width: 4),
-          top: BorderSide(color: Colors.grey.shade800),
-          right: BorderSide(color: Colors.grey.shade800),
-          bottom: BorderSide(color: Colors.grey.shade800),
-        ),
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 4.0),
+      child: ClipRRect(
         borderRadius: const BorderRadius.only(
           topRight: Radius.circular(6),
           bottomRight: Radius.circular(6),
         ),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        child: Container(
+          width: double.infinity,
+          padding: const EdgeInsets.all(16.0),
+          decoration: BoxDecoration(
+            color: cDarkGrey,
+            border: Border(
+              left: const BorderSide(color: cNeonGreen, width: 4),
+              top: BorderSide(color: Colors.grey.shade800),
+              right: BorderSide(color: Colors.grey.shade800),
+              bottom: BorderSide(color: Colors.grey.shade800),
+            ),
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Text(
-                ach["title"].toString().toUpperCase(),
+                titleText,
                 style: const TextStyle(
                   color: Colors.white,
                   fontSize: 14,
@@ -321,43 +321,18 @@ class _AchievementsViewState extends State<AchievementsView> {
                   letterSpacing: 1.0,
                 ),
               ),
-            ],
-          ),
-          const SizedBox(height: 8),
-          Text(
-            ach["desc"],
-            style: TextStyle(
-              color: Colors.grey.shade400,
-              fontSize: 12,
-              height: 1.4,
-            ),
-          ),
-          const SizedBox(height: 16),
-          Row(
-            children: [
-              Expanded(
-                child: ClipRRect(
-                  borderRadius: BorderRadius.circular(2),
-                  child: LinearProgressIndicator(
-                    value: progress,
-                    minHeight: 6,
-                    backgroundColor: cBlack,
-                    valueColor: const AlwaysStoppedAnimation<Color>(cNeonGreen),
-                  ),
-                ),
-              ),
-              const SizedBox(width: 12),
+              const SizedBox(height: 8),
               Text(
-                "${_formatNumber(cur.toInt())} / ${_formatNumber(max.toInt())}",
-                style: const TextStyle(
-                  color: cNeonGreen,
-                  fontSize: 10,
-                  fontWeight: FontWeight.bold,
+                descText,
+                style: TextStyle(
+                  color: Colors.grey.shade400,
+                  fontSize: 12,
+                  height: 1.4,
                 ),
               ),
             ],
           ),
-        ],
+        ),
       ),
     );
   }

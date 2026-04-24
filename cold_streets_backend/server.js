@@ -23,6 +23,7 @@ app.use('/syndicate', require('./routes/syndicate'));
 app.use('/gym', require('./routes/gym'));
 app.use('/achievements', require('./routes/achievements'));
 app.use('/events', require('./routes/events'));
+app.use('/credit-broker', require('./routes/credit_broker'));
 
 // --- THE VITAL TICK & WARDEN (Cron Job) ---
 // Runs every 1 minute for testing (Change to 5 minutes for production: 5 * 60 * 1000)
