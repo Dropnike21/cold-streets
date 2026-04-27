@@ -94,7 +94,7 @@ router.post('/activate', async (req, res) => {
     }
 });
 
-// --- 4. BULK TRAIN (V1.1 HYBRID ENGINE) ---
+// --- 4. BULK TRAIN (V1.2 HYBRID ENGINE) ---
 router.post('/train', async (req, res) => {
     const { user_id, stat_type, energy_spent, gym_id } = req.body;
     const validStats = ['str', 'def', 'dex', 'spd'];
@@ -122,18 +122,26 @@ router.post('/train', async (req, res) => {
             gymPercentRate = parseFloat(gymRes.rows[0][percentColumn]);
         }
 
-        // External modifiers (Properties, Perks). Hard-capped at 10% max bonus per GDD.
-        // NOTE: Stubbed until Property tables are active.
-        let externalBonus = 0.0;
-        if (externalBonus > 0.10) {
-            externalBonus = 0.10;
-        }
-        const totalMultiplier = 1.0 + externalBonus;
+        // --- V1.2 HYBRID MATH ENGINE (Step-by-Step) ---
 
-        // V1.1 THE HYBRID MATH FORMULA
-        // Stat Gain = ((Current Stat * Gym Percent Rate) + Global Flat Rate) * Total Multiplier * Energy Spent
-        const rawGain = ((currentStat * gymPercentRate) + GLOBAL_FLAT_RATE) * totalMultiplier * energy_spent;
+        // 1. Calculate Base Gain for exactly 1 Energy (Current Stats * Gym Percent) + Flat Rate
+        const baseGain = (currentStat * gymPercentRate) + GLOBAL_FLAT_RATE;
+
+        // 2. Calculate the Extra Perks (Hard-capped at 10% per GDD)
+        let externalBonusPercent = 0.0; // NOTE: Stubbed until Property tables are active.
+        if (externalBonusPercent > 0.10) {
+            externalBonusPercent = 0.10;
+        }
+        const perkBonusAmount = baseGain * externalBonusPercent;
+
+        // 3. Final Gain per Energy
+        const finalGainPerEnergy = baseGain + perkBonusAmount;
+
+        // 4. Multiply by Energy Spent
+        const rawGain = finalGainPerEnergy * energy_spent;
         const totalStatGain = rawGain.toFixed(2);
+
+        // ----------------------------------------------
 
         const playerExpGain = 5 * energy_spent;
         const gymExpGain = 1 * energy_spent;
