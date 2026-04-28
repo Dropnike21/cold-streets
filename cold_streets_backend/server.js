@@ -30,6 +30,39 @@ app.use('/companies', require('./routes/companies'));
 
 
 // --- THE VITAL TICK & WARDEN (Cron Job) ---
+// Runs checks for bankruptcy and processes sales
+setInterval(async () => {
+    try {
+        console.log("🏢 CORPORATE TICK: Checking Runway and Processing Sales...");
+
+        // 1. Bankruptcy Check (GDD SEC 4.B)
+        // If (Bank Funds / Daily Costs) < 1.0, and it's the payout time, deactivate the company.
+        // For now, we flag companies with 0 funds.
+        await pool.query(`
+            UPDATE player_companies
+            SET is_active = false
+            WHERE (bank_dirty + bank_clean) <= 0 AND is_active = true
+        `);
+
+        // 2. Sales & Laundering Simulation
+        // For every active company, simulate 5-10 system customers buying 1 unit of their output.
+        // This converts potential value into direct Clean Cash.
+        const companies = await pool.query("SELECT company_id, product_price FROM player_companies WHERE is_active = true");
+
+        for (let comp of companies.rows) {
+            const customers = Math.floor(Math.random() * 5) + 1; // 1-5 sales per tick for testing
+            const price = parseInt(comp.product_price) || 100;
+            const revenue = Math.floor((customers * price) * 0.90); // 10% "Legitimacy Tax"
+
+            // Move revenue directly to CLEAN bank
+            await pool.query(`
+                UPDATE player_companies
+                SET bank_clean = bank_clean + $1
+                WHERE company_id = $2
+            `, [revenue, comp.company_id]);
+        }
+    } catch (err) { console.error("🔴 CORPORATE TICK ERROR:", err.message); }
+}, 60 * 1000 * 60); // Set to 1 hour for testing, later 24 hours.
 // Runs every 1 minute for testing (Change to 5 minutes for production: 5 * 60 * 1000)
 setInterval(async () => {
     try {

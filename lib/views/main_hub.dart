@@ -15,7 +15,8 @@ import 'events_view.dart';
 import 'credit_broker_view.dart';
 import 'jobs_view.dart';
 import 'city_hall_view.dart';
-import 'company_dashboard_view.dart'; // --- NEW IMPORT ---
+import 'company_dashboard_view.dart';
+import 'company_management_view.dart';// --- NEW IMPORT ---
 
 class MainHub extends StatefulWidget {
   final Map<String, dynamic> userData;
@@ -263,6 +264,14 @@ class _MainHubState extends State<MainHub> {
         userData: widget.userData,
         companyId: _activeCompanyId,
         onBack: () => _navigateTo(8), // Returns to City Hall
+        onManage: () => _navigateTo(12), // Opens Company Management
+      );
+    // --- NEW INDEX FOR COMPANY MANAGEMENT ---
+      case 12: return CompanyManagementView(
+        userData: widget.userData,
+        companyId: _activeCompanyId,
+        onBack: () => _navigateTo(11),
+          onSell: () => _navigateTo(8),// Returns to Company Dashboard
       );
       default: return DashboardView(userData: widget.userData);
     }

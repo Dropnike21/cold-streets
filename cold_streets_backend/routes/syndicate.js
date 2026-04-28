@@ -99,12 +99,43 @@ router.get('/crimes_board/:user_id', async (req, res) => {
         res.status(500).json({ error: "Server error" });
     }
 });
+// --- HELPER: CHECK DOMAIN TRANSFER ---
+async function handleDomainTransfer(client, crew_id, new_domain) {
+    const crewRes = await client.query(
+        "SELECT current_domain, last_transfer_at FROM user_crew WHERE crew_id = $1",
+        [crew_id]
+    );
+    const crew = crewRes.rows[0];
 
+    // If switching domains (e.g., CRIMES -> COMPANY)
+    if (crew.current_domain !== 'IDLE' && crew.current_domain !== new_domain) {
+        const lastMove = new Date(crew.last_transfer_at);
+        const now = new Date();
+        const diffMinutes = (now - lastMove) / (1000 * 60);
+
+        if (diffMinutes < 5) {
+            throw new Error(`Transfer Cooldown: This recruit needs ${Math.ceil(5 - diffMinutes)} more minutes to prep for a new assignment.`);
+        }
+    }
+
+    // Update domain and timestamp only if it's a new domain
+    if (crew.current_domain !== new_domain) {
+        await client.query(
+            "UPDATE user_crew SET current_domain = $1, last_transfer_at = NOW() WHERE crew_id = $2",
+            [new_domain, crew_id]
+        );
+    }
+}
+
+// --- UPDATED ASSIGN JOB (CRIMES) ---
 router.post('/assign_job', async (req, res) => {
     const client = await pool.connect();
     try {
         const { user_id, crew_id, crime_title } = req.body;
         await client.query('BEGIN');
+
+        // Logic check for Domain Transfer
+        await handleDomainTransfer(client, crew_id, 'CRIMES');
 
         await client.query("UPDATE user_crew SET assignment = 'UNASSIGNED' WHERE user_id = $1 AND assignment = $2", [user_id, crime_title]);
         await client.query("UPDATE user_crew SET assignment = $1 WHERE user_id = $2 AND crew_id = $3", [crime_title, user_id, crew_id]);
@@ -113,7 +144,31 @@ router.post('/assign_job', async (req, res) => {
         res.json({ success: true, message: `Assigned to ${crime_title}.` });
     } catch (err) {
         await client.query('ROLLBACK');
-        res.status(500).json({ error: "Server error assigning job." });
+        res.status(403).json({ error: err.message || "Server error assigning job." });
+    } finally {
+        client.release();
+    }
+});
+
+// --- NEW: ASSIGN TO COMPANY (Call this from companies.js or add here) ---
+router.post('/assign_company', async (req, res) => {
+    const client = await pool.connect();
+    try {
+        const { user_id, crew_id, company_id, position_role } = req.body;
+        await client.query('BEGIN');
+
+        await handleDomainTransfer(client, crew_id, 'COMPANY');
+
+        await client.query(
+            "UPDATE user_crew SET assignment = $1 WHERE user_id = $2 AND crew_id = $3",
+            [`Company: ${company_id} (${position_role})`, user_id, crew_id]
+        );
+
+        await client.query('COMMIT');
+        res.json({ success: true, message: "NPC assigned to company." });
+    } catch (err) {
+        await client.query('ROLLBACK');
+        res.status(403).json({ error: err.message });
     } finally {
         client.release();
     }

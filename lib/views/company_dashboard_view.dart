@@ -1,14 +1,20 @@
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
-import 'company_management_view.dart';
 
 class CompanyDashboardView extends StatefulWidget {
   final Map<String, dynamic> userData;
   final int companyId;
   final VoidCallback? onBack;
+  final VoidCallback? onManage;
 
-  const CompanyDashboardView({super.key, required this.userData, required this.companyId, this.onBack});
+  const CompanyDashboardView({
+    super.key,
+    required this.userData,
+    required this.companyId,
+    this.onBack,
+    this.onManage
+  });
 
   @override
   State<CompanyDashboardView> createState() => _CompanyDashboardViewState();
@@ -18,21 +24,19 @@ class _CompanyDashboardViewState extends State<CompanyDashboardView> {
   final String apiUrl = "http://10.0.2.2:3000/companies";
   bool _isLoading = true;
 
+  // Economic Engine Data[cite: 1]
+  double _runway = 99.9;
+  int _totalCosts = 0;
+
   Map<String, dynamic> _company = {};
   List<dynamic> _roster = [];
+  List<dynamic> _logs = [];
+  List<dynamic> _specials = [];
   String _userRole = "Employee";
   int _userSalary = 0;
 
   int _selectedLogTab = 0;
   String _chartFilter = 'All Time';
-
-  final List<Map<String, dynamic>> _companySpecials = [
-    {"star": 1, "name": "Free Samples", "effect": "Gain 1x Random Item", "cost": 5, "is_passive": false},
-    {"star": 3, "name": "Overtime", "effect": "Trade points for Clean Cash", "cost": 10, "is_passive": false},
-    {"star": 5, "name": "Insider Info", "effect": "Boosts Crime Success Rate by 5%", "cost": 0, "is_passive": true},
-    {"star": 7, "name": "Tax Fraud", "effect": "Launder \$10,000 Dirty Cash instantly", "cost": 25, "is_passive": false},
-    {"star": 10, "name": "The Kingpin", "effect": "+10% Max Nerve permanently", "cost": 0, "is_passive": true},
-  ];
 
   final Color neonGreen = const Color(0xFF39FF14);
   final Color matteBlack = const Color(0xFF121212);
@@ -44,6 +48,8 @@ class _CompanyDashboardViewState extends State<CompanyDashboardView> {
     _fetchDashboard();
   }
 
+  // --- API LOGIC ---
+
   Future<void> _fetchDashboard() async {
     try {
       final response = await http.get(Uri.parse('$apiUrl/${widget.companyId}/dashboard/${widget.userData['user_id']}'));
@@ -53,10 +59,16 @@ class _CompanyDashboardViewState extends State<CompanyDashboardView> {
           setState(() {
             _company = data['company'] ?? {};
             _roster = data['roster'] ?? [];
+            _logs = data['logs'] ?? [];
+            _specials = data['specials'] ?? [];
             _userRole = data['user_role'] ?? 'Employee';
 
+            // Economic Logic: Calculate Runway and Burn Rate[cite: 1, 2]
+            _runway = double.tryParse(data['runway_days'].toString()) ?? 99.9;
+            _totalCosts = data['total_daily_costs'] ?? 0;
+
             final myData = _roster.firstWhere((emp) => emp['username'] == widget.userData['username'], orElse: () => <String, dynamic>{});
-            _userSalary = myData.isNotEmpty ? (myData['daily_salary'] as int? ?? 0) : 0;
+            _userSalary = _safeInt(myData['daily_salary']);
 
             _isLoading = false;
           });
@@ -69,16 +81,35 @@ class _CompanyDashboardViewState extends State<CompanyDashboardView> {
     }
   }
 
+  // --- HELPER METHODS ---
+
+  String _formatDate(String isoString) {
+    try {
+      DateTime dt = DateTime.parse(isoString).toLocal();
+      String month = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][dt.month - 1];
+      String day = dt.day.toString().padLeft(2, '0');
+      int hour = dt.hour;
+      String period = hour >= 12 ? 'PM' : 'AM';
+      if (hour == 0) hour = 12;
+      if (hour > 12) hour -= 12;
+      return "$month $day, ${hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')} $period";
+    } catch (e) { return isoString; }
+  }
+
   String _formatNumber(dynamic amount) {
-    int val = amount is int ? amount : int.tryParse(amount.toString()) ?? 0;
+    int val = _safeInt(amount);
     return val.toString().replaceAllMapped(RegExp(r'(\d{1,3})(?=(\d{3})+(?!\d))'), (Match m) => '${m[1]},');
   }
 
   int _safeInt(dynamic val, {int fallback = 0}) {
     if (val == null) return fallback;
     if (val is int) return val;
-    return int.tryParse(val.toString()) ?? fallback;
+    if (val is double) return val.toInt();
+    // Handles string decimals like "5.0" common in PostgreSQL output[cite: 5]
+    return (double.tryParse(val.toString()) ?? fallback.toDouble()).toInt();
   }
+
+  // --- UI COMPONENTS ---
 
   @override
   Widget build(BuildContext context) {
@@ -86,8 +117,12 @@ class _CompanyDashboardViewState extends State<CompanyDashboardView> {
 
     String headerName = (_company['company_name'] ?? "ENTERPRISE").toString().toUpperCase();
 
+    // Bulletproof Director Check[cite: 5]
+    bool isDirector = (_userRole.toString().trim().toLowerCase() == 'director') ||
+        (_company['owner_id']?.toString() == widget.userData['user_id'].toString());
+
     return DefaultTabController(
-      length: 2, // Only 2 tabs for public view
+      length: 2,
       child: Scaffold(
         backgroundColor: matteBlack,
         appBar: AppBar(
@@ -97,15 +132,14 @@ class _CompanyDashboardViewState extends State<CompanyDashboardView> {
           title: Text(headerName, style: TextStyle(color: neonGreen, fontSize: 16, fontWeight: FontWeight.w900, letterSpacing: 2)),
           actions: [
             // --- THE DIRECTOR'S SETTINGS GEAR ---
-            if (_userRole == 'Director')
+            if (isDirector)
               IconButton(
                 icon: const Icon(Icons.settings, color: Colors.cyanAccent),
                 tooltip: "Manage Enterprise",
                 onPressed: () {
-                  Navigator.push(
-                      context,
-                      MaterialPageRoute(builder: (context) => CompanyManagementView(userData: widget.userData, companyId: widget.companyId))
-                  ).then((_) => _fetchDashboard()); // Refresh state when closing management screen
+                  if (widget.onManage != null) {
+                    widget.onManage!();
+                  }
                 },
               ),
             const SizedBox(width: 8),
@@ -133,6 +167,7 @@ class _CompanyDashboardViewState extends State<CompanyDashboardView> {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           _buildCompanyHeader(),
+          _buildRunwayInfo(), // Dynamic Bankruptcy Indicator[cite: 1]
           const SizedBox(height: 16),
           _buildCompanyDetailsGrid(),
           const SizedBox(height: 16),
@@ -141,9 +176,9 @@ class _CompanyDashboardViewState extends State<CompanyDashboardView> {
           // --- INCOME CHART MOVED HERE ---
           _buildIncomeChartView(),
           const SizedBox(height: 16),
-          _buildCompanySpecials(),
+          _buildCompanySpecials(), // Dynamic Specials from Database[cite: 2]
           const SizedBox(height: 16),
-          _buildEventLogs(),
+          _buildEventLogs(), // Dynamic Logs from Database[cite: 2]
           const SizedBox(height: 40),
         ],
       ),
@@ -151,8 +186,8 @@ class _CompanyDashboardViewState extends State<CompanyDashboardView> {
   }
 
   Widget _buildCompanyHeader() {
-    int pop = _safeInt(_company['popularity'], fallback: 65);
-    int eff = _safeInt(_company['efficiency'], fallback: 82);
+    int pop = _safeInt(_company['popularity'], fallback: 0);
+    int eff = _safeInt(_company['efficiency'], fallback: 0);
     int env = _safeInt(_company['environment'], fallback: 100);
 
     String industryStr = (_company['industry_type'] ?? "Unknown").toString();
@@ -192,6 +227,34 @@ class _CompanyDashboardViewState extends State<CompanyDashboardView> {
     );
   }
 
+  Widget _buildRunwayInfo() {
+    // Hide completely if there are more than 7 days left.
+    if (_runway > 7.0) {
+      return const SizedBox.shrink();
+    }
+
+    // GDD SEC 4.B: Visualizes the 2.0-day fail-safe[cite: 1]
+    Color runwayColor = _runway < 2.0 ? Colors.redAccent : (_runway < 5.0 ? Colors.orangeAccent : neonGreen);
+
+    return Container(
+      width: double.infinity,
+      margin: const EdgeInsets.only(top: 16),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: runwayColor.withOpacity(0.05),
+        border: Border.all(color: runwayColor.withOpacity(0.3)),
+        borderRadius: BorderRadius.circular(4),
+      ),
+      child: Column(
+        children: [
+          const Text("BANKRUPTCY RUNWAY", style: TextStyle(color: Colors.white54, fontSize: 8, fontWeight: FontWeight.bold)),
+          Text("${_runway} DAYS", style: TextStyle(color: runwayColor, fontSize: 20, fontWeight: FontWeight.w900)),
+          Text("Daily Burn Rate: \$${_formatNumber(_totalCosts)}", style: const TextStyle(color: Colors.white38, fontSize: 9)),
+        ],
+      ),
+    );
+  }
+
   Widget _buildCompanyDetailsGrid() {
     int dailyInc = _safeInt(_company['daily_income'], fallback: 67481250);
     int weeklyInc = _safeInt(_company['weekly_income'], fallback: 462605700);
@@ -203,7 +266,6 @@ class _CompanyDashboardViewState extends State<CompanyDashboardView> {
     int stars = _safeInt(_company['star_rating'], fallback: 0);
     int maxEmps = _safeInt(_company['max_employees'], fallback: 4);
 
-    String industryStr = (_company['industry_type'] ?? "Unknown").toString();
     String director = "Unknown";
     try {
       final dirData = _roster.firstWhere((e) => e['position_role'] == 'Director');
@@ -226,10 +288,8 @@ class _CompanyDashboardViewState extends State<CompanyDashboardView> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    _buildCompactDetail("Type:", industryStr),
                     _buildCompactDetail("Director:", director),
                     _buildCompactDetail("Employees:", "${_roster.length} / $maxEmps"),
-                    const SizedBox(height: 6),
                     _buildCompactDetail("Bank (Clean):", "\$${_formatNumber(_company['bank_clean'])}", valColor: Colors.white),
                     _buildCompactDetail("Bank (Dirty):", "\$${_formatNumber(_company['bank_dirty'])}", valColor: neonGreen),
                     _buildCompactDetail("Daily Upkeep:", "-\$${_formatNumber(_company['daily_upkeep'])}", valColor: Colors.redAccent),
@@ -257,7 +317,7 @@ class _CompanyDashboardViewState extends State<CompanyDashboardView> {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     _buildCompactDetail("Age:", "$age Days"),
-                    _buildCompactDetail("Trains:", "$trains / $maxTrains"),
+                    _buildCompactDetail("Trains:", "$trains / $maxTrains", valColor: Colors.cyanAccent),
                     const SizedBox(height: 6),
                     const Text("Rating:", style: TextStyle(color: Colors.white54, fontSize: 9)),
                     Row(
@@ -377,24 +437,9 @@ class _CompanyDashboardViewState extends State<CompanyDashboardView> {
           ),
           const SizedBox(height: 8),
           Container(
-            height: 150, width: double.infinity,
-            padding: const EdgeInsets.all(8),
-            decoration: BoxDecoration(color: matteBlack, border: Border.all(color: const Color(0xFF333333)), borderRadius: BorderRadius.circular(4)),
-            child: Row(
-              crossAxisAlignment: CrossAxisAlignment.end,
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: List.generate(7, (index) {
-                double heightRatio = (index + 1) * 0.12 + 0.1;
-                return Column(
-                  mainAxisAlignment: MainAxisAlignment.end,
-                  children: [
-                    Container(width: 20, height: 110 * heightRatio, color: Colors.greenAccent.withValues(alpha: 0.8)),
-                    const SizedBox(height: 4),
-                    Text("Day ${index+1}", style: const TextStyle(color: Colors.white38, fontSize: 8)),
-                  ],
-                );
-              }),
-            ),
+            height: 120, width: double.infinity,
+            decoration: BoxDecoration(color: matteBlack, borderRadius: BorderRadius.circular(4)),
+            child: const Center(child: Text("Live Charting Module Coming Soon", style: TextStyle(color: Colors.white24, fontSize: 10))),
           ),
         ],
       ),
@@ -402,7 +447,7 @@ class _CompanyDashboardViewState extends State<CompanyDashboardView> {
   }
 
   Widget _buildCompanySpecials() {
-    int currentStars = _safeInt(_company['star_rating'], fallback: 0);
+    int currentStars = _safeInt(_company['star_rating']);
 
     return Container(
       decoration: BoxDecoration(color: darkSurface, border: Border.all(color: const Color(0xFF333333)), borderRadius: BorderRadius.circular(4)),
@@ -413,10 +458,11 @@ class _CompanyDashboardViewState extends State<CompanyDashboardView> {
             width: double.infinity, padding: const EdgeInsets.all(12), color: const Color(0xFF1A1A1A),
             child: const Text("COMPANY SPECIALS", style: TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.bold, letterSpacing: 1)),
           ),
-          ..._companySpecials.map((special) {
-            int reqStars = special['star'] as int;
-            bool isUnlocked = currentStars >= reqStars;
-            bool isPassive = special['is_passive'] as bool;
+          if (_specials.isEmpty)
+            const Padding(padding: EdgeInsets.all(16), child: Text("No records found.", style: TextStyle(color: Colors.white24))),
+          ..._specials.map((special) {
+            bool isUnlocked = currentStars >= _safeInt(special['star']);
+            bool isPassive = special['is_passive'] ?? false;
 
             return Container(
               padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
@@ -428,7 +474,7 @@ class _CompanyDashboardViewState extends State<CompanyDashboardView> {
                     child: Column(
                       children: [
                         Icon(isUnlocked ? Icons.star : Icons.lock, color: isUnlocked ? Colors.amberAccent : Colors.white24, size: 14),
-                        Text("$reqStars", style: TextStyle(color: isUnlocked ? Colors.amberAccent : Colors.white24, fontSize: 10, fontWeight: FontWeight.bold)),
+                        Text("${special['star']}", style: TextStyle(color: isUnlocked ? Colors.amberAccent : Colors.white24, fontSize: 10, fontWeight: FontWeight.bold)),
                       ],
                     ),
                   ),
@@ -437,15 +483,15 @@ class _CompanyDashboardViewState extends State<CompanyDashboardView> {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Text(special['name'].toString(), style: TextStyle(color: isUnlocked ? (isPassive ? Colors.cyanAccent : neonGreen) : Colors.white54, fontSize: 11, fontWeight: FontWeight.bold)),
+                        Text(special['name'].toString(), style: TextStyle(color: isUnlocked ? neonGreen : Colors.white54, fontSize: 11, fontWeight: FontWeight.bold)),
                         const SizedBox(height: 2),
-                        Text(special['effect'].toString(), style: TextStyle(color: isUnlocked ? Colors.white70 : Colors.white38, fontSize: 10)),
+                        Text(special['effect'].toString(), style: const TextStyle(color: Colors.white38, fontSize: 10)),
                       ],
                     ),
                   ),
                   if (isUnlocked && !isPassive)
                     ElevatedButton(
-                      onPressed: () {},
+                      onPressed: () {}, // Backend execution logic goes here later
                       style: ElevatedButton.styleFrom(backgroundColor: matteBlack, side: const BorderSide(color: Colors.white24), padding: const EdgeInsets.symmetric(horizontal: 8), minimumSize: const Size(50, 26)),
                       child: Text("${special['cost']} JP", style: const TextStyle(color: Colors.amberAccent, fontSize: 9, fontWeight: FontWeight.bold)),
                     )
@@ -461,6 +507,15 @@ class _CompanyDashboardViewState extends State<CompanyDashboardView> {
   }
 
   Widget _buildEventLogs() {
+    // Dynamic event logs pulling from database[cite: 2]
+    List<dynamic> filteredLogs = _logs.where((log) {
+      if (_selectedLogTab == 0) return true; // MAIN
+      if (_selectedLogTab == 1 && log['log_type'] == 'FUNDS') return true;
+      if (_selectedLogTab == 2 && log['log_type'] == 'TRAINING') return true;
+      if (_selectedLogTab == 3 && log['log_type'] == 'STAFF') return true;
+      return false;
+    }).toList();
+
     return Container(
       decoration: BoxDecoration(color: darkSurface, border: Border.all(color: const Color(0xFF333333)), borderRadius: BorderRadius.circular(4)),
       child: Column(
@@ -479,16 +534,28 @@ class _CompanyDashboardViewState extends State<CompanyDashboardView> {
           Container(
             height: 200,
             padding: const EdgeInsets.all(12),
-            child: ListView(
-              children: [
-                _buildLogItem("2026-10-24 14:02", "Company incorporated by ${_roster.isNotEmpty ? _roster[0]['username'] : 'Director'}."),
-                if (_selectedLogTab == 0 || _selectedLogTab == 1)
-                  _buildLogItem("2026-10-25 00:00", "Daily income of \$67,481,250 deposited to Bank (Clean).", color: Colors.greenAccent),
-                if (_selectedLogTab == 0 || _selectedLogTab == 3)
-                  _buildLogItem("2026-10-25 09:15", "New employee hired: StreetThug99.", color: Colors.cyanAccent),
-                if (_selectedLogTab == 0 || _selectedLogTab == 2)
-                  _buildLogItem("2026-10-26 11:30", "Director trained StreetThug99. Effectiveness increased.", color: Colors.amberAccent),
-              ],
+            child: filteredLogs.isEmpty
+                ? const Center(child: Text("No records found.", style: TextStyle(color: Colors.white24)))
+                : ListView.builder(
+              itemCount: filteredLogs.length,
+              itemBuilder: (context, index) {
+                var log = filteredLogs[index];
+                Color logColor = Colors.white70;
+                if (log['log_type'] == 'FUNDS') logColor = Colors.greenAccent;
+                if (log['log_type'] == 'STAFF') logColor = Colors.cyanAccent;
+                if (log['log_type'] == 'TRAINING') logColor = Colors.amberAccent;
+
+                return Padding(
+                  padding: const EdgeInsets.only(bottom: 8.0),
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text("[${_formatDate(log['created_at'])}] ", style: const TextStyle(color: Colors.white38, fontSize: 9)),
+                      Expanded(child: Text(log['log_text'].toString(), style: TextStyle(color: logColor, fontSize: 10))),
+                    ],
+                  ),
+                );
+              },
             ),
           )
         ],
@@ -510,19 +577,6 @@ class _CompanyDashboardViewState extends State<CompanyDashboardView> {
     );
   }
 
-  Widget _buildLogItem(String timestamp, String message, {Color color = Colors.white70}) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 8.0),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text("[$timestamp] ", style: const TextStyle(color: Colors.white38, fontSize: 9)),
-          Expanded(child: Text(message, style: TextStyle(color: color, fontSize: 10))),
-        ],
-      ),
-    );
-  }
-
   Widget _buildAffiliationsTab() {
     return Center(
       child: Column(
@@ -536,7 +590,7 @@ class _CompanyDashboardViewState extends State<CompanyDashboardView> {
           const SizedBox(height: 24),
           ElevatedButton(
             onPressed: () {},
-            style: ElevatedButton.styleFrom(backgroundColor: matteBlack, side: BorderSide(color: neonGreen.withValues(alpha: 0.5))),
+            style: ElevatedButton.styleFrom(backgroundColor: matteBlack, side: BorderSide(color: neonGreen.withOpacity(0.5))),
             child: Text("VIEW FACTIONS", style: TextStyle(color: neonGreen, fontSize: 11, fontWeight: FontWeight.bold)),
           )
         ],
