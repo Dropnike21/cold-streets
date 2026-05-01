@@ -266,11 +266,8 @@ class _CompanyDashboardViewState extends State<CompanyDashboardView> {
     int stars = _safeInt(_company['star_rating'], fallback: 0);
     int maxEmps = _safeInt(_company['max_employees'], fallback: 4);
 
-    String director = "Unknown";
-    try {
-      final dirData = _roster.firstWhere((e) => e['position_role'] == 'Director');
-      director = (dirData['username'] ?? "Unknown").toString();
-    } catch (e) {}
+    // Completely bypasses the roster scan and pulls directly from the company data!
+    String director = (_company['owner_name'] ?? "Unknown").toString();
 
     return Container(
       padding: const EdgeInsets.all(12),

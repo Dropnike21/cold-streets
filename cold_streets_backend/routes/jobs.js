@@ -16,15 +16,90 @@ const JOB_SPECIALS = {
     // Future jobs can be mapped here (Job 2: Police, Job 3: Bank)
 };
 
-// --- 1. GET JOB DASHBOARD ---
+// --- 1. GET JOB DASHBOARD (UNIFIED EMPLOYMENT STATUS & DYNAMIC KIOSK DATA) ---
 router.get('/:user_id', async (req, res) => {
     try {
         const { user_id } = req.params;
 
+        // 1. Fetch City Job Status
         const userRes = await pool.query('SELECT current_job_id, daily_job_claimed_at FROM users WHERE user_id = $1', [user_id]);
         if (userRes.rows.length === 0) return res.status(404).json({ error: "User not found." });
         const user = userRes.rows[0];
 
+        // 2. Fetch Player Company Status
+        const compRes = await pool.query(`
+            SELECT ce.company_id, pc.company_name, ce.position_role
+            FROM company_employees ce
+            JOIN player_companies pc ON ce.company_id = pc.company_id
+            WHERE ce.employee_id = $1 AND ce.is_npc = false
+        `, [user_id]);
+
+        let privateEmployment = null;
+        if (compRes.rows.length > 0) {
+            privateEmployment = {
+                company_id: compRes.rows[0].company_id,
+                company_name: compRes.rows[0].company_name,
+                role: compRes.rows[0].position_role
+            };
+        }
+
+        // 3. Fetch Master Job Data
+        const jobsRes = await pool.query('SELECT * FROM jobs_master ORDER BY job_id ASC');
+        const ranksRes = await pool.query('SELECT * FROM job_ranks ORDER BY job_id ASC, rank_level ASC');
+        const jobDataRes = await pool.query('SELECT * FROM user_job_data WHERE user_id = $1', [user_id]);
+
+        const userJobs = jobDataRes.rows;
+
+        // 4. Map everything together dynamically
+        const mappedJobs = jobsRes.rows.map(job => {
+            const uData = userJobs.find(uj => uj.job_id === job.job_id);
+
+            // Filter ranks for this specific job
+            const jobRanks = ranksRes.rows.filter(r => r.job_id === job.job_id).map(rank => {
+                // Attach the hardcoded server special to the dynamic rank data
+                const specialData = (JOB_SPECIALS[job.job_id] && JOB_SPECIALS[job.job_id][rank.rank_level])
+                    ? JOB_SPECIALS[job.job_id][rank.rank_level]
+                    : { name: "None", effect: "No special available.", cost: 0, is_passive: true };
+
+                return {
+                    rank_level: rank.rank_level,
+                    title: rank.title,
+                    daily_pay: rank.daily_pay,
+                    daily_incentives: rank.daily_incentives,
+                    stat_req_value: rank.stat_req_value,
+                    promotion_cost: rank.promotion_incentive_cost,
+                    special: specialData
+                };
+            });
+
+            return {
+                job_id: job.job_id,
+                job_name: job.job_name,
+                primary_stat: job.primary_stat,
+                mastery_passive: job.mastery_passive_desc,
+                mastery_active: job.mastery_active_desc,
+                is_current: user.current_job_id === job.job_id,
+                current_rank: uData ? uData.current_rank : 1,
+                incentive_balance: uData ? uData.incentive_balance : 0,
+                is_mastered: uData ? uData.is_mastered : false,
+                ban_expiry: uData ? uData.ban_expiry : null,
+                ranks: jobRanks // <-- NEW: Passes all rank data dynamically
+            };
+        });
+
+        res.json({
+            success: true,
+            current_job_id: user.current_job_id,
+            last_claimed: user.daily_job_claimed_at,
+            private_employment: privateEmployment,
+            jobs: mappedJobs
+        });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ error: "Server error fetching jobs dashboard." });
+    }
+});
+        // 3. Fetch City Jobs List
         const jobsRes = await pool.query('SELECT * FROM jobs_master ORDER BY job_id ASC');
         const jobDataRes = await pool.query('SELECT * FROM user_job_data WHERE user_id = $1', [user_id]);
         const userJobs = jobDataRes.rows;
@@ -45,10 +120,12 @@ router.get('/:user_id', async (req, res) => {
             };
         });
 
+        // Send back the Unified Status
         res.json({
             success: true,
             current_job_id: user.current_job_id,
             last_claimed: user.daily_job_claimed_at,
+            private_employment: privateEmployment, // <-- NEW: Tells the Info Broker if they are in a player company
             jobs: mappedJobs
         });
     } catch (err) {
@@ -61,6 +138,17 @@ router.get('/:user_id', async (req, res) => {
 router.get('/interview/:job_id/:user_id', async (req, res) => {
     try {
         const { job_id, user_id } = req.params;
+
+        // 1. GATEKEEPER PRE-CHECK: Don't even let them interview if they work for a company
+        const compCheck = await pool.query('SELECT position_role FROM company_employees WHERE employee_id = $1 AND is_npc = false', [user_id]);
+        if (compCheck.rows.length > 0) {
+            const role = compCheck.rows[0].position_role;
+            if (role === 'Director') {
+                return res.status(403).json({ error: "Directors cannot work City Jobs. You must liquidate your assets or transfer ownership first." });
+            } else {
+                return res.status(403).json({ error: "You are currently employed in the private sector. Resign from your company before working for the city." });
+            }
+        }
 
         const banCheck = await pool.query('SELECT ban_expiry FROM user_job_data WHERE user_id = $1 AND job_id = $2', [user_id, job_id]);
         if (banCheck.rows.length > 0 && banCheck.rows[0].ban_expiry) {
@@ -93,6 +181,19 @@ router.post('/interview/submit', async (req, res) => {
 
     try {
         await client.query('BEGIN');
+
+        // 1. GATEKEEPER 1: Verify they didn't get hired somewhere else while taking the test
+        const userCheck = await client.query('SELECT current_job_id FROM users WHERE user_id = $1 FOR UPDATE', [user_id]);
+        if (userCheck.rows[0].current_job_id !== null) {
+            throw new Error("You must resign from your current City Job before accepting this offer.");
+        }
+
+        // 2. GATEKEEPER 2: Verify they didn't join a company while taking the test
+        const compCheck = await client.query('SELECT position_role FROM company_employees WHERE employee_id = $1 AND is_npc = false', [user_id]);
+        if (compCheck.rows.length > 0) {
+            throw new Error("You accepted a job in the private sector. We are rescinding this City Job offer.");
+        }
+
         let correctCount = 0;
 
         for (let ans of answers) {

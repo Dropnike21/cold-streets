@@ -16,7 +16,8 @@ import 'credit_broker_view.dart';
 import 'jobs_view.dart';
 import 'city_hall_view.dart';
 import 'company_dashboard_view.dart';
-import 'company_management_view.dart';// --- NEW IMPORT ---
+import 'company_management_view.dart';
+import 'info_broker_view.dart';
 
 class MainHub extends StatefulWidget {
   final Map<String, dynamic> userData;
@@ -50,6 +51,7 @@ class _MainHubState extends State<MainHub> {
   int _selectedIndex = 0;
   int _bottomNavIndex = 0;
   int _activeCompanyId = 0; // Tracks which company to show in dashboard
+  int _infoBrokerTabIndex = 0; // --- ADDED: Tracks which tab to open in Info Broker ---
 
   Timer? _syncTimer;
   Timer? _countdownTimer;
@@ -247,7 +249,17 @@ class _MainHubState extends State<MainHub> {
       case 4: return InventoryView(userData: widget.userData, onStateChange: _updateUserStats);
       case 5: return GymView(userData: widget.userData, onStateChange: _updateUserStats);
       case 6: return CreditBrokerView(userData: widget.userData);
-      case 7: return JobsView(userData: widget.userData, onStateChange: _updateUserStats);
+
+    // --- UPDATED: JobsView with Back Callback ---
+      case 7: return JobsView(
+        userData: widget.userData,
+        onStateChange: _updateUserStats,
+        onBack: () {
+          setState(() => _infoBrokerTabIndex = 2); // Set Info Broker to open on Careers tab
+          _navigateTo(13);
+        },
+      );
+
       case 8: return CityHallView(
         userData: widget.userData,
         onStateChange: _updateUserStats,
@@ -266,12 +278,23 @@ class _MainHubState extends State<MainHub> {
         onBack: () => _navigateTo(8), // Returns to City Hall
         onManage: () => _navigateTo(12), // Opens Company Management
       );
-    // --- NEW INDEX FOR COMPANY MANAGEMENT ---
       case 12: return CompanyManagementView(
         userData: widget.userData,
         companyId: _activeCompanyId,
         onBack: () => _navigateTo(11),
-          onSell: () => _navigateTo(8),// Returns to Company Dashboard
+        onSell: () => _navigateTo(8),// Returns to Company Dashboard
+      );
+
+    // --- UPDATED: InfoBrokerView with key and tab state ---
+      case 13: return InfoBrokerView(
+        key: ValueKey(_infoBrokerTabIndex), // Forces widget to rebuild when tab index changes
+        userData: widget.userData,
+        onStateChange: _updateUserStats,
+        initialTabIndex: _infoBrokerTabIndex,
+        onNavigate: (index) {
+          setState(() => _infoBrokerTabIndex = 0); // Reset for next time
+          _navigateTo(index);
+        },
       );
       default: return DashboardView(userData: widget.userData);
     }
@@ -499,12 +522,16 @@ class _MainHubState extends State<MainHub> {
                   _buildDistrictAccordion(
                       title: "CIVIC CENTER",
                       children: [
-                        _buildMenuTile(icon: Icons.newspaper, color: Colors.white, title: "Info Broker", onTap: () {}),
+                        _buildMenuTile(
+                            icon: Icons.newspaper,
+                            color: Colors.white,
+                            title: "Info Broker",
+                            onTap: () {
+                              Navigator.pop(context);
+                              _navigateTo(13);
+                            }
+                        ),
                         _buildMenuTile(icon: Icons.school, color: Colors.lightBlueAccent, title: "University", onTap: () {}),
-                        _buildMenuTile(icon: Icons.work, color: Colors.tealAccent, title: "Career Center", onTap: () {
-                          Navigator.pop(context);
-                          _navigateTo(7);
-                        }),
                         _buildMenuTile(icon: Icons.gavel, color: Colors.grey, title: "State Jail", onTap: () {}),
                         _buildMenuTile(icon: Icons.location_city, color: Colors.deepPurpleAccent, title: "City Hall", onTap: () {
                           Navigator.pop(context);

@@ -7,8 +7,16 @@ import 'dart:math';
 class JobsView extends StatefulWidget {
   final Map<String, dynamic> userData;
   final Function(Map<String, dynamic>) onStateChange;
+  final VoidCallback? onBack;
+  final int? viewingJobId; // <-- NEW: Tells the view what the player wants to look at
 
-  const JobsView({super.key, required this.userData, required this.onStateChange});
+  const JobsView({
+    super.key,
+    required this.userData,
+    required this.onStateChange,
+    this.onBack,
+    this.viewingJobId, // <-- NEW
+  });
 
   @override
   State<JobsView> createState() => _JobsViewState();
@@ -22,6 +30,7 @@ class _JobsViewState extends State<JobsView> {
 
   int? _currentJobId;
   String? _lastClaimed;
+  Map<String, dynamic>? _privateEmployment; // <-- Unified Status
   List<Map<String, dynamic>> _jobs = [];
 
   bool _isInterviewing = false;
@@ -29,75 +38,17 @@ class _JobsViewState extends State<JobsView> {
   List<dynamic> _interviewQuestions = [];
   Map<int, int> _selectedAnswers = {};
 
-  bool _skimActive = false;
-  Timer? _skimTimer;
-
   final Color neonGreen = const Color(0xFF39FF14);
   final Color matteBlack = const Color(0xFF121212);
   final Color darkSurface = const Color(0xFF1E1E1E);
-
-  // --- STATIC RANK DATA (Torn-Style with Specials) ---
-  final Map<int, List<Map<String, dynamic>>> _rankData = {
-    1: [ // City Hospital
-      {
-        "rank": 1, "title": "Hospital Janitor", "pay": 45, "daily_inc": 1, "cost": 0,
-        "req": {"acu": 0, "ops": 0, "pre": 0, "res": 0},
-        "gain": {"acu": 3, "ops": 2, "pre": 1, "res": 2},
-        "special": {"name": "Scavenge", "effect": "Gain 1x Bandage", "cost": 10, "is_passive": false}
-      },
-      {
-        "rank": 2, "title": "Orderly", "pay": 120, "daily_inc": 2, "cost": 15,
-        "req": {"acu": 60, "ops": 40, "pre": 20, "res": 40},
-        "gain": {"acu": 8, "ops": 4, "pre": 2, "res": 5},
-        "special": {"name": "First Aid", "effect": "Heals 15 HP", "cost": 5, "is_passive": false}
-      },
-      {
-        "rank": 3, "title": "Paramedic", "pay": 350, "daily_inc": 3, "cost": 40,
-        "req": {"acu": 250, "ops": 150, "pre": 100, "res": 200},
-        "gain": {"acu": 15, "ops": 10, "pre": 5, "res": 12},
-        "special": {"name": "Medical Training", "effect": "+10% Medical Item Effectiveness", "cost": 0, "is_passive": true}
-      },
-      {
-        "rank": 4, "title": "Resident", "pay": 1200, "daily_inc": 4, "cost": 100,
-        "req": {"acu": 1000, "ops": 800, "pre": 500, "res": 800},
-        "gain": {"acu": 30, "ops": 20, "pre": 10, "res": 25},
-        "special": {"name": "Pharmacy Access", "effect": "Gain 1x Morphine", "cost": 25, "is_passive": false}
-      },
-      {
-        "rank": 5, "title": "Chief of Surgery", "pay": 4500, "daily_inc": 5, "cost": 250,
-        "req": {"acu": 3500, "ops": 2000, "pre": 1500, "res": 2500},
-        "gain": {"acu": 50, "ops": 35, "pre": 20, "res": 45},
-        "special": {"name": "Revive", "effect": "Revive someone from the hospital", "cost": 50, "is_passive": false}
-      },
-    ],
-  };
 
   @override
   void initState() {
     super.initState();
     _fetchJobsDashboard();
-    _startSkimTimer();
-  }
-
-  @override
-  void dispose() {
-    _skimTimer?.cancel();
-    super.dispose();
-  }
-
-  void _startSkimTimer() {
-    final randomSeconds = Random().nextInt(1020) + 180;
-    _skimTimer = Timer(Duration(seconds: randomSeconds), () {
-      if (mounted) setState(() => _skimActive = true);
-    });
   }
 
   int _parseSafeInt(dynamic value) => (value is int) ? value : int.tryParse(value?.toString() ?? '0') ?? 0;
-
-  int _getCurrentRank() {
-    final activeJob = _jobs.firstWhere((j) => j['job_id'] == _currentJobId, orElse: () => {});
-    return activeJob.isNotEmpty ? (activeJob['current_rank'] ?? 1) : 1;
-  }
 
   Future<void> _fetchJobsDashboard() async {
     try {
@@ -108,6 +59,7 @@ class _JobsViewState extends State<JobsView> {
           setState(() {
             _currentJobId = data['current_job_id'];
             _lastClaimed = data['last_claimed'];
+            _privateEmployment = data['private_employment']; // Unified check
             _jobs = List<Map<String, dynamic>>.from(data['jobs']);
             _isLoading = false;
           });
@@ -179,10 +131,7 @@ class _JobsViewState extends State<JobsView> {
     try {
       final response = await http.post(Uri.parse('$apiUrl/quit'),
           headers: {"Content-Type": "application/json"},
-          body: jsonEncode({
-            "user_id": widget.userData['user_id'],
-            "exit_type": exitType
-          }));
+          body: jsonEncode({"user_id": widget.userData['user_id'], "exit_type": exitType}));
       final data = jsonDecode(response.body);
 
       if (response.statusCode == 200) {
@@ -206,7 +155,6 @@ class _JobsViewState extends State<JobsView> {
 
   void _showResignationDialog(int currentRank) {
     int heistPayout = currentRank * 10000;
-
     showDialog(
         context: context,
         builder: (BuildContext ctx) {
@@ -220,14 +168,10 @@ class _JobsViewState extends State<JobsView> {
               children: [
                 const Text("How do you want to leave?", style: TextStyle(color: Colors.white, fontSize: 12)),
                 const SizedBox(height: 20),
-
                 SizedBox(
                   width: double.infinity,
                   child: ElevatedButton(
-                    onPressed: () {
-                      Navigator.pop(ctx);
-                      _quitJob('clean');
-                    },
+                    onPressed: () { Navigator.pop(ctx); _quitJob('clean'); },
                     style: ElevatedButton.styleFrom(backgroundColor: matteBlack, side: const BorderSide(color: Colors.white24)),
                     child: const Padding(
                       padding: EdgeInsets.symmetric(vertical: 12.0),
@@ -236,7 +180,7 @@ class _JobsViewState extends State<JobsView> {
                         children: [
                           Text("CLEAN EXIT", style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 12)),
                           SizedBox(height: 4),
-                          Text("Put in your two weeks. 50% of your unspent Job Points will be saved if you ever return to this company.", style: TextStyle(color: Colors.white54, fontSize: 10)),
+                          Text("Put in your two weeks. 50% of your unspent Job Points will be saved.", style: TextStyle(color: Colors.white54, fontSize: 10)),
                         ],
                       ),
                     ),
@@ -246,10 +190,7 @@ class _JobsViewState extends State<JobsView> {
                 SizedBox(
                   width: double.infinity,
                   child: ElevatedButton(
-                    onPressed: () {
-                      Navigator.pop(ctx);
-                      _quitJob('heist');
-                    },
+                    onPressed: () { Navigator.pop(ctx); _quitJob('heist'); },
                     style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent.withOpacity(0.1), side: const BorderSide(color: Colors.redAccent)),
                     child: Padding(
                       padding: const EdgeInsets.symmetric(vertical: 12.0),
@@ -258,7 +199,7 @@ class _JobsViewState extends State<JobsView> {
                         children: [
                           Text("THE FINAL HEIST", style: TextStyle(color: Colors.redAccent, fontWeight: FontWeight.bold, fontSize: 12)),
                           const SizedBox(height: 4),
-                          Text("Burn it to the ground. Steal \$${_formatNumber(heistPayout)} Dirty Cash. Lose all Job Points, gain MAX HEAT, and catch a 30-Day Ban.", style: const TextStyle(color: Colors.redAccent, fontSize: 10)),
+                          Text("Steal \$${_formatNumber(heistPayout)} Dirty Cash. Lose all Job Points, gain MAX HEAT, and catch a 30-Day Ban.", style: const TextStyle(color: Colors.redAccent, fontSize: 10)),
                         ],
                       ),
                     ),
@@ -266,17 +207,14 @@ class _JobsViewState extends State<JobsView> {
                 ),
               ],
             ),
-            actions: [
-              TextButton(onPressed: () => Navigator.pop(ctx), child: const Text("CANCEL", style: TextStyle(color: Colors.white54)))
-            ],
+            actions: [TextButton(onPressed: () => Navigator.pop(ctx), child: const Text("CANCEL", style: TextStyle(color: Colors.white54)))],
           );
         }
     );
   }
 
-  // --- JOB SPECIALS BOTTOM SHEET (TORN STYLE WIRED TO API) ---
   void _openSpecialExchangeSheet(Map<String, dynamic> special, int currentIncentives) {
-    if (special['is_passive']) return;
+    if (special['is_passive'] == true) return;
     final TextEditingController amountController = TextEditingController(text: "1");
 
     showModalBottomSheet(
@@ -322,34 +260,25 @@ class _JobsViewState extends State<JobsView> {
                           int amount = int.tryParse(amountController.text) ?? 0;
                           int totalCost = amount * (special['cost'] as int);
 
-                          if (amount <= 0) { Navigator.pop(ctx); _showSnackbar("Invalid amount entered.", isError: true); return; }
-                          if (currentIncentives < totalCost) { Navigator.pop(ctx); _showSnackbar("You need $totalCost Job Points to do this.", isError: true); return; }
+                          if (amount <= 0) { Navigator.pop(ctx); _showSnackbar("Invalid amount.", isError: true); return; }
+                          if (currentIncentives < totalCost) { Navigator.pop(ctx); _showSnackbar("You need $totalCost Job Points.", isError: true); return; }
 
-                          // Close Bottom Sheet first
                           Navigator.pop(ctx);
-
-                          // Execute the API Call
                           setState(() => _isProcessing = true);
                           try {
                             final response = await http.post(Uri.parse('$apiUrl/exchange'),
                                 headers: {"Content-Type": "application/json"},
                                 body: jsonEncode({"user_id": widget.userData['user_id'], "amount": amount}));
-
                             final data = jsonDecode(response.body);
-
                             if (response.statusCode == 200) {
                               _showSnackbar(data['message']);
                               await _fetchJobsDashboard();
-                              // Call the parent's state change to update HP or Inventory globally
                               widget.onStateChange(widget.userData);
                             } else {
                               _showSnackbar(data['error'], isError: true);
                             }
-                          } catch (e) {
-                            _showSnackbar("Network error exchanging points.", isError: true);
-                          } finally {
-                            setState(() => _isProcessing = false);
-                          }
+                          } catch (e) { _showSnackbar("Network error.", isError: true); }
+                          finally { setState(() => _isProcessing = false); }
                         },
                         child: Text("EXCHANGE", style: TextStyle(color: neonGreen, fontWeight: FontWeight.bold, letterSpacing: 1)),
                       ),
@@ -365,11 +294,11 @@ class _JobsViewState extends State<JobsView> {
     );
   }
 
-  String _formatNumber(int amount) {
-    return amount.toString().replaceAllMapped(RegExp(r'(\d{1,3})(?=(\d{3})+(?!\d))'), (Match m) => '${m[1]},');
+  String _formatNumber(dynamic amount) {
+    int val = amount is int ? amount : int.tryParse(amount.toString()) ?? 0;
+    return val.toString().replaceAllMapped(RegExp(r'(\d{1,3})(?=(\d{3})+(?!\d))'), (Match m) => '${m[1]},');
   }
 
-  // Helper for Stats Display to prevent overflow
   Widget _buildStatBox(String label, int value) {
     return Column(
       children: [
@@ -380,9 +309,33 @@ class _JobsViewState extends State<JobsView> {
     );
   }
 
+  // ==========================================
+  // MAIN ROUTING BUILDER
+  // ==========================================
   @override
   Widget build(BuildContext context) {
     if (_isLoading) return Scaffold(backgroundColor: matteBlack, body: Center(child: CircularProgressIndicator(color: neonGreen)));
+
+    Widget bodyWidget;
+    bool showResignButton = false;
+
+    // 1. Interview Screen wins
+    if (_isInterviewing) {
+      bodyWidget = _buildInterviewScreen();
+    }
+    // 2. Smart Routing: If viewingJobId is their current job, or viewingJobId is null, show Dashboard
+    else if (_currentJobId != null && (widget.viewingJobId == null || widget.viewingJobId == _currentJobId)) {
+      bodyWidget = _buildEmployedDashboard();
+      showResignButton = true;
+    }
+    // 3. Kiosk Mode: They are viewing a specific job they don't own
+    else if (widget.viewingJobId != null) {
+      bodyWidget = _buildKioskMode(widget.viewingJobId!);
+    }
+    // 4. Fallback Error State
+    else {
+      bodyWidget = const Center(child: Text("ERROR: No Job Selected", style: TextStyle(color: Colors.redAccent)));
+    }
 
     return Scaffold(
       backgroundColor: matteBlack,
@@ -391,14 +344,18 @@ class _JobsViewState extends State<JobsView> {
         title: Text(_isInterviewing ? "INTERVIEW IN PROGRESS" : "CITY EMPLOYMENT",
             style: TextStyle(color: neonGreen, fontSize: 16, fontWeight: FontWeight.w900, letterSpacing: 2)),
         iconTheme: IconThemeData(color: neonGreen),
-        leading: _isInterviewing ? IconButton(icon: const Icon(Icons.close), onPressed: () => setState(() => _isInterviewing = false)) : null,
-        // --- MOVED RESIGN BUTTON TO APP BAR ---
+        leading: _isInterviewing
+            ? IconButton(icon: const Icon(Icons.close), onPressed: () => setState(() => _isInterviewing = false))
+            : (widget.onBack != null ? IconButton(icon: const Icon(Icons.arrow_back), onPressed: widget.onBack) : null),
         actions: [
-          if (!_isInterviewing && _currentJobId != null && _currentJobId! > 0)
+          if (showResignButton)
             Padding(
               padding: const EdgeInsets.only(right: 8.0),
               child: TextButton(
-                onPressed: () => _showResignationDialog(_getCurrentRank()),
+                onPressed: () {
+                  final activeJob = _jobs.firstWhere((j) => j['job_id'] == _currentJobId, orElse: () => {});
+                  _showResignationDialog(activeJob['current_rank'] ?? 1);
+                },
                 child: const Text("RESIGN", style: TextStyle(color: Colors.redAccent, fontSize: 12, fontWeight: FontWeight.bold)),
               ),
             )
@@ -406,139 +363,146 @@ class _JobsViewState extends State<JobsView> {
       ),
       body: Stack(
         children: [
-          _isInterviewing
-              ? _buildInterviewScreen()
-              : (_currentJobId != null && _currentJobId! > 0)
-              ? _buildEmployedDashboard()
-              : _buildUnemployedDashboard(),
+          bodyWidget,
           if (_isProcessing) Container(color: Colors.black54, child: Center(child: CircularProgressIndicator(color: neonGreen)))
         ],
       ),
     );
   }
 
-  Widget _buildUnemployedDashboard() {
-    return SingleChildScrollView(
-      padding: const EdgeInsets.all(16.0),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Container(
-            width: double.infinity, padding: const EdgeInsets.all(12),
-            decoration: BoxDecoration(color: Colors.redAccent.withOpacity(0.1), border: Border.all(color: Colors.redAccent)),
-            child: const Text("YOU ARE CURRENTLY UNEMPLOYED.\nApply below to start earning Clean Cash and Working Stats.", style: TextStyle(color: Colors.redAccent, fontSize: 11, fontWeight: FontWeight.bold)),
-          ),
-          const SizedBox(height: 20),
-          const Text("CITY JOBS DIRECTORY", style: TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.w900, letterSpacing: 1)),
-          const SizedBox(height: 12),
-          ..._jobs.map((job) {
-            bool hasBan = job['ban_expiry'] != null && DateTime.parse(job['ban_expiry']).isAfter(DateTime.now());
-            return Card(
-              color: darkSurface,
-              margin: const EdgeInsets.only(bottom: 12),
-              shape: RoundedRectangleBorder(side: const BorderSide(color: Colors.white12), borderRadius: BorderRadius.circular(4)),
-              child: Padding(
-                padding: const EdgeInsets.all(12.0),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(job['job_name'].toString().toUpperCase(), style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 14)),
-                    const SizedBox(height: 12),
-                    SizedBox(
-                      width: double.infinity, height: 30,
-                      child: ElevatedButton(
-                        onPressed: hasBan ? null : () => _startInterview(job['job_id']),
-                        style: ElevatedButton.styleFrom(backgroundColor: Colors.transparent, side: BorderSide(color: hasBan ? Colors.redAccent : Colors.white24)),
-                        child: Text(hasBan ? "BANNED FROM APPLYING" : "APPLY NOW", style: TextStyle(color: hasBan ? Colors.redAccent : Colors.white, fontSize: 10, fontWeight: FontWeight.bold)),
-                      ),
-                    )
-                  ],
-                ),
-              ),
-            );
-          }).toList(),
-        ],
-      ),
-    );
-  }
+  // ==========================================
+  // KIOSK MODE (WINDOW SHOPPING)
+  // ==========================================
+  Widget _buildKioskMode(int jobId) {
+    final job = _jobs.firstWhere((j) => j['job_id'] == jobId, orElse: () => {});
+    if (job.isEmpty) return const Center(child: Text("Job data corrupted.", style: TextStyle(color: Colors.redAccent)));
 
-  Widget _buildInterviewScreen() {
-    return Padding(
-      padding: const EdgeInsets.all(16.0),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Container(
-            padding: const EdgeInsets.all(12),
-            decoration: BoxDecoration(color: neonGreen.withOpacity(0.1), border: Border.all(color: neonGreen)),
-            child: const Text("HR ASSESSMENT:\nAnswer 4 out of 5 correctly to be hired. Failure results in a 24-hour application ban.", style: TextStyle(color: Colors.white, fontSize: 12, fontFamily: 'Courier')),
-          ),
-          const SizedBox(height: 20),
-          Expanded(
-            child: ListView.builder(
-              itemCount: _interviewQuestions.length,
-              itemBuilder: (context, index) {
-                var q = _interviewQuestions[index];
-                List<dynamic> options = q['options'] is String ? jsonDecode(q['options']) : q['options'];
+    List<dynamic> ranks = job['ranks'] ?? [];
 
-                return Container(
-                  margin: const EdgeInsets.only(bottom: 24),
+    // GATEKEEPER UI LOGIC
+    bool hasCityJob = _currentJobId != null;
+    bool hasPrivateJob = _privateEmployment != null;
+    bool isBanned = job['ban_expiry'] != null && DateTime.parse(job['ban_expiry']).isAfter(DateTime.now());
+
+    String btnText = "TAKE INTERVIEW";
+    Color btnColor = neonGreen;
+    VoidCallback? onBtnPressed = () => _startInterview(jobId);
+
+    if (isBanned) {
+      btnText = "BANNED FROM APPLYING";
+      btnColor = Colors.redAccent;
+      onBtnPressed = null;
+    } else if (hasCityJob) {
+      btnText = "RESTRICTED (CITY EMPLOYEE)";
+      btnColor = Colors.white24;
+      onBtnPressed = () => _showSnackbar("Resign from your current City Job first.", isError: true);
+    } else if (hasPrivateJob) {
+      btnText = "RESTRICTED (PRIVATE SECTOR)";
+      btnColor = Colors.white24;
+      onBtnPressed = () => _showSnackbar("Resign from your Private Sector position first.", isError: true);
+    }
+
+    return Column(
+      children: [
+        Expanded(
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.all(16.0),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(job['job_name'].toString().toUpperCase(), style: TextStyle(color: neonGreen, fontSize: 18, fontWeight: FontWeight.bold, letterSpacing: 1)),
+                const SizedBox(height: 8),
+                Text("Primary Stat Requirement: ${job['primary_stat'].toString().toUpperCase()}", style: const TextStyle(color: Colors.cyanAccent, fontSize: 12, fontWeight: FontWeight.bold)),
+                const Divider(color: Color(0xFF333333), height: 32),
+
+                const Text("CAREER PATH & SPECIALS", style: TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.w900, letterSpacing: 1)),
+                const SizedBox(height: 12),
+
+                Container(
+                  decoration: BoxDecoration(border: Border.all(color: const Color(0xFF333333)), borderRadius: BorderRadius.circular(4)),
                   child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text("Q${index + 1}: ${q['question_text']}", style: const TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.bold)),
-                      const SizedBox(height: 10),
-                      ...options.asMap().entries.map((entry) {
-                        int optIndex = entry.key;
-                        bool isSelected = _selectedAnswers[q['question_id']] == optIndex;
-                        return GestureDetector(
-                          onTap: () => setState(() => _selectedAnswers[q['question_id']] = optIndex),
-                          child: Container(
-                            width: double.infinity, margin: const EdgeInsets.only(bottom: 6), padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 12),
-                            decoration: BoxDecoration(color: isSelected ? neonGreen.withOpacity(0.2) : matteBlack, border: Border.all(color: isSelected ? neonGreen : Colors.white24), borderRadius: BorderRadius.circular(4)),
-                            child: Text(entry.value, style: TextStyle(color: isSelected ? neonGreen : Colors.white70, fontSize: 12)),
-                          ),
-                        );
-                      }).toList(),
-                    ],
+                    children: ranks.map((rank) {
+                      bool isLast = rank['rank_level'] == ranks.last['rank_level'];
+                      return Container(
+                        padding: const EdgeInsets.all(12),
+                        decoration: BoxDecoration(color: darkSurface, border: Border(bottom: BorderSide(color: isLast ? Colors.transparent : const Color(0xFF333333)))),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(
+                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                              children: [
+                                Text(rank['title'], style: const TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.bold)),
+                                Text("\$${_formatNumber(rank['daily_pay'])} / day", style: const TextStyle(color: Colors.white70, fontSize: 10)),
+                              ],
+                            ),
+                            const SizedBox(height: 8),
+                            Row(
+                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                              children: [
+                                Text("Req: ${_formatNumber(rank['stat_req_value'])} ${job['primary_stat'].toString().toUpperCase()}", style: const TextStyle(color: Colors.orangeAccent, fontSize: 10)),
+                                Text("Earns: ${rank['daily_incentives']} Job Points / day", style: const TextStyle(color: Colors.cyanAccent, fontSize: 10)),
+                              ],
+                            ),
+                            const SizedBox(height: 8),
+                            Container(
+                              width: double.infinity, padding: const EdgeInsets.all(8),
+                              decoration: BoxDecoration(color: Colors.black45, border: Border.all(color: Colors.white12)),
+                              child: Text("Perk: ${rank['special']['effect']}", style: TextStyle(color: neonGreen.withOpacity(0.8), fontSize: 10, fontStyle: FontStyle.italic)),
+                            )
+                          ],
+                        ),
+                      );
+                    }).toList(),
                   ),
-                );
-              },
+                ),
+              ],
             ),
           ),
-          SizedBox(
-            width: double.infinity,
+        ),
+
+        // BOTTOM ACTION BAR
+        Container(
+          padding: const EdgeInsets.all(16),
+          decoration: const BoxDecoration(color: Color(0xFF1A1A1A), border: Border(top: BorderSide(color: Color(0xFF333333)))),
+          child: SizedBox(
+            width: double.infinity, height: 45,
             child: ElevatedButton(
-              onPressed: _selectedAnswers.length == 5 ? _submitInterview : null,
-              style: ElevatedButton.styleFrom(backgroundColor: neonGreen.withOpacity(0.2), side: BorderSide(color: neonGreen), padding: const EdgeInsets.symmetric(vertical: 16)),
-              child: Text("SUBMIT ASSESSMENT", style: TextStyle(color: neonGreen, fontSize: 14, fontWeight: FontWeight.bold, letterSpacing: 2)),
+              onPressed: onBtnPressed,
+              style: ElevatedButton.styleFrom(backgroundColor: btnColor.withOpacity(0.1), side: BorderSide(color: btnColor)),
+              child: Text(btnText, style: TextStyle(color: btnColor, fontWeight: FontWeight.bold, letterSpacing: 1)),
             ),
-          )
-        ],
-      ),
+          ),
+        )
+      ],
     );
   }
 
+  // ==========================================
+  // EMPLOYED DASHBOARD
+  // ==========================================
   Widget _buildEmployedDashboard() {
     final activeJob = _jobs.firstWhere((j) => j['job_id'] == _currentJobId, orElse: () => {});
     if (activeJob.isEmpty) return const SizedBox.shrink();
 
-    final int jobId = activeJob['job_id'];
     final int currentRank = activeJob['current_rank'] ?? 1;
     final int incentiveBalance = activeJob['incentive_balance'] ?? 0;
+    final String primaryStat = activeJob['primary_stat'];
 
-    final List<Map<String, dynamic>> ranks = _rankData[jobId] ?? _rankData[1]!;
-    final currentRankDetails = ranks.firstWhere((r) => r['rank'] == currentRank, orElse: () => ranks.first);
+    final List<dynamic> ranksList = activeJob['ranks'] ?? [];
+    final Map<String, dynamic> currentRankDetails = ranksList.firstWhere((r) => r['rank_level'] == currentRank, orElse: () => ranksList.isNotEmpty ? ranksList.first : {});
 
     final int acu = _parseSafeInt(widget.userData['stat_acu']);
     final int ops = _parseSafeInt(widget.userData['stat_ops']);
     final int pre = _parseSafeInt(widget.userData['stat_pre']);
     final int res = _parseSafeInt(widget.userData['stat_res']);
 
+    // Check if they have the specific stat required to promote
+    int playerPrimaryStat = _parseSafeInt(widget.userData['stat_$primaryStat']);
     bool statsMet = false;
-    if (currentRank < 5) {
-      final nextRankReq = ranks.firstWhere((r) => r['rank'] == currentRank + 1)['req'];
-      statsMet = (acu >= nextRankReq['acu'] && ops >= nextRankReq['ops'] && pre >= nextRankReq['pre'] && res >= nextRankReq['res']);
+    if (currentRank < 5 && ranksList.length > currentRank) {
+      final nextRankDetails = ranksList.firstWhere((r) => r['rank_level'] == currentRank + 1);
+      statsMet = playerPrimaryStat >= nextRankDetails['stat_req_value'];
     }
 
     return SingleChildScrollView(
@@ -546,8 +510,6 @@ class _JobsViewState extends State<JobsView> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-
-          // --- 1. COMPANY DETAILS ---
           Container(
             padding: const EdgeInsets.all(12),
             decoration: BoxDecoration(color: darkSurface, border: Border.all(color: const Color(0xFF333333)), borderRadius: BorderRadius.circular(4)),
@@ -558,7 +520,7 @@ class _JobsViewState extends State<JobsView> {
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
                     Text("Type: ${activeJob['job_name']}", style: TextStyle(color: neonGreen, fontSize: 12, fontWeight: FontWeight.bold)),
-                    Text("Salary: \$${_formatNumber(currentRankDetails['pay'])} / day", style: const TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.bold)),
+                    Text("Salary: \$${_formatNumber(currentRankDetails['daily_pay'] ?? 0)} / day", style: const TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.bold)),
                   ],
                 ),
                 const SizedBox(height: 8),
@@ -574,7 +536,6 @@ class _JobsViewState extends State<JobsView> {
           ),
           const SizedBox(height: 12),
 
-          // --- 2. CURRENT WORKING STATS & PROMOTION BUTTON ---
           Container(
             padding: const EdgeInsets.all(12),
             decoration: BoxDecoration(color: darkSurface, border: Border.all(color: const Color(0xFF333333)), borderRadius: BorderRadius.circular(4)),
@@ -597,8 +558,6 @@ class _JobsViewState extends State<JobsView> {
                   ],
                 ),
                 const Divider(color: Color(0xFF333333), height: 16),
-
-                // --- FIXED OVERFLOW: Clean 4-Column Layout ---
                 Row(
                   mainAxisAlignment: MainAxisAlignment.spaceAround,
                   children: [
@@ -613,18 +572,15 @@ class _JobsViewState extends State<JobsView> {
           ),
           const SizedBox(height: 20),
 
-          // --- 3. RANKS & PROMOTIONS LIST (COMPACT LAYOUT) ---
           const Text("RANKS & PROMOTIONS", style: TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.w900, letterSpacing: 1)),
           const SizedBox(height: 8),
 
           Container(
             decoration: BoxDecoration(border: Border.all(color: const Color(0xFF333333)), borderRadius: BorderRadius.circular(4)),
             child: Column(
-              children: ranks.map((rank) {
-                bool isCurrent = rank['rank'] == currentRank;
-                bool isLast = rank['rank'] == ranks.last['rank'];
-                Map<String, dynamic> req = rank['req'];
-                Map<String, dynamic> gain = rank['gain'];
+              children: ranksList.map((rank) {
+                bool isCurrent = rank['rank_level'] == currentRank;
+                bool isLast = rank['rank_level'] == ranksList.last['rank_level'];
 
                 return Container(
                   decoration: BoxDecoration(
@@ -643,7 +599,7 @@ class _JobsViewState extends State<JobsView> {
                         mainAxisAlignment: MainAxisAlignment.spaceBetween,
                         children: [
                           Text(rank['title'], style: TextStyle(color: isCurrent ? neonGreen : Colors.white, fontSize: 11, fontWeight: FontWeight.bold)),
-                          Text("\$${_formatNumber(rank['pay'])} / day", style: const TextStyle(color: Colors.white70, fontSize: 10)),
+                          Text("\$${_formatNumber(rank['daily_pay'])} / day", style: const TextStyle(color: Colors.white70, fontSize: 10)),
                         ],
                       ),
                       children: [
@@ -653,37 +609,13 @@ class _JobsViewState extends State<JobsView> {
                           child: Column(
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
-                              Row(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Expanded(
-                                    child: Column(
-                                      crossAxisAlignment: CrossAxisAlignment.start,
-                                      children: [
-                                        const Text("Req. Stats:", style: TextStyle(color: Colors.orangeAccent, fontSize: 9, fontWeight: FontWeight.bold)),
-                                        const SizedBox(height: 2),
-                                        Text("Acu: ${_formatNumber(req['acu'])} | Ops: ${_formatNumber(req['ops'])}\nPre: ${_formatNumber(req['pre'])} | Res: ${_formatNumber(req['res'])}", style: const TextStyle(color: Colors.white70, fontSize: 9, height: 1.2)),
-                                      ],
-                                    ),
-                                  ),
-                                  Expanded(
-                                    child: Column(
-                                      crossAxisAlignment: CrossAxisAlignment.start,
-                                      children: [
-                                        const Text("Daily Gains:", style: TextStyle(color: Colors.cyanAccent, fontSize: 9, fontWeight: FontWeight.bold)),
-                                        const SizedBox(height: 2),
-                                        Text("+${gain['acu']} Acu | +${gain['ops']} Ops\n+${gain['pre']} Pre | +${gain['res']} Res", style: const TextStyle(color: Colors.white70, fontSize: 9, height: 1.2)),
-                                      ],
-                                    ),
-                                  ),
-                                ],
-                              ),
+                              Text("Req: ${_formatNumber(rank['stat_req_value'])} ${primaryStat.toUpperCase()}", style: const TextStyle(color: Colors.orangeAccent, fontSize: 9, fontWeight: FontWeight.bold)),
                               const SizedBox(height: 8),
                               Row(
                                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                                 children: [
-                                  Text("Promo Cost: ${rank['cost']} Inc", style: const TextStyle(color: Colors.amberAccent, fontSize: 9)),
-                                  Text("Earns: ${rank['daily_inc']} Inc / day", style: const TextStyle(color: Colors.white54, fontSize: 9)),
+                                  Text("Promo Cost: ${rank['promotion_cost']} Inc", style: const TextStyle(color: Colors.amberAccent, fontSize: 9)),
+                                  Text("Earns: ${rank['daily_incentives']} Inc / day", style: const TextStyle(color: Colors.white54, fontSize: 9)),
                                 ],
                               ),
                             ],
@@ -698,7 +630,6 @@ class _JobsViewState extends State<JobsView> {
           ),
           const SizedBox(height: 20),
 
-          // --- 4. TORN STYLE JOB SPECIALS ---
           const Text("JOB SPECIALS", style: TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.w900, letterSpacing: 1)),
           const SizedBox(height: 8),
 
@@ -717,10 +648,10 @@ class _JobsViewState extends State<JobsView> {
                   ),
                 ),
 
-                ...ranks.map((rank) {
-                  bool isUnlocked = currentRank >= rank['rank'];
+                ...ranksList.map((rank) {
+                  bool isUnlocked = currentRank >= rank['rank_level'];
                   Map<String, dynamic> special = rank['special'];
-                  bool isPassive = special['is_passive'];
+                  bool isPassive = special['is_passive'] ?? false;
 
                   return InkWell(
                     onTap: (isUnlocked && !isPassive) ? () => _openSpecialExchangeSheet(special, incentiveBalance) : null,
@@ -773,6 +704,66 @@ class _JobsViewState extends State<JobsView> {
             ),
           ),
           const SizedBox(height: 40),
+        ],
+      ),
+    );
+  }
+
+  // ==========================================
+  // INTERVIEW SCREEN
+  // ==========================================
+  Widget _buildInterviewScreen() {
+    return Padding(
+      padding: const EdgeInsets.all(16.0),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(color: neonGreen.withOpacity(0.1), border: Border.all(color: neonGreen)),
+            child: const Text("HR ASSESSMENT:\nAnswer 4 out of 5 correctly to be hired. Failure results in a 24-hour application ban.", style: TextStyle(color: Colors.white, fontSize: 12, fontFamily: 'Courier')),
+          ),
+          const SizedBox(height: 20),
+          Expanded(
+            child: ListView.builder(
+              itemCount: _interviewQuestions.length,
+              itemBuilder: (context, index) {
+                var q = _interviewQuestions[index];
+                List<dynamic> options = q['options'] is String ? jsonDecode(q['options']) : q['options'];
+
+                return Container(
+                  margin: const EdgeInsets.only(bottom: 24),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text("Q${index + 1}: ${q['question_text']}", style: const TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.bold)),
+                      const SizedBox(height: 10),
+                      ...options.asMap().entries.map((entry) {
+                        int optIndex = entry.key;
+                        bool isSelected = _selectedAnswers[q['question_id']] == optIndex;
+                        return GestureDetector(
+                          onTap: () => setState(() => _selectedAnswers[q['question_id']] = optIndex),
+                          child: Container(
+                            width: double.infinity, margin: const EdgeInsets.only(bottom: 6), padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 12),
+                            decoration: BoxDecoration(color: isSelected ? neonGreen.withOpacity(0.2) : matteBlack, border: Border.all(color: isSelected ? neonGreen : Colors.white24), borderRadius: BorderRadius.circular(4)),
+                            child: Text(entry.value, style: TextStyle(color: isSelected ? neonGreen : Colors.white70, fontSize: 12)),
+                          ),
+                        );
+                      }).toList(),
+                    ],
+                  ),
+                );
+              },
+            ),
+          ),
+          SizedBox(
+            width: double.infinity,
+            child: ElevatedButton(
+              onPressed: _selectedAnswers.length == 5 ? _submitInterview : null,
+              style: ElevatedButton.styleFrom(backgroundColor: neonGreen.withOpacity(0.2), side: BorderSide(color: neonGreen), padding: const EdgeInsets.symmetric(vertical: 16)),
+              child: Text("SUBMIT ASSESSMENT", style: TextStyle(color: neonGreen, fontSize: 14, fontWeight: FontWeight.bold, letterSpacing: 2)),
+            ),
+          )
         ],
       ),
     );

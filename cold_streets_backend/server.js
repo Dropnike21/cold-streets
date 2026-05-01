@@ -27,6 +27,8 @@ app.use('/credit-broker', require('./routes/credit_broker'));
 app.use('/jobs', require('./routes/jobs'));
 app.use('/cityhall', require('./routes/cityhall'));
 app.use('/companies', require('./routes/companies'));
+app.use('/companies', require('./routes/company_management'));
+app.use('/info-broker', require('./routes/infoBroker'));
 
 
 // --- THE VITAL TICK & WARDEN (Cron Job) ---
