@@ -265,6 +265,7 @@ class _StreetsViewState extends State<StreetsView> {
       if (!mounted) return;
       final result = jsonDecode(response.body);
 
+      // Sync the updated stats (including Heat) back to the Main Hub HUD
       if (result['user'] != null) widget.onStateChange(result['user']);
 
       if (response.statusCode == 200) {
@@ -283,28 +284,38 @@ class _StreetsViewState extends State<StreetsView> {
     String outBody = "\"${result['message']}\"\n\nResults: ";
     Color outColor = Colors.white;
 
-    switch (result['status']) {
-      case "success":
-        outTitle = "SUCCESS";
-        outColor = const Color(0xFF39FF14);
-        outBody += "+ \$${_formatStat(result['gained_cash'])} Dirty Cash";
-        break;
-      case "escaped":
-        outTitle = "ESCAPED (FAILURE)";
-        outColor = Colors.yellowAccent;
-        outBody += "- 10 HP";
-        break;
-      case "hospitalized":
-        outTitle = "HOSPITALIZED (FAILURE)";
-        outColor = Colors.orangeAccent;
-        outBody += "HP dropped to 1. Locked in Hospital.";
-        break;
-      case "jailed":
-        outTitle = "JAILED (FAILURE)";
-        outColor = Colors.redAccent;
-        outBody += "Locked in Jail.";
-        break;
+    // --- NEW: CATCH THE 100% HEAT ARREST FLAG ---
+    if (result['arrested'] == true) {
+      outTitle = "!!! BUSTED !!!";
+      outColor = Colors.redAccent;
+      // Overwrite the body entirely to just show the massive penalty text
+      outBody = result['message'];
+    } else {
+      // --- STANDARD RNG RESULTS ---
+      switch (result['status']) {
+        case "success":
+          outTitle = "SUCCESS";
+          outColor = const Color(0xFF39FF14);
+          outBody += "+ \$${_formatStat(result['gained_cash'])} Dirty Cash";
+          break;
+        case "escaped":
+          outTitle = "ESCAPED (FAILURE)";
+          outColor = Colors.yellowAccent;
+          outBody += "- 10 HP";
+          break;
+        case "hospitalized":
+          outTitle = "HOSPITALIZED (FAILURE)";
+          outColor = Colors.orangeAccent;
+          outBody += "HP dropped to 1. Locked in Hospital.";
+          break;
+        case "jailed":
+          outTitle = "JAILED (FAILURE)";
+          outColor = Colors.redAccent;
+          outBody += "Locked in Jail.";
+          break;
+      }
     }
+
     _showDynamicResult(outTitle, outBody, outColor);
   }
 

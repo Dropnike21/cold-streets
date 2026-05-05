@@ -99,40 +99,6 @@ router.get('/:user_id', async (req, res) => {
         res.status(500).json({ error: "Server error fetching jobs dashboard." });
     }
 });
-        // 3. Fetch City Jobs List
-        const jobsRes = await pool.query('SELECT * FROM jobs_master ORDER BY job_id ASC');
-        const jobDataRes = await pool.query('SELECT * FROM user_job_data WHERE user_id = $1', [user_id]);
-        const userJobs = jobDataRes.rows;
-
-        const mappedJobs = jobsRes.rows.map(job => {
-            const uData = userJobs.find(uj => uj.job_id === job.job_id);
-            return {
-                job_id: job.job_id,
-                job_name: job.job_name,
-                primary_stat: job.primary_stat,
-                mastery_passive: job.mastery_passive_desc,
-                mastery_active: job.mastery_active_desc,
-                is_current: user.current_job_id === job.job_id,
-                current_rank: uData ? uData.current_rank : 1,
-                incentive_balance: uData ? uData.incentive_balance : 0,
-                is_mastered: uData ? uData.is_mastered : false,
-                ban_expiry: uData ? uData.ban_expiry : null
-            };
-        });
-
-        // Send back the Unified Status
-        res.json({
-            success: true,
-            current_job_id: user.current_job_id,
-            last_claimed: user.daily_job_claimed_at,
-            private_employment: privateEmployment, // <-- NEW: Tells the Info Broker if they are in a player company
-            jobs: mappedJobs
-        });
-    } catch (err) {
-        console.error(err);
-        res.status(500).json({ error: "Server error fetching jobs dashboard." });
-    }
-});
 
 // --- 2. GET INTERVIEW QUESTIONS ---
 router.get('/interview/:job_id/:user_id', async (req, res) => {
@@ -275,7 +241,7 @@ router.post('/promote', async (req, res) => {
         // GDD: If we updated job_ranks to have 4 stat columns, we check them here.
         // For now, checking the primary stat threshold as a baseline to prevent crashing.
         const masterRes = await client.query('SELECT primary_stat FROM jobs_master WHERE job_id = $1', [user.current_job_id]);
-        const primaryStatColumn = 'stat_' + masterRes.rows[0].primary_stat;
+        const primaryStatColumn = 'stat_' + masterRes.rows[0].primary_stat.toLowerCase();
 
         if (user[primaryStatColumn] < nextRank.stat_req_value) {
             await client.query('ROLLBACK');

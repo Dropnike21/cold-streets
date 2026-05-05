@@ -18,6 +18,9 @@ import 'city_hall_view.dart';
 import 'company_dashboard_view.dart';
 import 'company_management_view.dart';
 import 'info_broker_view.dart';
+import 'jail_view.dart';
+import 'hospital_view.dart';
+import 'university_view.dart';
 
 class MainHub extends StatefulWidget {
   final Map<String, dynamic> userData;
@@ -44,6 +47,10 @@ class _MainHubState extends State<MainHub> {
   late int nerve;
   late int maxNerve;
   late int hp;
+  late double heat;
+  String? hospitalExpiry; // 👉 ADD THIS
+  String? jailExpiry;     // 👉 ADD THIS
+
 
   int currentJobId = 0;
 
@@ -69,6 +76,14 @@ class _MainHubState extends State<MainHub> {
     return 0;
   }
 
+  double _parseDouble(dynamic value) {
+    if (value == null) return 0.0;
+    if (value is double) return value;
+    if (value is int) return value.toDouble();
+    if (value is String) return double.tryParse(value) ?? 0.0;
+    return 0.0;
+  }
+
   @override
   void initState() {
     super.initState();
@@ -84,6 +99,7 @@ class _MainHubState extends State<MainHub> {
     energy = _parseSafeInt(widget.userData['energy']);
     nerve = _parseSafeInt(widget.userData['nerve']);
     hp = _parseSafeInt(widget.userData['hp']);
+    heat = _parseDouble(widget.userData['heat']);
     maxNerve = _parseSafeInt(widget.userData['max_nerve']);
     if (maxNerve == 0) maxNerve = 10;
 
@@ -204,6 +220,9 @@ class _MainHubState extends State<MainHub> {
       nerve = _parseSafeInt(updatedStats['nerve'] ?? nerve);
       maxNerve = _parseSafeInt(updatedStats['max_nerve'] ?? maxNerve);
       hp = _parseSafeInt(updatedStats['hp'] ?? hp);
+      heat = _parseDouble(updatedStats['heat'] ?? heat);
+      hospitalExpiry = updatedStats['hospital_expires_at']; // 👉 ADD THIS
+      jailExpiry = updatedStats['jail_expires_at'];         // 👉 ADD THIS
 
       currentJobId = _parseSafeInt(updatedStats['current_job_id'] ?? currentJobId);
 
@@ -214,6 +233,7 @@ class _MainHubState extends State<MainHub> {
       widget.userData['nerve'] = nerve;
       widget.userData['max_nerve'] = maxNerve;
       widget.userData['hp'] = hp;
+      widget.userData['heat'] = heat;
       widget.userData['current_job_id'] = currentJobId;
     });
   }
@@ -235,9 +255,6 @@ class _MainHubState extends State<MainHub> {
         _bottomNavIndex = index;
       }
     });
-    if (Scaffold.of(context).isEndDrawerOpen) {
-      Navigator.pop(context);
-    }
   }
 
   Widget _buildCurrentScreen() {
@@ -296,6 +313,14 @@ class _MainHubState extends State<MainHub> {
           _navigateTo(index);
         },
       );
+      case 14: return JailView(userData: widget.userData, onStateChange: _updateUserStats); // <-- ADD THIS
+      case 15: return HospitalView(userData: widget.userData);
+      case 16: return UniversityView(userData: widget.userData, onStateChange: _updateUserStats);
+
+
+
+
+
       default: return DashboardView(userData: widget.userData);
     }
   }
@@ -441,19 +466,46 @@ class _MainHubState extends State<MainHub> {
                                   ),
                                 ),
                               ],
-                            ),
-                            const SizedBox(height: 4),
-                            Row(
+                            ),Row(
                               children: [
-                                Icon(Icons.local_hospital, color: hp < 25 ? Colors.redAccent : Colors.grey[800], size: 14),
-                                const SizedBox(width: 6),
-                                Icon(Icons.gavel, color: _activeCooldowns.any((cd) => cd['type'] == 'jail') ? Colors.blueAccent : Colors.grey[800], size: 14),
-                                const SizedBox(width: 6),
-                                if (currentJobId > 0) ...[
-                                  const Tooltip(message: "Employed", child: Icon(Icons.work, color: Colors.tealAccent, size: 14)),
-                                  const SizedBox(width: 6),
-                                ],
-                                const Icon(Icons.wifi, color: Color(0xFF39FF14), size: 14),
+                                // 1. HOSPITAL OVERRIDE (Takes Priority)
+                                if (hospitalExpiry != null && DateTime.parse(hospitalExpiry!).toLocal().isAfter(DateTime.now()))
+                                  Tooltip(
+                                    message: "HOSPITALIZED\nYou are in a coma. Access to the city is restricted.",
+                                    child: Container(
+                                      padding: const EdgeInsets.all(6),
+                                      decoration: BoxDecoration(color: Colors.redAccent.withOpacity(0.2), border: Border.all(color: Colors.redAccent), borderRadius: BorderRadius.circular(4)),
+                                      child: const Icon(Icons.medical_services, color: Colors.redAccent, size: 16),
+                                    ),
+                                  )
+
+                                // 2. JAIL OVERRIDE (If not in hospital)
+                                else if (jailExpiry != null && DateTime.parse(jailExpiry!).toLocal().isAfter(DateTime.now()))
+                                  Tooltip(
+                                    message: "INCARCERATED\nYou are locked in state prison. Access to the city is restricted.",
+                                    child: Container(
+                                      padding: const EdgeInsets.all(6),
+                                      decoration: BoxDecoration(color: Colors.orangeAccent.withOpacity(0.2), border: Border.all(color: Colors.orangeAccent), borderRadius: BorderRadius.circular(4)),
+                                      child: const Icon(Icons.gavel, color: Colors.orangeAccent, size: 16),
+                                    ),
+                                  )
+
+                                // 3. HEAT RING (Only shows if free and Heat > 0)
+                                else if (heat > 0)
+                                    Tooltip(
+                                      message: "HEAT: ${heat.toStringAsFixed(1)}%\nWanted level. Hits 100% for automatic arrest.",
+                                      decoration: BoxDecoration(color: const Color(0xFF1E1E1E), border: Border.all(color: heat > 80 ? Colors.redAccent : Colors.deepOrangeAccent), borderRadius: BorderRadius.circular(4)),
+                                      child: SizedBox(
+                                        width: 24, height: 24,
+                                        child: Stack(
+                                          alignment: Alignment.center,
+                                          children: [
+                                            CircularProgressIndicator(value: heat / 100.0, strokeWidth: 2.5, backgroundColor: Colors.grey[800], color: heat > 80 ? Colors.redAccent : Colors.deepOrangeAccent),
+                                            Icon(Icons.local_fire_department, size: 14, color: heat > 80 ? Colors.redAccent : Colors.deepOrangeAccent),
+                                          ],
+                                        ),
+                                      ),
+                                    ),
                               ],
                             ),
                           ],
@@ -531,8 +583,22 @@ class _MainHubState extends State<MainHub> {
                               _navigateTo(13);
                             }
                         ),
-                        _buildMenuTile(icon: Icons.school, color: Colors.lightBlueAccent, title: "University", onTap: () {}),
-                        _buildMenuTile(icon: Icons.gavel, color: Colors.grey, title: "State Jail", onTap: () {}),
+                        _buildMenuTile(icon: Icons.school, color: Colors.lightBlueAccent, title: "University", onTap: () {_navigateTo(16);}),
+                        // 👉 NEW: CITY HOSPITAL ADDED HERE
+                        _buildMenuTile(icon: Icons.local_hospital, color: Colors.redAccent, title: "City Hospital", onTap: () {
+                          Navigator.pop(context);
+                          _navigateTo(15);
+                        }),
+
+                        _buildMenuTile(
+                            icon: Icons.gavel,
+                            color: Colors.grey,
+                            title: "State Jail",
+                            onTap: () {
+                              Navigator.pop(context);
+                              _navigateTo(14); // <-- UPDATED FROM () {}
+                            }
+                        ),
                         _buildMenuTile(icon: Icons.location_city, color: Colors.deepPurpleAccent, title: "City Hall", onTap: () {
                           Navigator.pop(context);
                           _navigateTo(8);

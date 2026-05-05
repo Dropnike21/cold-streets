@@ -145,9 +145,9 @@ router.get('/status/:user_id', async (req, res) => {
         const { user_id } = req.params;
 
         const userQuery = await pool.query(
-            "SELECT dirty_cash, clean_cash,cred, energy, nerve, max_nerve, hp, level, exp, crime_exp FROM users WHERE user_id = $1",
-            [user_id]
-        );
+                    "SELECT dirty_cash, clean_cash, cred, energy, nerve, max_nerve, hp, level, exp, crime_exp, heat, jail_expires_at, hospital_expires_at FROM users WHERE user_id = $1", // 👉 ADDED TIMESTAMPS & HEAT
+                    [user_id]
+                );
         if (userQuery.rows.length === 0) return res.status(404).json({ error: "Ghost account." });
 
         const cdQuery = await pool.query(
