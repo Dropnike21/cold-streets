@@ -22,6 +22,8 @@ import 'jail_view.dart';
 import 'hospital_view.dart';
 import 'university_view.dart';
 import 'bank_view.dart';
+import 'real_estate_view.dart';
+import 'manage_properties_view.dart';
 
 // 👇 Your new modular drawer import!
 import 'main_hub_drawer.dart';
@@ -316,6 +318,15 @@ class _MainHubState extends State<MainHub> {
       case 15: return HospitalView(userData: widget.userData);
       case 16: return UniversityView(userData: widget.userData, onStateChange: _updateUserStats);
       case 17: return BankView(userData: widget.userData, onStateChange: _updateUserStats);
+      case 18: return RealEstateView(userData: widget.userData, onStateChange: _updateUserStats); // 👇 ADD THIS
+      case 19: return ManagePropertiesView(userData: widget.userData, onStateChange: _updateUserStats); // 👇 ADD THIS
+
+
+
+
+
+
+
       default: return DashboardView(userData: widget.userData);
     }
   }

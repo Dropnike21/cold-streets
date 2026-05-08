@@ -202,7 +202,7 @@ class MainHubDrawer extends StatelessWidget {
                     children: [
                       _buildMenuTile(icon: Icons.account_balance, color: Colors.blueAccent, title: "The Bank", onTap: () => _handleNavigation(context, 17)),
                       _buildMenuTile(icon: Icons.show_chart, color: Colors.greenAccent, title: "Stock Market", onTap: () {}),
-                      _buildMenuTile(icon: Icons.domain, color: Colors.tealAccent, title: "Real Estate", onTap: () {}),
+                      _buildMenuTile(icon: Icons.domain, color: Colors.tealAccent, title: "Real Estate", onTap: () => _handleNavigation(context, 18)),
                       _buildMenuTile(icon: Icons.shopping_bag, color: Colors.amber, title: "Trade Network", onTap: () {}),
                       _buildMenuTile(icon: Icons.gavel, color: Colors.orange, title: "Auction House", onTap: () {}),
                     ]
@@ -247,7 +247,7 @@ class MainHubDrawer extends StatelessWidget {
                   ),
                   _buildMenuTile(icon: Icons.backpack, color: Colors.white, title: "Inventory", onTap: () => _handleNavigation(context, 4)),
                   _buildMenuTile(icon: Icons.military_tech, color: const Color(0xFF39FF14), title: "Achievements", onTap: () => _handleNavigation(context, 9)),
-                  _buildMenuTile(icon: Icons.house, color: Colors.brown.shade300, title: "My Properties", onTap: () {}),
+                  _buildMenuTile(icon: Icons.house, color: Colors.brown.shade300, title: "My Properties", onTap: () => _handleNavigation(context, 19)),
                   if (hasBazaar) _buildMenuTile(icon: Icons.storefront, color: Colors.amber, title: "My Bazaar", onTap: () {}),
                   _buildMenuTile(icon: Icons.assignment, color: Colors.amberAccent, title: "Mission Board", onTap: () {}),
                   _buildMenuTile(icon: Icons.settings, color: Colors.grey, title: "Settings", onTap: () {}),

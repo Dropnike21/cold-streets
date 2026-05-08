@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+import 'package:http/http.dart' as http;
+import 'dart:convert';
 import 'dart:math';
 import 'dart:async';
 
@@ -42,12 +44,56 @@ class _BankViewState extends State<BankView> {
   @override
   void initState() {
     super.initState();
-    _syncState();
+    _syncState(); // Loads cached data instantly
+    _fetchBankData(); // Fetches live database lock state
 
     // Timer to update the countdowns every second
     _ticker = Timer.periodic(const Duration(seconds: 1), (timer) {
       if (mounted) setState(() {});
     });
+  }
+
+  // 👇 NEW: Fetches the live database state every time the screen opens
+  Future<void> _fetchBankData() async {
+    try {
+      final String userId = widget.userData['user_id'].toString();
+      final response = await http.get(Uri.parse('http://10.0.2.2:3000/bank/status/$userId'));
+
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        if (mounted) {
+          setState(() {
+            // Sync Active Deposit from Server
+            if (data['active_time_deposit'] != null) {
+              var activeData = data['active_time_deposit'];
+              hasActiveDeposit = true;
+              activeDirtyUsed = _parseDouble(activeData['dirty_deposited']);
+              activeCleanUsed = _parseDouble(activeData['clean_deposited']);
+              _depositAmount = activeDirtyUsed + activeCleanUsed;
+              _selectedDurationIndex = _parseSafeInt(activeData['duration_index']);
+
+              if (activeData['unlocks_at'] != null) {
+                activeDepositUnlockTime = DateTime.parse(activeData['unlocks_at']).toLocal();
+              }
+              _amountController.text = _depositAmount.toInt().toString();
+              widget.userData['active_time_deposit'] = activeData; // Cache it locally
+            } else {
+              hasActiveDeposit = false;
+              widget.userData.remove('active_time_deposit');
+              _selectedDurationIndex = min(2, bankTrustLevel);
+            }
+
+            // Sync Pending Checks from Server
+            if (data['pending_checks'] != null) {
+              pendingChecks = List<Map<String, dynamic>>.from(data['pending_checks']);
+              widget.userData['pending_checks'] = pendingChecks;
+            }
+          });
+        }
+      }
+    } catch (e) {
+      debugPrint("Bank fetch error: $e");
+    }
   }
 
   void _syncState() {
@@ -56,12 +102,11 @@ class _BankViewState extends State<BankView> {
     cleanCash = _parseSafeInt(widget.userData['clean_cash']);
     totalCash = dirtyCash + cleanCash;
 
-    // Parse Active Deposit
     if (widget.userData['active_time_deposit'] != null) {
       var activeData = widget.userData['active_time_deposit'];
       hasActiveDeposit = true;
-      activeDirtyUsed = _parseDouble(activeData['dirty_amount']);
-      activeCleanUsed = _parseDouble(activeData['clean_amount']);
+      activeDirtyUsed = _parseDouble(activeData['dirty_deposited']);
+      activeCleanUsed = _parseDouble(activeData['clean_deposited']);
       _depositAmount = activeDirtyUsed + activeCleanUsed;
       _selectedDurationIndex = _parseSafeInt(activeData['duration_index']);
 
@@ -75,7 +120,6 @@ class _BankViewState extends State<BankView> {
       _selectedDurationIndex = min(2, bankTrustLevel);
     }
 
-    // Parse Pending Checks
     if (widget.userData['pending_checks'] != null) {
       pendingChecks = List<Map<String, dynamic>>.from(widget.userData['pending_checks']);
     }
@@ -143,58 +187,161 @@ class _BankViewState extends State<BankView> {
     });
   }
 
-  void _processDeposit() {
+  Future<void> _processDeposit() async {
     if (_depositAmount <= 0 || _depositAmount > totalCash || _depositAmount > currentBankCap) return;
 
-    int amountToProcess = _depositAmount.toInt();
-    int dirtyToTake = min(amountToProcess, dirtyCash);
-    int cleanToTake = amountToProcess - dirtyToTake;
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => const Center(child: CircularProgressIndicator(color: Color(0xFF39FF14))),
+    );
 
-    // Optimistic UI Update
-    setState(() {
-      dirtyCash -= dirtyToTake;
-      cleanCash -= cleanToTake;
-      totalCash = dirtyCash + cleanCash;
+    try {
+      final String userId = widget.userData['user_id'].toString();
 
-      widget.userData['dirty_cash'] = dirtyCash;
-      widget.userData['clean_cash'] = cleanCash;
+      int amountToProcess = _depositAmount.toInt();
+      int dirtyToTake = min(amountToProcess, dirtyCash);
+      int cleanToTake = amountToProcess - dirtyToTake;
 
-      hasActiveDeposit = true;
-      activeDirtyUsed = dirtyToTake.toDouble();
-      activeCleanUsed = cleanToTake.toDouble();
+      final response = await http.post(
+        Uri.parse('http://10.0.2.2:3000/bank/deposit'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'userId': userId,
+          'depositAmount': amountToProcess,
+          'durationIndex': _selectedDurationIndex,
+        }),
+      );
 
-      int days = _selectedDurationIndex == 0 ? 7 : (_selectedDurationIndex == 1 ? 14 : (_selectedDurationIndex == 2 ? 30 : (_selectedDurationIndex == 3 ? 90 : 180)));
-      activeDepositUnlockTime = DateTime.now().add(Duration(days: days));
+      if (mounted) Navigator.pop(context);
 
-      widget.onStateChange(widget.userData);
-    });
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        final updatedCash = data['updatedCash'];
 
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text("Laundered \$${_formatCash(dirtyToTake.toDouble())} dirty & \$${_formatCash(cleanToTake.toDouble())} clean!"),
-        backgroundColor: const Color(0xFF39FF14),
-      ),
+        setState(() {
+          dirtyCash = updatedCash['dirty_cash'];
+          cleanCash = updatedCash['clean_cash'];
+          totalCash = dirtyCash + cleanCash;
+
+          widget.userData['dirty_cash'] = dirtyCash;
+          widget.userData['clean_cash'] = cleanCash;
+
+          hasActiveDeposit = true;
+          activeDirtyUsed = dirtyToTake.toDouble();
+          activeCleanUsed = cleanToTake.toDouble();
+
+          int days = _selectedDurationIndex == 0 ? 7 : (_selectedDurationIndex == 1 ? 14 : (_selectedDurationIndex == 2 ? 30 : (_selectedDurationIndex == 3 ? 90 : 180)));
+          activeDepositUnlockTime = DateTime.now().add(Duration(days: days));
+
+          // 👇 NEW: Cache the active deposit locally so it doesn't disappear when navigating
+          widget.userData['active_time_deposit'] = {
+            'dirty_deposited': activeDirtyUsed,
+            'clean_deposited': activeCleanUsed,
+            'duration_index': _selectedDurationIndex,
+            'unlocks_at': activeDepositUnlockTime!.toIso8601String(),
+          };
+
+          widget.onStateChange(widget.userData);
+        });
+
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text("Laundered \$${_formatCash(dirtyToTake.toDouble())} dirty & \$${_formatCash(cleanToTake.toDouble())} clean!"),
+            backgroundColor: const Color(0xFF39FF14),
+          ),
+        );
+      } else {
+        final errorData = jsonDecode(response.body);
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("Error: ${errorData['error']}"), backgroundColor: Colors.redAccent));
+      }
+    } catch (e) {
+      if (mounted) Navigator.pop(context);
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("Network Error: $e"), backgroundColor: Colors.redAccent));
+    }
+  }
+
+  void _showConfirmationDialog(double deposit, String duration, double interest, double payout) {
+    showDialog(
+      context: context,
+      builder: (BuildContext ctx) {
+        return AlertDialog(
+          backgroundColor: const Color(0xFF1A1A1A),
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8), side: const BorderSide(color: Colors.white24)),
+          title: const Text("CONFIRM TIME DEPOSIT", style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w900, letterSpacing: 1)),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              _buildSummaryRow("Principal Deposit:", _formatCash(deposit), Colors.white),
+              const SizedBox(height: 8),
+              _buildSummaryRow("Duration:", duration, Colors.white70),
+              const SizedBox(height: 8),
+              _buildSummaryRow("Projected Interest:", "+${_formatCash(interest)}", const Color(0xFF39FF14)),
+              const Padding(padding: EdgeInsets.symmetric(vertical: 12), child: Divider(color: Colors.white24, height: 1)),
+              _buildSummaryRow("Total Payout:", _formatCash(payout), Colors.white, isBold: true),
+              const SizedBox(height: 12),
+              const Text("Warning: Funds cannot be withdrawn early under any circumstances.", style: TextStyle(color: Colors.redAccent, fontSize: 11, fontStyle: FontStyle.italic), textAlign: TextAlign.center)
+            ],
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx), child: const Text("CANCEL", style: TextStyle(color: Colors.grey, fontWeight: FontWeight.bold))),
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF39FF14), foregroundColor: Colors.black, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(4))),
+              onPressed: () {
+                Navigator.pop(ctx);
+                _processDeposit();
+              },
+              child: const Text("CONFIRM", style: TextStyle(fontWeight: FontWeight.bold)),
+            ),
+          ],
+        );
+      },
     );
   }
 
-  void _claimCheck(int checkIndex) {
-    double amount = _parseDouble(pendingChecks[checkIndex]['amount']);
+  Future<void> _claimCheck(int checkIndex) async {
+    var check = pendingChecks[checkIndex];
+    String checkId = check['id'].toString();
+    String userId = widget.userData['user_id'].toString();
 
-    setState(() {
-      cleanCash += amount.toInt();
-      totalCash = dirtyCash + cleanCash;
-      widget.userData['clean_cash'] = cleanCash;
-
-      pendingChecks.removeAt(checkIndex);
-      widget.onStateChange(widget.userData);
-    });
-
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text("Successfully withdrew \$${_formatCash(amount)} to your clean wallet."),
-        backgroundColor: Colors.blueAccent,
-      ),
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => const Center(child: CircularProgressIndicator(color: Colors.blueAccent)),
     );
+
+    try {
+      final response = await http.post(
+        Uri.parse('http://10.0.2.2:3000/bank/claim-check'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({'userId': userId, 'checkId': checkId}),
+      );
+
+      if (mounted) Navigator.pop(context);
+
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        double amount = _parseDouble(check['amount']);
+
+        setState(() {
+          cleanCash = data['updatedCash']['clean_cash'];
+          totalCash = dirtyCash + cleanCash;
+          widget.userData['clean_cash'] = cleanCash;
+
+          pendingChecks.removeAt(checkIndex);
+          widget.userData['pending_checks'] = pendingChecks;
+          widget.onStateChange(widget.userData);
+        });
+
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("Successfully withdrew \$${_formatCash(amount)} to your clean wallet."), backgroundColor: Colors.blueAccent));
+      } else {
+        final errorData = jsonDecode(response.body);
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("Error: ${errorData['error']}"), backgroundColor: Colors.redAccent));
+      }
+    } catch (e) {
+      if (mounted) Navigator.pop(context);
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("Network Error: $e"), backgroundColor: Colors.redAccent));
+    }
   }
 
   @override
@@ -227,7 +374,6 @@ class _BankViewState extends State<BankView> {
               padding: const EdgeInsets.all(12),
               decoration: BoxDecoration(
                 color: const Color(0xFF1A1A1A),
-                // 👇 UPDATED: .withValues() used here
                 border: Border.all(color: hasActiveDeposit ? const Color(0xFF39FF14).withValues(alpha: 0.5) : Colors.white12),
                 borderRadius: BorderRadius.circular(8),
               ),
@@ -361,7 +507,6 @@ class _BankViewState extends State<BankView> {
                               const SizedBox(height: 8),
                               _buildStatRow("Clean Used", _formatCash(cleanUsed), Colors.blueAccent),
                               const SizedBox(height: 8),
-                              // 👇 UPDATED: .withValues() used here
                               _buildStatRow("Interest Gain", "+${_formatCash(interestEarned)}", const Color(0xFF39FF14).withValues(alpha: 0.8)),
                               const Padding(padding: EdgeInsets.symmetric(vertical: 8), child: Divider(color: Colors.white24, height: 1)),
                               const Text("TOTAL PAYOUT", style: TextStyle(color: Colors.grey, fontSize: 9, letterSpacing: 1.2, fontWeight: FontWeight.bold)),
@@ -393,7 +538,7 @@ class _BankViewState extends State<BankView> {
                     )
                         : ElevatedButton(
                       style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF39FF14), foregroundColor: Colors.black, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(6))),
-                      onPressed: _depositAmount > 0 ? () => _processDeposit() : null,
+                      onPressed: _depositAmount > 0 ? () => _showConfirmationDialog(_depositAmount, _durations[_selectedDurationIndex], interestEarned, totalPayout) : null,
                       child: const Text("CONFIRM DEPOSIT", style: TextStyle(fontSize: 14, fontWeight: FontWeight.w900, letterSpacing: 1)),
                     ),
                   ),
@@ -427,7 +572,6 @@ class _BankViewState extends State<BankView> {
                 return Container(
                   margin: const EdgeInsets.only(bottom: 8),
                   padding: const EdgeInsets.all(12),
-                  // 👇 UPDATED: .withValues() used here
                   decoration: BoxDecoration(color: const Color(0xFF1E1E1E), border: Border.all(color: Colors.blueAccent.withValues(alpha: 0.3)), borderRadius: BorderRadius.circular(8)),
                   child: Row(
                     children: [
@@ -462,6 +606,23 @@ class _BankViewState extends State<BankView> {
 
   // --- HELPER WIDGETS ---
 
+  Widget _buildSummaryRow(String label, String value, Color valueColor, {bool isBold = false}) {
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+      children: [
+        Text(label, style: const TextStyle(color: Colors.grey, fontSize: 13)),
+        Text(
+            value,
+            style: TextStyle(
+                color: valueColor,
+                fontSize: isBold ? 16 : 14,
+                fontWeight: isBold ? FontWeight.bold : FontWeight.w500
+            )
+        ),
+      ],
+    );
+  }
+
   Widget _buildStatRow(String label, String value, Color valueColor) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -489,7 +650,6 @@ class _BankViewState extends State<BankView> {
         flex: interestFlex,
         child: Container(
           width: 50,
-          // 👇 UPDATED: .withValues() used here
           decoration: BoxDecoration(color: const Color(0xFF39FF14).withValues(alpha: 0.1), border: Border.all(color: const Color(0xFF39FF14), width: 1.5), borderRadius: const BorderRadius.vertical(top: Radius.circular(4))),
         ),
       ));

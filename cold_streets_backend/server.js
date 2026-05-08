@@ -26,6 +26,7 @@ app.use('/events', require('./routes/events'));
 app.use('/jail', require('./routes/jail'));
 app.use('/hospital', require('./routes/hospital'));
 app.use('/university', require('./routes/university'));
+app.use('/bank', require('./routes/bank'));
 
 // 🛑 THE STATE GATEKEEPER
 // Any route placed below this line will be BLOCKED if the player is in Jail or Hospital.
@@ -40,6 +41,8 @@ app.use('/jobs', require('./routes/jobs'));
 app.use('/companies', require('./routes/companies'));
 app.use('/company-management', require('./routes/company_management'));
 app.use('/credit-broker', require('./routes/credit_broker'));
+app.use('/real-estate', require('./routes/realEstate'));
+
 
 
 // Runs every 30 seconds for testing (Change to 5 minutes for production: 5 * 60 * 1000)[cite: 7]

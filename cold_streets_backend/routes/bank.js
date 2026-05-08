@@ -1,6 +1,6 @@
-// bankRoutes.js (or similar)
 const express = require('express');
 const router = express.Router();
+const db = require('../db'); // Adjust this path to wherever your database connection file is
 
 // The exact same rates we used in the app to ensure server/client match
 const baseRates = [0.005, 0.011, 0.025, 0.09, 0.22];
@@ -19,12 +19,15 @@ router.post('/deposit', async (req, res) => {
 
     try {
         // --- START DATABASE TRANSACTION ---
-        // (Pseudocode: Replace db.query with your actual DB syntax)
 
-        // 2. Fetch User Data
-        const user = await db.query("SELECT dirty_cash, clean_cash, bank_trust_level FROM users WHERE id = ?", [userId]);
+        // 2. Fetch User Data (PostgreSQL uses $1 and returns data in .rows)
+        const userResult = await db.query(
+            "SELECT dirty_cash, clean_cash, bank_trust_level FROM users WHERE user_id = $1",
+            [userId]
+        );
 
-        if (!user) return res.status(404).json({ error: "User not found." });
+        if (userResult.rows.length === 0) return res.status(404).json({ error: "User not found." });
+        const user = userResult.rows[0]; // Extract the actual user object
 
         // Check sequential unlock (Trust Level)
         if (durationIndex > user.bank_trust_level) {
@@ -42,7 +45,6 @@ router.post('/deposit', async (req, res) => {
 
         // 4. Calculate Payout & Unlock Time
         const interestRate = baseRates[durationIndex];
-        // NOTE: Add your perkBonus logic here if applicable
         const interestEarned = Math.floor(depositAmount * interestRate);
         const totalPayout = depositAmount + interestEarned;
 
@@ -57,14 +59,14 @@ router.post('/deposit', async (req, res) => {
         const unlockDate = new Date();
         unlockDate.setDate(unlockDate.getDate() + daysToLock);
 
-        // 5. Update Database (Deduct Cash & Create Record)
+        // 5. Update Database (PostgreSQL uses $1, $2, $3)
         await db.query(
-            "UPDATE users SET dirty_cash = dirty_cash - ?, clean_cash = clean_cash - ? WHERE id = ?",
+            "UPDATE users SET dirty_cash = dirty_cash - $1, clean_cash = clean_cash - $2 WHERE user_id = $3",
             [dirtyToTake, cleanToTake, userId]
         );
 
         await db.query(
-            "INSERT INTO time_deposits (user_id, dirty_deposited, clean_deposited, total_payout, duration_index, unlocks_at) VALUES (?, ?, ?, ?, ?, ?)",
+            "INSERT INTO time_deposits (user_id, dirty_deposited, clean_deposited, total_payout, duration_index, unlocks_at) VALUES ($1, $2, $3, $4, $5, $6)",
             [userId, dirtyToTake, cleanToTake, totalPayout, durationIndex, unlockDate]
         );
 
@@ -84,7 +86,6 @@ router.post('/deposit', async (req, res) => {
         res.status(500).json({ error: "Internal server error." });
     }
 });
-// bankRoutes.js
 
 router.post('/claim-check', async (req, res) => {
     const { userId, checkId } = req.body;
@@ -93,12 +94,14 @@ router.post('/claim-check', async (req, res) => {
         // --- START TRANSACTION ---
 
         // 1. Find the specific check
-        const check = await db.query(
-            "SELECT amount, expires_at, status FROM pending_checks WHERE id = ? AND user_id = ?",
+        const checkResult = await db.query(
+            "SELECT amount, expires_at, status FROM pending_checks WHERE id = $1 AND user_id = $2",
             [checkId, userId]
         );
 
-        if (!check) return res.status(404).json({ error: "Check not found." });
+        if (checkResult.rows.length === 0) return res.status(404).json({ error: "Check not found." });
+        const check = checkResult.rows[0];
+
         if (check.status !== 'pending') return res.status(400).json({ error: "Check already processed." });
 
         // 2. Check if it's expired (The 24hr rule)
@@ -108,22 +111,22 @@ router.post('/claim-check', async (req, res) => {
         }
 
         // 3. Mark check as claimed and add money to Clean Cash
-        await db.query("UPDATE pending_checks SET status = 'claimed' WHERE id = ?", [checkId]);
+        await db.query("UPDATE pending_checks SET status = 'claimed' WHERE id = $1", [checkId]);
 
         await db.query(
-            "UPDATE users SET clean_cash = clean_cash + ? WHERE id = ?",
+            "UPDATE users SET clean_cash = clean_cash + $1 WHERE user_id = $2",
             [check.amount, userId]
         );
 
         // --- COMMIT TRANSACTION ---
 
         // 4. Fetch the fresh wallet balance to send back to the app
-        const user = await db.query("SELECT clean_cash FROM users WHERE id = ?", [userId]);
+        const userResult = await db.query("SELECT clean_cash FROM users WHERE user_id = $1", [userId]);
 
         res.status(200).json({
             message: "Check claimed successfully",
             updatedCash: {
-                clean_cash: user.clean_cash
+                clean_cash: userResult.rows[0].clean_cash
             }
         });
 
@@ -132,5 +135,31 @@ router.post('/claim-check', async (req, res) => {
         res.status(500).json({ error: "Internal server error." });
     }
 });
+router.get('/status/:userId', async (req, res) => {
+    try {
+        const { userId } = req.params;
 
+        // 1. Fetch any active time deposit for this user
+        const depositResult = await db.query(
+            "SELECT dirty_deposited, clean_deposited, duration_index, unlocks_at FROM time_deposits WHERE user_id = $1 AND status = 'active' LIMIT 1",
+            [userId]
+        );
+
+        // 2. Fetch any pending checks for this user
+        const checksResult = await db.query(
+            "SELECT id, source, amount, expires_at FROM pending_checks WHERE user_id = $1 AND status = 'pending'",
+            [userId]
+        );
+
+        // 3. Send them back to the app
+        res.status(200).json({
+            active_time_deposit: depositResult.rows.length > 0 ? depositResult.rows[0] : null,
+            pending_checks: checksResult.rows
+        });
+
+    } catch (error) {
+        console.error("Bank Fetch Error:", error);
+        res.status(500).json({ error: "Internal server error." });
+    }
+});
 module.exports = router;
