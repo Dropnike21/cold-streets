@@ -114,16 +114,20 @@ router.post('/login', async (req, res) => {
                 crime_exp: user.crime_exp,
                 dirty_cash: user.dirty_cash,
                 clean_cash: user.clean_cash,
+                casino_tokens: user.casino_tokens,
                 energy: user.energy,
-                cred: user.cred,
+                hp: user.hp,
                 nerve: user.nerve,
                 max_nerve: user.max_nerve,
-                hp: user.hp,
-
                 stat_str: user.stat_str,
                 stat_def: user.stat_def,
                 stat_dex: user.stat_dex,
                 stat_spd: user.stat_spd,
+                // ==========================================gold_bars: user.gold_bars,
+                influence: user.influence,
+                has_bazaar: user.has_bazaar,
+                cred: user.cred,
+
 
                 stat_acu: user.stat_acu,
                 stat_ops: user.stat_ops,

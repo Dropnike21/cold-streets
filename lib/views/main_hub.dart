@@ -24,6 +24,10 @@ import 'university_view.dart';
 import 'bank_view.dart';
 import 'real_estate_view.dart';
 import 'manage_properties_view.dart';
+import 'casino_hub_view.dart';
+import 'cas_perya.dart';
+import 'cas_slots.dart';
+import 'cas_high_low.dart';
 
 // 👇 Your new modular drawer import!
 import 'main_hub_drawer.dart';
@@ -43,6 +47,7 @@ class _MainHubState extends State<MainHub> {
   late int dirtyCash;
   late int cleanCash;
   late int creds;
+  late int casinoTokens;
 
   int goldBars = 0;
   int influence = 0;
@@ -101,6 +106,9 @@ class _MainHubState extends State<MainHub> {
     dirtyCash = _parseSafeInt(widget.userData['dirty_cash']);
     cleanCash = _parseSafeInt(widget.userData['clean_cash']);
     creds = _parseSafeInt(widget.userData['cred']);
+    casinoTokens = _parseSafeInt(widget.userData['casino_tokens']);
+    goldBars = _parseSafeInt(widget.userData['gold_bars']);
+    influence = _parseSafeInt(widget.userData['influence']);
 
     energy = _parseSafeInt(widget.userData['energy']);
     nerve = _parseSafeInt(widget.userData['nerve']);
@@ -221,6 +229,11 @@ class _MainHubState extends State<MainHub> {
       dirtyCash = _parseSafeInt(updatedStats['dirty_cash'] ?? dirtyCash);
       cleanCash = _parseSafeInt(updatedStats['clean_cash'] ?? cleanCash);
       creds = _parseSafeInt(updatedStats['cred'] ?? creds);
+      casinoTokens = _parseSafeInt(updatedStats['casino_tokens'] ?? casinoTokens);
+      goldBars = _parseSafeInt(updatedStats['gold_bars'] ?? goldBars);
+      influence = _parseSafeInt(updatedStats['influence'] ?? influence);
+      hasBazaar = updatedStats['has_bazaar'] == false;
+
 
       energy = _parseSafeInt(updatedStats['energy'] ?? energy);
       nerve = _parseSafeInt(updatedStats['nerve'] ?? nerve);
@@ -320,7 +333,22 @@ class _MainHubState extends State<MainHub> {
       case 17: return BankView(userData: widget.userData, onStateChange: _updateUserStats);
       case 18: return RealEstateView(userData: widget.userData, onStateChange: _updateUserStats); // 👇 ADD THIS
       case 19: return ManagePropertiesView(userData: widget.userData, onStateChange: _updateUserStats); // 👇 ADD THIS
-
+      case 20: return CasinoHubView(userData: widget.userData, onStateChange: _updateUserStats,onNavigate: _navigateTo,);
+      case 21: return CasPeryaView(
+        userData: widget.userData,
+        onStateChange: _updateUserStats,
+        onBack: () => _navigateTo(20), // Returns them to the Casino Hub
+      );
+      case 22: return CasSlotsView(
+        userData: widget.userData,
+        onStateChange: _updateUserStats,
+        onBack: () => _navigateTo(20), // Return to Casino Hub
+      );
+      case 23: return CasHighLowView(
+        userData: widget.userData,
+        onStateChange: _updateUserStats,
+        onBack: () => _navigateTo(20),
+      );
 
 
 

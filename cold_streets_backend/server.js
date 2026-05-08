@@ -42,6 +42,7 @@ app.use('/companies', require('./routes/companies'));
 app.use('/company-management', require('./routes/company_management'));
 app.use('/credit-broker', require('./routes/credit_broker'));
 app.use('/real-estate', require('./routes/realEstate'));
+app.use('/casino', require('./routes/casino')); // This loads the hub!
 
 
 
