@@ -4,6 +4,8 @@ import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
 
+import '../api_config.dart';
+
 class InventoryView extends StatefulWidget {
   final Map<String, dynamic> userData;
   final Function(Map<String, dynamic>) onStateChange;
@@ -15,7 +17,7 @@ class InventoryView extends StatefulWidget {
 }
 
 class _InventoryViewState extends State<InventoryView> {
-  final String apiUrl = "http://10.0.2.2:3000/inventory";
+  String get apiUrl => "${ApiConfig.baseUrl}/inventory";
   bool _isLoading = true;
 
   List<dynamic> _allItems = [];
@@ -124,7 +126,7 @@ class _InventoryViewState extends State<InventoryView> {
 
     try {
       final response = await http.post(
-        Uri.parse('http://10.0.2.2:3000/inventory/use'),
+        Uri.parse('${ApiConfig.baseUrl}/inventory/use'),
         headers: {"Content-Type": "application/json"},
         body: jsonEncode({"user_id": widget.userData['user_id'], "item_id": item['item_id']}),
       );

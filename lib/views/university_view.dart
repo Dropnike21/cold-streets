@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
 import 'dart:async';
+import '../api_config.dart';
 
 class UniversityView extends StatefulWidget {
   final Map<String, dynamic> userData;
@@ -14,7 +15,7 @@ class UniversityView extends StatefulWidget {
 }
 
 class _UniversityViewState extends State<UniversityView> {
-  final String apiUrl = "http://10.0.2.2:3000/university"; // Use your IP if on physical device
+  String get apiUrl => "${ApiConfig.baseUrl}/university";
 
   bool _isLoading = true;
   bool _isProcessing = false;

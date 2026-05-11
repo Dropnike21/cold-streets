@@ -3,6 +3,8 @@ import 'package:http/http.dart' as http;
 import 'dart:convert';
 import 'dart:math';
 
+import '../api_config.dart';
+
 class CasHighLowView extends StatefulWidget {
   final Map<String, dynamic> userData;
   final Function(Map<String, dynamic>) onStateChange;
@@ -97,7 +99,7 @@ class _CasHighLowViewState extends State<CasHighLowView> {
   // --- API CALLS ---
   Future<void> _checkActiveSession() async {
     try {
-      final res = await http.get(Uri.parse('http://10.0.2.2:3000/casino/highlow/session/$userId'));
+      final res = await http.get(Uri.parse('${ApiConfig.baseUrl}/casino/highlow/session/$userId'));
       final data = jsonDecode(res.body);
       if (data['active'] == true) {
         if (mounted) {
@@ -129,7 +131,7 @@ class _CasHighLowViewState extends State<CasHighLowView> {
     setState(() => isDealing = true);
     try {
       final res = await http.post(
-        Uri.parse('http://10.0.2.2:3000/casino/highlow/start'),
+        Uri.parse('${ApiConfig.baseUrl}/casino/highlow/start'),
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode({'userId': userId, 'betAmount': currentBet}),
       );
@@ -173,7 +175,7 @@ class _CasHighLowViewState extends State<CasHighLowView> {
 
     try {
       final res = await http.post(
-        Uri.parse('http://10.0.2.2:3000/casino/highlow/guess'),
+        Uri.parse('${ApiConfig.baseUrl}/casino/highlow/guess'),
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode({'userId': userId, 'guess': guess}),
       );
@@ -230,7 +232,7 @@ class _CasHighLowViewState extends State<CasHighLowView> {
     setState(() => isLoading = true);
     try {
       final res = await http.post(
-        Uri.parse('http://10.0.2.2:3000/casino/highlow/cashout'),
+        Uri.parse('${ApiConfig.baseUrl}/casino/highlow/cashout'),
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode({'userId': userId}),
       );

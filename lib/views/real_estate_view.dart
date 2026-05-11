@@ -3,6 +3,8 @@ import 'package:http/http.dart' as http;
 import 'dart:convert';
 import 'dart:math';
 
+import '../api_config.dart';
+
 class RealEstateView extends StatefulWidget {
   final Map<String, dynamic> userData;
   final Function(Map<String, dynamic>) onStateChange;
@@ -63,18 +65,18 @@ class _RealEstateViewState extends State<RealEstateView> {
 
   Future<void> _fetchMarketData() async {
     try {
-      final catRes = await http.get(Uri.parse('http://10.0.2.2:3000/real-estate/catalog'));
+      final catRes = await http.get(Uri.parse('${ApiConfig.baseUrl}/real-estate/catalog'));
       if (catRes.statusCode == 200) {
         properties = List<Map<String, dynamic>>.from(jsonDecode(catRes.body)['catalog']);
       }
 
-      final mktRes = await http.get(Uri.parse('http://10.0.2.2:3000/real-estate/market'));
+      final mktRes = await http.get(Uri.parse('${ApiConfig.baseUrl}/real-estate/market'));
       if (mktRes.statusCode == 200) {
         playerListings = List<Map<String, dynamic>>.from(jsonDecode(mktRes.body)['listings']);
       }
 
       // NEW: Fetch portfolio just to get the ownership counts for the badges
-      final portRes = await http.get(Uri.parse('http://10.0.2.2:3000/real-estate/portfolio/$userId'));
+      final portRes = await http.get(Uri.parse('${ApiConfig.baseUrl}/real-estate/portfolio/$userId'));
       if (portRes.statusCode == 200) {
         final portData = jsonDecode(portRes.body)['portfolio'];
         ownedCounts.clear();
@@ -136,7 +138,7 @@ class _RealEstateViewState extends State<RealEstateView> {
 
     try {
       final response = await http.post(
-        Uri.parse('http://10.0.2.2:3000/real-estate/buy-agency'),
+        Uri.parse('${ApiConfig.baseUrl}/real-estate/buy-agency'),
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode({
           'userId': userId,

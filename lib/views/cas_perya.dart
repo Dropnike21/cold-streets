@@ -4,6 +4,8 @@ import 'dart:convert';
 import 'dart:async';
 import 'dart:math';
 
+import '../api_config.dart';
+
 class CasPeryaView extends StatefulWidget {
   final Map<String, dynamic> userData;
   final Function(Map<String, dynamic>) onStateChange;
@@ -140,7 +142,7 @@ class _CasPeryaViewState extends State<CasPeryaView> {
 
     try {
       final response = await http.post(
-        Uri.parse('http://10.0.2.2:3000/casino/perya/roll'),
+        Uri.parse('${ApiConfig.baseUrl}/casino/perya/roll'),
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode({'userId': userId, 'betAmount': currentBet, 'chosenColor': selectedColor}),
       );

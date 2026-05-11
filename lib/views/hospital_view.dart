@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
 import 'dart:async';
+import '../api_config.dart';
 
 class HospitalView extends StatefulWidget {
   final Map<String, dynamic> userData;
@@ -13,7 +14,7 @@ class HospitalView extends StatefulWidget {
 }
 
 class _HospitalViewState extends State<HospitalView> {
-  final String apiUrl = "http://10.0.2.2:3000/hospital";
+  String get apiUrl => "${ApiConfig.baseUrl}/hospital";
 
   bool _isLoading = true;
   bool _isProcessing = false;

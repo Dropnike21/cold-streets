@@ -4,6 +4,8 @@ import 'dart:convert';
 import 'dart:math';
 import 'dart:async';
 
+import '../api_config.dart';
+
 class BankView extends StatefulWidget {
   final Map<String, dynamic> userData;
   final Function(Map<String, dynamic>) onStateChange;
@@ -57,7 +59,7 @@ class _BankViewState extends State<BankView> {
   Future<void> _fetchBankData() async {
     try {
       final String userId = widget.userData['user_id'].toString();
-      final response = await http.get(Uri.parse('http://10.0.2.2:3000/bank/status/$userId'));
+      final response = await http.get(Uri.parse('${ApiConfig.baseUrl}/bank/status/$userId'));
 
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
@@ -204,7 +206,7 @@ class _BankViewState extends State<BankView> {
       int cleanToTake = amountToProcess - dirtyToTake;
 
       final response = await http.post(
-        Uri.parse('http://10.0.2.2:3000/bank/deposit'),
+        Uri.parse('${ApiConfig.baseUrl}/bank/deposit'),
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode({
           'userId': userId,
@@ -312,7 +314,7 @@ class _BankViewState extends State<BankView> {
 
     try {
       final response = await http.post(
-        Uri.parse('http://10.0.2.2:3000/bank/claim-check'),
+        Uri.parse('${ApiConfig.baseUrl}/bank/claim-check'),
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode({'userId': userId, 'checkId': checkId}),
       );

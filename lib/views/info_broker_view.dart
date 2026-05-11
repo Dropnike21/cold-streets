@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
+import '../api_config.dart';
 
 class InfoBrokerView extends StatefulWidget {
   final Map<String, dynamic> userData;
@@ -23,9 +24,9 @@ class InfoBrokerView extends StatefulWidget {
 }
 
 class _InfoBrokerViewState extends State<InfoBrokerView> {
-  final String apiUrl = "http://10.0.2.2:3000/info-broker";
-  final String companyApiUrl = "http://10.0.2.2:3000/companies";
-  final String jobsApiUrl = "http://10.0.2.2:3000/jobs";
+  String get apiUrl => "${ApiConfig.baseUrl}/info-broker";
+  String get companyApiUrl => "${ApiConfig.baseUrl}/companies";
+  String get jobsApiUrl => "${ApiConfig.baseUrl}/jobs";
 
   bool _isLoading = true;
   bool _isProcessing = false;

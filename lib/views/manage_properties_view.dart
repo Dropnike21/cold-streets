@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
 
+import '../api_config.dart';
+
 class ManagePropertiesView extends StatefulWidget {
   final Map<String, dynamic> userData;
   final Function(Map<String, dynamic>) onStateChange;
@@ -59,7 +61,7 @@ class _ManagePropertiesViewState extends State<ManagePropertiesView> {
 
   Future<void> _fetchPortfolio() async {
     try {
-      final response = await http.get(Uri.parse('http://10.0.2.2:3000/real-estate/portfolio/$userId'));
+      final response = await http.get(Uri.parse('${ApiConfig.baseUrl}/real-estate/portfolio/$userId'));
 
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
@@ -106,7 +108,7 @@ class _ManagePropertiesViewState extends State<ManagePropertiesView> {
 
     try {
       final response = await http.post(
-        Uri.parse('http://10.0.2.2:3000/real-estate/move-in'),
+        Uri.parse('${ApiConfig.baseUrl}/real-estate/move-in'),
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode({'userId': userId, 'instanceId': instanceId}),
       );
@@ -147,7 +149,7 @@ class _ManagePropertiesViewState extends State<ManagePropertiesView> {
 
     try {
       final response = await http.post(
-        Uri.parse('http://10.0.2.2:3000/real-estate/upgrade'),
+        Uri.parse('${ApiConfig.baseUrl}/real-estate/upgrade'),
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode({
           'userId': userId,

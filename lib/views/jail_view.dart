@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
 import 'dart:async';
+import '../api_config.dart';
 
 class JailView extends StatefulWidget {
   final Map<String, dynamic> userData;
@@ -14,7 +15,8 @@ class JailView extends StatefulWidget {
 }
 
 class _JailViewState extends State<JailView> {
-  final String apiUrl = "http://10.0.2.2:3000/jail";
+
+  String get apiUrl => "${ApiConfig.baseUrl}/jail";
 
   bool _isLoading = true;
   bool _isProcessing = false;

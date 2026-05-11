@@ -27,6 +27,7 @@ app.use('/jail', require('./routes/jail'));
 app.use('/hospital', require('./routes/hospital'));
 app.use('/university', require('./routes/university'));
 app.use('/bank', require('./routes/bank'));
+app.use('/achievements', require('./routes/achievements'));
 
 // 🛑 THE STATE GATEKEEPER
 // Any route placed below this line will be BLOCKED if the player is in Jail or Hospital.
@@ -122,6 +123,6 @@ setInterval(async () => {
 
 // Start Server
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-    console.log(`🔌 Node API running on http://localhost:${PORT}`);
+app.listen(PORT, '0.0.0.0', () => { // 👈 ADD '0.0.0.0' RIGHT HERE
+    console.log(`🔌 Node API running on http://localhost:${PORT} (0.0.0.0 enabled)`);
 });

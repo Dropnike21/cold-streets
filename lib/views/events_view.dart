@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
 
+import '../api_config.dart';
+
 class EventsView extends StatefulWidget {
   final Map<String, dynamic> userData;
 
@@ -44,7 +46,7 @@ class _EventsViewState extends State<EventsView> {
       int offset = isInitial ? 0 : _events.length;
 
       final response = await http.get(
-          Uri.parse('http://10.0.2.2:3000/events/$userId?limit=$limit&offset=$offset')
+          Uri.parse('${ApiConfig.baseUrl}/events/$userId?limit=$limit&offset=$offset')
       );
 
       if (response.statusCode == 200) {
@@ -80,7 +82,7 @@ class _EventsViewState extends State<EventsView> {
     try {
       final String userId = widget.userData['user_id'].toString();
       await http.post(
-        Uri.parse('http://10.0.2.2:3000/events/mark_read'),
+        Uri.parse('${ApiConfig.baseUrl}/events/mark_read'),
         headers: {"Content-Type": "application/json"},
         body: jsonEncode({"user_id": userId}),
       );

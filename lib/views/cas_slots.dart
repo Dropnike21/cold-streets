@@ -4,6 +4,8 @@ import 'dart:convert';
 import 'dart:async';
 import 'dart:math';
 
+import '../api_config.dart';
+
 class CasSlotsView extends StatefulWidget {
   final Map<String, dynamic> userData;
   final Function(Map<String, dynamic>) onStateChange;
@@ -78,7 +80,7 @@ class _CasSlotsViewState extends State<CasSlotsView> {
 
   Future<void> _fetchJackpot() async {
     try {
-      final res = await http.get(Uri.parse('http://10.0.2.2:3000/casino/slots/jackpot'));
+      final res = await http.get(Uri.parse('${ApiConfig.baseUrl}/casino/slots/jackpot'));
       if (res.statusCode == 200) {
         if (mounted) setState(() => currentJackpot = jsonDecode(res.body)['jackpot']);
       }
@@ -154,7 +156,7 @@ class _CasSlotsViewState extends State<CasSlotsView> {
 
     try {
       final response = await http.post(
-        Uri.parse('http://10.0.2.2:3000/casino/slots/spin'),
+        Uri.parse('${ApiConfig.baseUrl}/casino/slots/spin'),
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode({'userId': userId, 'betAmount': currentBet}),
       );

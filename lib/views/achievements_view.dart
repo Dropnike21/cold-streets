@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
 
+import '../api_config.dart';
+
 class AchievementsView extends StatefulWidget {
   final Map<String, dynamic> userData;
 
@@ -34,7 +36,7 @@ class _AchievementsViewState extends State<AchievementsView> {
     setState(() => _isLoading = true);
     try {
       final String userId = widget.userData['user_id'].toString();
-      final response = await http.get(Uri.parse('http://10.0.2.2:3000/achievements/$userId'));
+      final response = await http.get(Uri.parse('${ApiConfig.baseUrl}/achievements/$userId'));
 
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);

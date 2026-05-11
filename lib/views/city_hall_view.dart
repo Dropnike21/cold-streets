@@ -1,11 +1,13 @@
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
+import '../api_config.dart';
 
 class CityHallView extends StatefulWidget {
   final Map<String, dynamic> userData;
   final Function(Map<String, dynamic>)? onStateChange;
   final Function(int)? onViewCompany;
+
 
   const CityHallView({super.key, required this.userData, this.onStateChange, this.onViewCompany});
 
@@ -14,8 +16,8 @@ class CityHallView extends StatefulWidget {
 }
 
 class _CityHallViewState extends State<CityHallView> {
-  final String apiUrl = "http://10.0.2.2:3000/cityhall";
-  final String companiesApiUrl = "http://10.0.2.2:3000/companies";
+  String get apiUrl => "${ApiConfig.baseUrl}/cityhall";
+  String get companiesApiUrl => "${ApiConfig.baseUrl}/companies";
 
   bool _isLoading = true;
   bool _isProcessing = false;

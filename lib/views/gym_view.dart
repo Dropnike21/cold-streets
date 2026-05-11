@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
 import 'dart:async';
+import '../api_config.dart';
 
 class GymView extends StatefulWidget {
   final Map<String, dynamic> userData;
@@ -16,7 +17,7 @@ class GymView extends StatefulWidget {
 }
 
 class _GymViewState extends State<GymView> {
-  final String apiUrl = "http://10.0.2.2:3000/gym";
+  String get apiUrl => "${ApiConfig.baseUrl}/gym";
   bool isLoading = true;
   bool isTraining = false;
 

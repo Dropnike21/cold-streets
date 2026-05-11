@@ -181,8 +181,8 @@ class MainHubDrawer extends StatelessWidget {
                     initiallyExpanded: true,
                     children: [
                       _buildMenuTile(icon: Icons.fitness_center, color: Colors.orangeAccent, title: "The Gym", onTap: () => _handleNavigation(context, 5)),
-                      _buildMenuTile(icon: Icons.local_hospital, color: Colors.redAccent, title: "The Clinic", onTap: () {}),
-                      _buildMenuTile(icon: Icons.church, color: Colors.yellow, title: "Church", onTap: () {}),
+                      _buildMenuTile(icon: Icons.local_hospital, color: Colors.redAccent, title: "The Clinic (undeveloped)", onTap: () {}),
+                      _buildMenuTile(icon: Icons.church, color: Colors.yellow, title: "Church (undeveloped)", onTap: () {}),
                     ]
                 ),
 
@@ -190,8 +190,9 @@ class MainHubDrawer extends StatelessWidget {
                     context: context,
                     title: "THE UNDERWORLD",
                     children: [
-                      _buildMenuTile(icon: Icons.diamond, color: Colors.cyanAccent, title: "Credit Broker", onTap: () => _handleNavigation(context, 6)),
-                      _buildMenuTile(icon: Icons.security, color: Colors.grey, title: "Underground Munitions", onTap: () {}),
+                      // Mapped Item Market to the Credit Broker index (6) for now!
+                      _buildMenuTile(icon: Icons.diamond, color: Colors.cyanAccent, title: "Credit Broker / Item Market", onTap: () => _handleNavigation(context, 6)),
+                      _buildMenuTile(icon: Icons.security, color: Colors.grey, title: "Underground Munitions (undeveloped)", onTap: () {}),
                       _buildMenuTile(icon: Icons.casino, color: Colors.purpleAccent, title: "The Casino", onTap: ()  => _handleNavigation(context, 20)),
                     ]
                 ),
@@ -201,10 +202,10 @@ class MainHubDrawer extends StatelessWidget {
                     title: "FINANCIAL DISTRICT",
                     children: [
                       _buildMenuTile(icon: Icons.account_balance, color: Colors.blueAccent, title: "The Bank", onTap: () => _handleNavigation(context, 17)),
-                      _buildMenuTile(icon: Icons.show_chart, color: Colors.greenAccent, title: "Stock Market", onTap: () {}),
+                      _buildMenuTile(icon: Icons.show_chart, color: Colors.greenAccent, title: "Stock Market (undeveloped)", onTap: () {}),
                       _buildMenuTile(icon: Icons.domain, color: Colors.tealAccent, title: "Real Estate", onTap: () => _handleNavigation(context, 18)),
-                      _buildMenuTile(icon: Icons.shopping_bag, color: Colors.amber, title: "Trade Network", onTap: () {}),
-                      _buildMenuTile(icon: Icons.gavel, color: Colors.orange, title: "Auction House", onTap: () {}),
+                      _buildMenuTile(icon: Icons.shopping_bag, color: Colors.amber, title: "Trade Network (undeveloped)", onTap: () {}),
+                      _buildMenuTile(icon: Icons.gavel, color: Colors.orange, title: "Auction House (undeveloped)", onTap: () {}),
                     ]
                 ),
 
@@ -224,10 +225,11 @@ class MainHubDrawer extends StatelessWidget {
                     context: context,
                     title: "TRANSIT & AUTO",
                     children: [
-                      _buildMenuTile(icon: Icons.map, color: const Color(0xFF39FF14), title: "City Map", onTap: () {}),
-                      _buildMenuTile(icon: Icons.flight_takeoff, color: Colors.white70, title: "Airport", onTap: () {}),
-                      _buildMenuTile(icon: Icons.car_repair, color: Colors.grey, title: "The Chop Shop", onTap: () {}),
-                      _buildMenuTile(icon: Icons.sports_score, color: Colors.yellow, title: "The Street Circuit", onTap: () {}),
+                      // 🚨 Map is officially connected!
+                      _buildMenuTile(icon: Icons.map, color: const Color(0xFF39FF14), title: "City Map", onTap: () => _handleNavigation(context, 24)),
+                      _buildMenuTile(icon: Icons.flight_takeoff, color: Colors.white70, title: "Airport (undeveloped)", onTap: () {}),
+                      _buildMenuTile(icon: Icons.car_repair, color: Colors.grey, title: "The Chop Shop (undeveloped)", onTap: () {}),
+                      _buildMenuTile(icon: Icons.sports_score, color: Colors.yellow, title: "The Street Circuit (undeveloped)", onTap: () {}),
                     ]
                 ),
                 const SizedBox(height: 16),
@@ -248,9 +250,9 @@ class MainHubDrawer extends StatelessWidget {
                   _buildMenuTile(icon: Icons.backpack, color: Colors.white, title: "Inventory", onTap: () => _handleNavigation(context, 4)),
                   _buildMenuTile(icon: Icons.military_tech, color: const Color(0xFF39FF14), title: "Achievements", onTap: () => _handleNavigation(context, 9)),
                   _buildMenuTile(icon: Icons.house, color: Colors.brown.shade300, title: "My Properties", onTap: () => _handleNavigation(context, 19)),
-                  if (hasBazaar) _buildMenuTile(icon: Icons.storefront, color: Colors.amber, title: "My Bazaar", onTap: () {}),
-                  _buildMenuTile(icon: Icons.assignment, color: Colors.amberAccent, title: "Mission Board", onTap: () {}),
-                  _buildMenuTile(icon: Icons.settings, color: Colors.grey, title: "Settings", onTap: () {}),
+                  if (hasBazaar) _buildMenuTile(icon: Icons.storefront, color: Colors.amber, title: "My Bazaar (undeveloped)", onTap: () {}),
+                  _buildMenuTile(icon: Icons.assignment, color: Colors.amberAccent, title: "Mission Board (undeveloped)", onTap: () {}),
+                  _buildMenuTile(icon: Icons.settings, color: Colors.grey, title: "Settings (undeveloped)", onTap: () {}),
                   _buildMenuTile(icon: Icons.exit_to_app, color: Colors.redAccent, title: "Log Out", onTap: onLogout, textColor: Colors.redAccent),
                 ],
               ),

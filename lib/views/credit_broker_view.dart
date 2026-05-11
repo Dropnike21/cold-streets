@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
 
+import '../api_config.dart';
+
 class CreditBrokerView extends StatefulWidget {
   final Map<String, dynamic> userData;
 
@@ -32,7 +34,7 @@ class _CreditBrokerViewState extends State<CreditBrokerView> {
     setState(() => _isLoading = true);
     try {
       final String userId = widget.userData['user_id'].toString();
-      final response = await http.get(Uri.parse('http://10.0.2.2:3000/credit-broker/$userId'));
+      final response = await http.get(Uri.parse('${ApiConfig.baseUrl}/credit-broker/$userId'));
 
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);

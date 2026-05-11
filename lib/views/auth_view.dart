@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
 import 'main_hub.dart';
+import '../api_config.dart';
 
 class AuthView extends StatefulWidget {
   const AuthView({super.key});
@@ -11,7 +12,6 @@ class AuthView extends StatefulWidget {
 }
 
 class _AuthViewState extends State<AuthView> {
-  // We separate the controllers so the data doesn't get tangled
   final TextEditingController _loginIdController = TextEditingController();
   final TextEditingController _emailController = TextEditingController();
   final TextEditingController _usernameController = TextEditingController();
@@ -20,20 +20,17 @@ class _AuthViewState extends State<AuthView> {
   bool _isLogin = true;
   bool _isLoading = false;
 
-  final String apiUrl = "http://10.0.2.2:3000";
-
   Future<void> _submitAuth() async {
     setState(() => _isLoading = true);
 
     final String endpoint = _isLogin ? '/auth/login' : '/auth/register';
-    final Uri url = Uri.parse('$apiUrl$endpoint');
+    final Uri url = Uri.parse('${ApiConfig.baseUrl}$endpoint');
 
     Map<String, dynamic> payload = {};
 
-    // Build the dynamic payload based on our new backend rules
     if (_isLogin) {
       payload = {
-        "login_id": _loginIdController.text.trim(), // The 3-Way Login!
+        "login_id": _loginIdController.text.trim(),
         "password": _passwordController.text.trim(),
       };
     } else {

@@ -3,6 +3,7 @@ import 'package:http/http.dart' as http;
 import 'dart:convert';
 import 'dart:async';
 
+import '../api_config.dart';
 import 'auth_view.dart';
 import 'dashboard_view.dart';
 import 'streets_view.dart';
@@ -28,6 +29,7 @@ import 'casino_hub_view.dart';
 import 'cas_perya.dart';
 import 'cas_slots.dart';
 import 'cas_high_low.dart';
+import 'city_map_view.dart';
 
 // 👇 Your new modular drawer import!
 import 'main_hub_drawer.dart';
@@ -176,8 +178,8 @@ class _MainHubState extends State<MainHub> {
       final String id = widget.userData['user_id'].toString();
 
       final responses = await Future.wait([
-        http.get(Uri.parse('http://10.0.2.2:3000/auth/status/$id')),
-        http.get(Uri.parse('http://10.0.2.2:3000/events/$id?limit=1'))
+        http.get(Uri.parse('${ApiConfig.baseUrl}/auth/status/$id')),
+        http.get(Uri.parse('${ApiConfig.baseUrl}/events/$id?limit=1'))
       ]);
 
       final statusResponse = responses[0];
@@ -348,6 +350,11 @@ class _MainHubState extends State<MainHub> {
         userData: widget.userData,
         onStateChange: _updateUserStats,
         onBack: () => _navigateTo(20),
+      );
+      case 24: return CityMapView(
+        userData: widget.userData,
+        onBack: () => _navigateTo(0),
+        onNavigate: _navigateTo,
       );
 
 
