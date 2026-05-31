@@ -2,23 +2,64 @@ const express = require('express');
 const pool = require('../db');
 const router = express.Router();
 
+// --- HELPER: Fix pgAdmin's stripped JSON strings ---
+// This handles ANY key name and ANY string value dynamically
+function fixMalformedEffects(str) {
+    // If it's empty, null, or already an object, return an empty object
+    if (!str || str === '{}' || typeof str !== 'string') return {};
+
+    try {
+        // Step 1: Find any text right before a colon and wrap it in quotes.
+        // This catches ranged_damage, accuracy, heal_amount, anything.
+        let fixedStr = str.replace(/([{,]\s*)([a-zA-Z0-9_]+)\s*:/g, '$1"$2":');
+
+        // Step 2: Look at the values after the colons.
+        fixedStr = fixedStr.replace(/:\s*([^,}\s]+)/g, (match, val) => {
+            // If the value is a number (45) or a boolean (true/false), leave it alone.
+            if (!isNaN(val) || val === 'true' || val === 'false') return `: ${val}`;
+
+            // Otherwise, it's a string (like 7.62_short), so wrap it in quotes.
+            return `: "${val}"`;
+        });
+
+        // Parse it into a perfect JavaScript object
+        return JSON.parse(fixedStr);
+    } catch (e) {
+        console.error("Regex fix failed on string:", str);
+        return {}; // Failsafe: return empty stats if something goes horribly wrong
+    }
+}
+
 // --- 1. GET ALL ITEMS FOR THE MARKET UI ---
 router.get('/list', async (req, res) => {
     try {
+        // V1.5 FIX: Safer Subquery to avoid GROUP BY crashes, and added the 'city_market' filter!
         const query = `
             SELECT
                 im.*,
-                (COALESCE(SUM(ui.quantity), 0) + im.stock) AS circulation
+                (COALESCE(ui_sum.total_qty, 0) + im.stock) AS circulation
             FROM items_master im
-            LEFT JOIN user_inventory ui ON im.item_id = ui.item_id
-            GROUP BY im.item_id
+            LEFT JOIN (
+                SELECT item_id, SUM(quantity) as total_qty
+                FROM user_inventory
+                GROUP BY item_id
+            ) ui_sum ON im.item_id = ui_sum.item_id
+            WHERE im.source = 'city_market'
             ORDER BY im.base_value ASC
         `;
         const items = await pool.query(query);
-        res.json(items.rows);
+
+        // Map over the results and clean the effects column on the fly
+        const cleanedItems = items.rows.map(item => {
+            item.effects = fixMalformedEffects(item.effects);
+            return item;
+        });
+
+        res.json(cleanedItems);
     } catch (err) {
+        // This will print the EXACT reason to your Node terminal if it fails again
         console.error("Market Fetch Error:", err.message);
-        res.status(500).json({ error: "Failed to load the Black Market." });
+        res.status(500).json({ error: "Failed to load the Market." });
     }
 });
 

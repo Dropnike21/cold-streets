@@ -4,7 +4,7 @@ const pool = require('../db');
 const router = express.Router();
 
 // ==========================================
-// REGISTER ROUTE (WITH EMAIL & TRANSACTIONS)
+// REGISTER ROUTE
 // ==========================================
 router.post('/register', async (req, res) => {
     const client = await pool.connect();
@@ -13,7 +13,6 @@ router.post('/register', async (req, res) => {
         const { username, password } = req.body;
         const email = req.body.email.toLowerCase();
 
-        // 1. Check if Email or Username is taken
         const userCheck = await client.query(
             "SELECT * FROM users WHERE email = $1 OR username = $2",
             [email, username]
@@ -25,23 +24,24 @@ router.post('/register', async (req, res) => {
             if (existingUser.username === username) return res.status(400).json({ error: "That street name is taken." });
         }
 
-        // 2. Hash the password
         const salt = await bcrypt.genSalt(10);
         const hashedPassword = await bcrypt.hash(password, salt);
 
-        // --- BEGIN TRANSACTION ---
         await client.query('BEGIN');
 
-        // 3. Create the Main User Record (V1.1 Stat Split & Crime EXP Added)
+        // 🚨 ADDED: contact_exp initialized with JSON
         const newUserQuery = await client.query(
             `INSERT INTO users (
                 email, username, password_hash, role, crime_exp,
+                contact_exp, active_contract,
                 stat_str, stat_def, stat_dex, stat_spd, stat_acu, stat_ops, stat_pre, stat_res
             ) VALUES (
                 $1, $2, $3, $4, 0,
+                '{"anonymous": 1, "kevin": 0, "uncle_john": 0}'::jsonb, NULL,
                 10, 10, 10, 10, 10, 10, 10, 10
             ) RETURNING
                 user_id, username, dirty_cash, clean_cash, level, hp, energy, nerve, max_nerve, crime_exp,
+                contact_exp, active_contract,
                 stat_str, stat_def, stat_dex, stat_spd, stat_acu, stat_ops, stat_pre, stat_res`,
             [email, username, hashedPassword, 'player']
         );
@@ -49,24 +49,18 @@ router.post('/register', async (req, res) => {
         const newUser = newUserQuery.rows[0];
         const newUserId = newUser.user_id;
 
-        // 4. Generate all the linked Relational Tables
         await client.query("INSERT INTO user_equipment (user_id) VALUES ($1)", [newUserId]);
         await client.query("INSERT INTO user_properties (user_id) VALUES ($1)", [newUserId]);
-
-        // Setup Crime Records for Achievement Statistics
         await client.query("INSERT INTO user_crime_records (user_id, total_crimes, total_successes, total_fails, total_jailed, skill_searching, skill_pickpocketing, skill_shoplifting, skill_mugging, skill_hacking) VALUES ($1, 0, 0, 0, 0, 0, 0, 0, 0, 0)", [newUserId]);
         await client.query("INSERT INTO user_statistics (user_id, total_energy_spent, total_nerve_spent, total_gym_trains, lifetime_dirty_cash, lifetime_clean_cash, total_items_bought, recruits_hired, recruits_lost) VALUES ($1, 0, 0, 0, 0, 0, 0, 0, 0)", [newUserId]);
-        // Auto-seed Gym #1 (Abandoned Warehouse per V1.1 Assets Canvas)
         await client.query("INSERT INTO user_gym_stats (user_id, active_gym_id, gym_exp) VALUES ($1, 1, 0)", [newUserId]);
         await client.query("INSERT INTO user_owned_gyms (user_id, gym_id) VALUES ($1, 1)", [newUserId]);
 
-        // 5. Inject their first event
         await client.query(
             "INSERT INTO user_events (user_id, event_text) VALUES ($1, $2)",
-            [newUserId, "Welcome to Cold Streets. Trust no one, build your empire."]
+            [newUserId, "Welcome to Cold Streets. Check your burner phone for instructions."]
         );
 
-        // --- COMMIT TRANSACTION ---
         await client.query('COMMIT');
 
         res.json({ message: "Welcome to the Syndicate.", user: newUser });
@@ -81,7 +75,7 @@ router.post('/register', async (req, res) => {
 });
 
 // ==========================================
-// 3-WAY LOGIN ROUTE (EMAIL, USERNAME, OR ID)
+// 3-WAY LOGIN ROUTE
 // ==========================================
 router.post('/login', async (req, res) => {
     try {
@@ -93,16 +87,12 @@ router.post('/login', async (req, res) => {
             [searchId]
         );
 
-        if (userCheck.rows.length === 0) {
-            return res.status(401).json({ error: "Invalid credentials. Ghost account." });
-        }
+        if (userCheck.rows.length === 0) return res.status(401).json({ error: "Invalid credentials. Ghost account." });
 
         const user = userCheck.rows[0];
         const validPassword = await bcrypt.compare(password, user.password_hash);
 
-        if (!validPassword) {
-            return res.status(401).json({ error: "Invalid credentials. Wrong password." });
-        }
+        if (!validPassword) return res.status(401).json({ error: "Invalid credentials. Wrong password." });
 
         res.json({
             message: "Authentication successful.",
@@ -112,6 +102,8 @@ router.post('/login', async (req, res) => {
                 role: user.role,
                 level: user.level,
                 crime_exp: user.crime_exp,
+                contact_exp: user.contact_exp,             // 🚨 SYNC FIXER JSON
+                active_contract: user.active_contract, // 🚨 SYNC ACTIVE CONTRACT JSON
                 dirty_cash: user.dirty_cash,
                 clean_cash: user.clean_cash,
                 casino_tokens: user.casino_tokens,
@@ -123,12 +115,9 @@ router.post('/login', async (req, res) => {
                 stat_def: user.stat_def,
                 stat_dex: user.stat_dex,
                 stat_spd: user.stat_spd,
-                // ==========================================gold_bars: user.gold_bars,
                 influence: user.influence,
                 has_bazaar: user.has_bazaar,
                 cred: user.cred,
-
-
                 stat_acu: user.stat_acu,
                 stat_ops: user.stat_ops,
                 stat_pre: user.stat_pre,
@@ -148,10 +137,11 @@ router.get('/status/:user_id', async (req, res) => {
     try {
         const { user_id } = req.params;
 
+        // 🚨 ADDED JSON SYNC TO LIVE TELEMETRY
         const userQuery = await pool.query(
-                    "SELECT dirty_cash, clean_cash, cred, energy, nerve, max_nerve, hp, level, exp, crime_exp, heat, jail_expires_at, hospital_expires_at FROM users WHERE user_id = $1", // 👉 ADDED TIMESTAMPS & HEAT
-                    [user_id]
-                );
+            "SELECT dirty_cash, clean_cash, cred, energy, nerve, max_nerve, hp, level, exp, crime_exp, heat, contact_exp, active_contract, jail_expires_at, hospital_expires_at FROM users WHERE user_id = $1",
+            [user_id]
+        );
         if (userQuery.rows.length === 0) return res.status(404).json({ error: "Ghost account." });
 
         const cdQuery = await pool.query(

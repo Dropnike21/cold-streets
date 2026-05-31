@@ -28,12 +28,15 @@ app.use('/hospital', require('./routes/hospital'));
 app.use('/university', require('./routes/university'));
 app.use('/bank', require('./routes/bank'));
 app.use('/achievements', require('./routes/achievements'));
+app.use('/missions', require('./routes/missions'));
+
 
 // 🛑 THE STATE GATEKEEPER
 // Any route placed below this line will be BLOCKED if the player is in Jail or Hospital.
 app.use(checkPlayerState);
 
 // 🔴 RESTRICTED ROUTES (Must be free to access)
+app.use('/character', require('./routes/character'));
 app.use('/crimes', require('./routes/crimes'));
 app.use('/market', require('./routes/market'));
 app.use('/syndicate', require('./routes/syndicate'));
@@ -72,7 +75,7 @@ setInterval(async () => {
             SET
                 energy = LEAST(energy + 5, 100),
                 nerve = LEAST(nerve + 2, max_nerve),
-                hp = LEAST(hp + 10, 100),
+                hp = LEAST(hp + 10, max_hp),
                 heat = GREATEST(0, heat - CASE
                     WHEN jail_expires_at > NOW() THEN 2.00
                     WHEN last_active_at < NOW() - INTERVAL '5 minutes' THEN 2.00

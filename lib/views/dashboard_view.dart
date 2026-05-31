@@ -1,19 +1,17 @@
-// File Path: lib/views/dashboard_view.dart
-
 import 'package:flutter/material.dart';
 
 class DashboardView extends StatelessWidget {
   final Map<String, dynamic> userData;
+  final Function(int) onNavigate;
 
-  const DashboardView({super.key, required this.userData});
+  const DashboardView({
+    super.key,
+    required this.userData,
+    required this.onNavigate
+  });
 
-  // Helper for safe strings
   String _safeStr(dynamic value, String fallback) => value?.toString() ?? fallback;
-
-  // Bulletproof parsers for V1.2 "Trillions" Economy
   double _parseSafeDouble(dynamic value) => (value is num) ? value.toDouble() : double.tryParse(value?.toString() ?? '0.0') ?? 0.0;
-
-  // Use num instead of int to prevent overflow issues during parsing
   num _parseSafeNum(dynamic value) => (value is num) ? value : num.tryParse(value?.toString() ?? '0') ?? 0;
 
   String _formatWholeNumber(dynamic value) {
@@ -28,44 +26,41 @@ class DashboardView extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return SingleChildScrollView(
-      padding: const EdgeInsets.all(10.0),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          _buildHeader(),
-          const SizedBox(height: 12),
-          _buildGeneralInfo(),
-          const SizedBox(height: 12),
+    return Scaffold(
+      backgroundColor: Colors.transparent,
 
-          // Side-by-Side Stats
-          Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Expanded(child: _buildBattleStats()),
-              const SizedBox(width: 10),
-              Expanded(child: _buildWorkingStats()),
-            ],
-          ),
-          const SizedBox(height: 12),
+      body: SingleChildScrollView(
+        padding: const EdgeInsets.all(10.0),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            _buildHeader(),
+            const SizedBox(height: 12),
+            _buildGeneralInfo(),
+            const SizedBox(height: 12),
 
-          _buildProgressionStats(), // NEW: Crime EXP & Progression
-          const SizedBox(height: 12),
-
-          _buildEquippedGear(),
-          const SizedBox(height: 12),
-
-          _buildPropertyInfo(),
-          const SizedBox(height: 12),
-
-          _buildLatestEvents(),
-          const SizedBox(height: 30),
-        ],
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Expanded(child: _buildBattleStats()),
+                const SizedBox(width: 10),
+                Expanded(child: _buildWorkingStats()),
+              ],
+            ),
+            const SizedBox(height: 12),
+            _buildProgressionStats(),
+            const SizedBox(height: 12),
+            _buildEquippedGear(),
+            const SizedBox(height: 12),
+            _buildPropertyInfo(),
+            const SizedBox(height: 12),
+            _buildLatestEvents(),
+            const SizedBox(height: 80),
+          ],
+        ),
       ),
     );
   }
-
-  // --- UI SECTION BUILDERS ---
 
   Widget _buildHeader() {
     String username = _safeStr(userData['username'], "Ghost");
@@ -106,8 +101,6 @@ class DashboardView extends StatelessWidget {
     num cleanCash = _parseSafeNum(userData['clean_cash']);
     int level = _parseSafeNum(userData['level']).toInt();
     String role = _safeStr(userData['role'], "player");
-
-    // V1.2 Dynamic Networth Calculation
     num totalNetworth = dirtyCash + cleanCash;
 
     return _buildCard("GENERAL INFO", [
@@ -138,21 +131,18 @@ class DashboardView extends StatelessWidget {
     ]);
   }
 
-  // NEW: Wired up the Crime EXP system from the V1.1 GDD
+  // 🚨 CRIME EXP IS NOW HIDDEN. ONLY NERVE IS SHOWN!
   Widget _buildProgressionStats() {
-    num crimeExp = _parseSafeNum(userData['crime_exp']);
     int maxNerve = _parseSafeNum(userData['max_nerve']).toInt();
 
     return _buildCard("PROGRESSION", [
-      _buildRow("Crime EXP:", _formatWholeNumber(crimeExp), valueColor: Colors.purpleAccent),
-      _buildRow("Current Max Nerve:", "$maxNerve", valueColor: Colors.white),
+      _buildRow("Current Max Nerve:", "$maxNerve", valueColor: Colors.purpleAccent),
       const SizedBox(height: 8),
-      const Text("Next Nerve upgrade at 5,000 Crime EXP", style: TextStyle(color: Colors.white24, fontSize: 9, fontStyle: FontStyle.italic)),
+      const Text("Keep hustling on the streets to permanently increase your max nerve.", style: TextStyle(color: Colors.white24, fontSize: 9, fontStyle: FontStyle.italic)),
     ]);
   }
 
   Widget _buildEquippedGear() {
-    // These will be wired once the user_equipment table is fully synced in the main_hub
     return _buildCard("EQUIPPED GEAR", [
       _buildRow("Primary:", "None", valueColor: Colors.white24),
       _buildRow("Secondary:", "None", valueColor: Colors.white24),
@@ -170,13 +160,10 @@ class DashboardView extends StatelessWidget {
   }
 
   Widget _buildLatestEvents() {
-    // This will eventually pull from the user_events table in the backend
     return _buildCard("LATEST EVENTS", [
       _buildEventText("Welcome to Cold Streets. Trust no one, build your empire."),
     ]);
   }
-
-  // --- CORE STYLING WIDGETS ---
 
   Widget _buildCard(String title, List<Widget> children) {
     return Container(

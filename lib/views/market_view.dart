@@ -3,6 +3,7 @@
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
+import '../api_config.dart';
 
 class MarketView extends StatefulWidget {
   final Map<String, dynamic> userData;
@@ -17,19 +18,17 @@ class MarketView extends StatefulWidget {
 class _MarketViewState extends State<MarketView> {
   final FocusNode _searchFocusNode = FocusNode();
   bool _isSearchFocused = false;
+
   String _selectedCategory = "ALL";
-  String _selectedSubCategory = "ALL";
+  // V1.6: Upgraded to a Set to allow multiple active filters simultaneously
+  Set<String> _activeFilters = {};
+
   final TextEditingController _searchController = TextEditingController();
 
-  final List<String> _mainCategories = ["ALL", "WEAPONS", "GEAR", "CONSUMABLES", "TECH"];
-  final Map<String, List<String>> _subCategories = {
-    "WEAPONS": ["ALL", "MELEE", "HANDGUNS", "SMG"],
-    "GEAR": ["ALL", "VESTS", "GLOVES", "TOPS"],
-    "TECH": ["ALL", "HARDWARE", "SOFTWARE"],
-    "CONSUMABLES": ["ALL", "BOOSTS", "MEDICAL"],
-  };
+  List<String> _dynamicCategories = ["ALL"];
+  Map<String, List<String>> _dynamicSubCategories = {};
 
-  final String apiUrl = "http://10.0.2.2:3000/market";
+  final String apiUrl = "${ApiConfig.baseUrl}/market";
   bool _isLoading = true;
   List<dynamic> _allItems = [];
   List<dynamic> _filteredItems = [];
@@ -53,25 +52,44 @@ class _MarketViewState extends State<MarketView> {
     super.dispose();
   }
 
-  // V1.2 FIX: Universal JSON Parser for the new Database Schema
-  String _parseEffects(dynamic item) {
-    final effects = item['effects'];
-    if (effects == null) return "NONE";
+  IconData _getCategoryIcon(String category) {
+    switch (category.toUpperCase()) {
+      case "WEAPONS": return Icons.hardware;
+      case "GEAR": return Icons.shield;
+      case "TECH": return Icons.memory;
+      case "CONSUMABLES": return Icons.medical_services;
+      case "ALL": return Icons.apps;
+      default: return Icons.category;
+    }
+  }
 
-    Map<String, dynamic> effMap = {};
-    if (effects is String) {
-      if (effects.isEmpty || effects == "{}") return "NONE";
-      try { effMap = jsonDecode(effects); } catch (_) { return "NONE"; }
-    } else if (effects is Map) {
-      effMap = Map<String, dynamic>.from(effects);
+  void _extractCategories() {
+    Set<String> mains = {"ALL"};
+    Map<String, Set<String>> subs = {};
+
+    for (var item in _allItems) {
+      String cat = item['category']?.toString().toUpperCase() ?? "UNKNOWN";
+      String sub = item['sub_category']?.toString().toUpperCase() ?? "";
+
+      mains.add(cat);
+      if (!subs.containsKey(cat)) {
+        subs[cat] = {"ALL"};
+      }
+      if (sub.isNotEmpty && sub != "NULL") {
+        subs[cat]!.add(sub);
+      }
     }
 
-    if (effMap.isEmpty) return "NONE";
+    _dynamicCategories = mains.toList();
+    _dynamicSubCategories = subs.map((key, value) => MapEntry(key, value.toList()));
+  }
 
-    return effMap.entries.map((e) {
-      num val = e.value is num ? e.value : num.tryParse(e.value.toString()) ?? 0;
-      return "${val > 0 ? '+' : ''}$val ${e.key.toUpperCase()}";
-    }).join(", ");
+  // V1.6: Instead of a raw string, we return a Map so the UI can format it cleanly
+  Map<String, dynamic> _getEffectsMap(dynamic item) {
+    final effects = item['effects'];
+    if (effects == null || (effects is Map && effects.isEmpty)) return {};
+    if (effects is Map) return Map<String, dynamic>.from(effects);
+    return {};
   }
 
   Future<void> _fetchMarket() async {
@@ -81,6 +99,7 @@ class _MarketViewState extends State<MarketView> {
         if (mounted) {
           setState(() {
             _allItems = jsonDecode(response.body);
+            _extractCategories();
             _isLoading = false;
             _cart.clear();
             _applyFilters();
@@ -101,9 +120,10 @@ class _MarketViewState extends State<MarketView> {
         bool matchesSearch = item['name'].toString().toLowerCase().contains(query);
         bool matchesMain = _selectedCategory == "ALL" || item['category'].toString().toUpperCase() == _selectedCategory;
 
-        // V1.2 FIX: Expanded search string to catch SubCategories in Names, Categories, or the new Parsed JSON
-        String searchable = "${item['category']} ${item['name']} ${_parseEffects(item)}".toUpperCase();
-        bool matchesSub = _selectedSubCategory == "ALL" || searchable.contains(_selectedSubCategory);
+        String subCat = item['sub_category']?.toString().toUpperCase() ?? "";
+
+        // V1.6 FIX: Check if the item's sub-category is in the active filters set
+        bool matchesSub = _activeFilters.isEmpty || _activeFilters.contains(subCat);
 
         return matchesSearch && matchesMain && matchesSub;
       }).toList();
@@ -125,7 +145,7 @@ class _MarketViewState extends State<MarketView> {
     for (var item in _allItems) {
       int id = item['item_id'];
       if (_cart.containsKey(id)) {
-        total += (item['base_value'] as int) * _cart[id]!;
+        total += (int.tryParse(item['base_value'].toString()) ?? 0) * _cart[id]!;
       }
     }
     return total;
@@ -133,7 +153,7 @@ class _MarketViewState extends State<MarketView> {
 
   int _getMaxAllowed(Map<String, dynamic> currentItem) {
     int itemId = currentItem['item_id'];
-    int itemPrice = currentItem['base_value'];
+    int itemPrice = int.tryParse(currentItem['base_value'].toString()) ?? 0;
     int currentStock = currentItem['stock'] ?? 0;
 
     int costOfOtherItems = 0;
@@ -141,16 +161,15 @@ class _MarketViewState extends State<MarketView> {
       if (id != itemId) {
         final otherItem = _allItems.firstWhere((e) => e['item_id'] == id, orElse: () => null);
         if (otherItem != null) {
-          costOfOtherItems += (otherItem['base_value'] as int) * qty;
+          costOfOtherItems += (int.tryParse(otherItem['base_value'].toString()) ?? 0) * qty;
         }
       }
     });
 
     int remainingCash = widget.userData['dirty_cash'] - costOfOtherItems;
-    if (remainingCash < 0) remainingCash = 0; // Failsafe
+    if (remainingCash < 0) remainingCash = 0;
 
     int affordableQty = itemPrice > 0 ? remainingCash ~/ itemPrice : currentStock;
-
     return affordableQty < currentStock ? affordableQty : currentStock;
   }
 
@@ -160,7 +179,7 @@ class _MarketViewState extends State<MarketView> {
 
     if (singleItem != null && singleQty != null) {
       payloadCart.add({"item_id": singleItem['item_id'], "quantity": singleQty});
-      expectedCost = singleItem['base_value'] * singleQty;
+      expectedCost = (int.tryParse(singleItem['base_value'].toString()) ?? 0) * singleQty;
     } else {
       _cart.forEach((itemId, qty) {
         payloadCart.add({"item_id": itemId, "quantity": qty});
@@ -210,154 +229,340 @@ class _MarketViewState extends State<MarketView> {
     }
   }
 
+  // V1.6: The new mobile Bottom Sheet for filtering
+  void _showMobileFilterMenu(BuildContext context) {
+    List<String> availableSubs = _dynamicSubCategories[_selectedCategory] ?? [];
+    if (availableSubs.isEmpty || (availableSubs.length == 1 && availableSubs.first == "ALL")) return;
+
+    showModalBottomSheet(
+        context: context,
+        backgroundColor: const Color(0xFF1E1E1E),
+        shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(16))),
+        builder: (context) {
+          return StatefulBuilder(
+              builder: (BuildContext context, StateSetter setSheetState) {
+                return Padding(
+                  padding: const EdgeInsets.all(16.0),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const Text("FILTER BY TYPE", style: TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.bold)),
+                      const SizedBox(height: 12),
+                      const Divider(color: Color(0xFF333333), height: 1),
+                      Expanded(
+                        child: ListView.builder(
+                          itemCount: availableSubs.length,
+                          itemBuilder: (context, index) {
+                            String sub = availableSubs[index];
+                            if (sub == "ALL") return const SizedBox.shrink(); // Skip 'ALL' in checkboxes
+
+                            bool isChecked = _activeFilters.contains(sub);
+                            return CheckboxListTile(
+                              title: Text(sub, style: const TextStyle(color: Colors.white70, fontSize: 12, fontWeight: FontWeight.bold)),
+                              value: isChecked,
+                              activeColor: const Color(0xFF39FF14),
+                              checkColor: Colors.black,
+                              side: const BorderSide(color: Color(0xFF333333)),
+                              onChanged: (bool? value) {
+                                setSheetState(() {
+                                  if (value == true) {
+                                    _activeFilters.add(sub);
+                                  } else {
+                                    _activeFilters.remove(sub);
+                                  }
+                                });
+                                setState(() => _applyFilters()); // Update main UI
+                              },
+                            );
+                          },
+                        ),
+                      ),
+                      SizedBox(
+                        width: double.infinity,
+                        child: ElevatedButton(
+                          style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF39FF14)),
+                          onPressed: () => Navigator.pop(context),
+                          child: const Text("APPLY FILTERS", style: TextStyle(color: Colors.black, fontWeight: FontWeight.bold)),
+                        ),
+                      )
+                    ],
+                  ),
+                );
+              }
+          );
+        }
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
-    final screenWidth = MediaQuery.of(context).size.width;
     bool hasItemsInCart = _cartTotal > 0;
 
-    return Column(
-      children: [
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 10.0, vertical: 12.0),
-          child: Column(
-            children: [
-              Row(
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        bool isDesktop = constraints.maxWidth > 800;
+
+        return Column(
+          children: [
+            Expanded(
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
+                  // --- DESKTOP NAVIGATION RAIL ---
+                  if (isDesktop) ...[
+                    NavigationRail(
+                      backgroundColor: const Color(0xFF121212),
+                      indicatorColor: const Color(0xFF39FF14).withValues(alpha: 0.2),
+                      selectedLabelTextStyle: const TextStyle(color: Color(0xFF39FF14), fontSize: 11, fontWeight: FontWeight.bold),
+                      unselectedLabelTextStyle: const TextStyle(color: Colors.white54, fontSize: 10),
+                      selectedIconTheme: const IconThemeData(color: Color(0xFF39FF14)),
+                      unselectedIconTheme: const IconThemeData(color: Colors.white54),
+                      selectedIndex: _dynamicCategories.indexOf(_selectedCategory).clamp(0, _dynamicCategories.length),
+                      onDestinationSelected: (int index) {
+                        setState(() {
+                          _selectedCategory = _dynamicCategories[index];
+                          _activeFilters.clear(); // Reset filters when changing main category
+                          _applyFilters();
+                        });
+                      },
+                      labelType: NavigationRailLabelType.all,
+                      destinations: _dynamicCategories.map((cat) {
+                        return NavigationRailDestination(
+                          icon: Icon(_getCategoryIcon(cat)),
+                          label: Text(cat),
+                        );
+                      }).toList(),
+                    ),
+                    const VerticalDivider(thickness: 1, width: 1, color: Color(0xFF333333)),
+                  ],
+
+                  // --- MAIN INVENTORY AREA ---
                   Expanded(
-                    child: SingleChildScrollView(
-                      scrollDirection: Axis.horizontal,
-                      child: Row(children: _mainCategories.map((cat) => _buildChip(cat, true)).toList()),
-                    ),
-                  ),
-                  const SizedBox(width: 10),
-                  AnimatedContainer(
-                    duration: const Duration(milliseconds: 300),
-                    curve: Curves.easeInOutQuad,
-                    width: _isSearchFocused ? screenWidth * 0.45 : 36,
-                    height: 36,
-                    clipBehavior: Clip.hardEdge,
-                    decoration: BoxDecoration(
-                      color: const Color(0xFF1A1A1A),
-                      border: Border.all(color: _isSearchFocused ? const Color(0xFF39FF14) : const Color(0xFF333333)),
-                      borderRadius: BorderRadius.circular(4),
-                    ),
-                    child: TextField(
-                      focusNode: _searchFocusNode,
-                      controller: _searchController,
-                      textAlignVertical: TextAlignVertical.center,
-                      style: const TextStyle(color: Color(0xFF39FF14), fontSize: 12),
-                      cursorColor: const Color(0xFF39FF14),
-                      decoration: const InputDecoration(
-                        isDense: true,
-                        hintText: "SEARCH",
-                        hintStyle: TextStyle(color: Colors.white24, fontSize: 10),
-                        prefixIcon: Icon(Icons.search, size: 16, color: Colors.white54),
-                        border: InputBorder.none,
-                        contentPadding: EdgeInsets.zero,
-                      ),
+                    child: Column(
+                      children: [
+                        Padding(
+                          padding: const EdgeInsets.all(12.0),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.stretch,
+                            children: [
+                              // Mobile Main Categories
+                              if (!isDesktop) ...[
+                                SingleChildScrollView(
+                                  scrollDirection: Axis.horizontal,
+                                  child: Row(
+                                    children: _dynamicCategories.map((cat) => _buildMainCategoryChip(cat)).toList(),
+                                  ),
+                                ),
+                                const SizedBox(height: 12),
+                              ],
+
+                              // Search Bar & Mobile Filter Icon Row
+                              Row(
+                                children: [
+                                  Expanded(
+                                    child: Container(
+                                      height: 36,
+                                      clipBehavior: Clip.hardEdge,
+                                      decoration: BoxDecoration(
+                                        color: const Color(0xFF1A1A1A),
+                                        border: Border.all(color: _isSearchFocused ? const Color(0xFF39FF14) : const Color(0xFF333333)),
+                                        borderRadius: BorderRadius.circular(4),
+                                      ),
+                                      child: TextField(
+                                        focusNode: _searchFocusNode,
+                                        controller: _searchController,
+                                        textAlignVertical: TextAlignVertical.center,
+                                        style: const TextStyle(color: Color(0xFF39FF14), fontSize: 12),
+                                        cursorColor: const Color(0xFF39FF14),
+                                        decoration: const InputDecoration(
+                                          isDense: true,
+                                          hintText: "SEARCH DATABASE...",
+                                          hintStyle: TextStyle(color: Colors.white24, fontSize: 10),
+                                          prefixIcon: Icon(Icons.search, size: 16, color: Colors.white54),
+                                          border: InputBorder.none,
+                                          contentPadding: EdgeInsets.zero,
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                                  // Mobile Filter Menu Trigger
+                                  if (!isDesktop && _selectedCategory != "ALL") ...[
+                                    const SizedBox(width: 8),
+                                    Container(
+                                      height: 36,
+                                      width: 40,
+                                      decoration: BoxDecoration(
+                                        color: const Color(0xFF1A1A1A),
+                                        border: Border.all(color: const Color(0xFF333333)),
+                                        borderRadius: BorderRadius.circular(4),
+                                      ),
+                                      child: IconButton(
+                                        padding: EdgeInsets.zero,
+                                        icon: const Icon(Icons.tune, color: Colors.white54, size: 18),
+                                        onPressed: () => _showMobileFilterMenu(context),
+                                      ),
+                                    )
+                                  ]
+                                ],
+                              ),
+
+                              // Active Filters Display (Appears at the top if any filters are checked)
+                              if (_activeFilters.isNotEmpty) ...[
+                                const SizedBox(height: 12),
+                                Wrap(
+                                  spacing: 8.0,
+                                  runSpacing: 8.0,
+                                  children: _activeFilters.map((filter) {
+                                    return InputChip(
+                                      label: Text(filter, style: const TextStyle(color: Colors.black, fontSize: 10, fontWeight: FontWeight.bold)),
+                                      backgroundColor: const Color(0xFF39FF14),
+                                      deleteIconColor: Colors.black,
+                                      onDeleted: () {
+                                        setState(() {
+                                          _activeFilters.remove(filter);
+                                          _applyFilters();
+                                        });
+                                      },
+                                    );
+                                  }).toList(),
+                                )
+                              ],
+
+                              // Desktop Sub Categories (Wrap style, multi-select support added)
+                              if (isDesktop && _selectedCategory != "ALL" && _dynamicSubCategories.containsKey(_selectedCategory)) ...[
+                                const Padding(
+                                  padding: EdgeInsets.symmetric(vertical: 8.0),
+                                  child: Divider(color: Color(0xFF333333), height: 1),
+                                ),
+                                Wrap(
+                                  spacing: 8.0,
+                                  runSpacing: 8.0,
+                                  children: _dynamicSubCategories[_selectedCategory]!.where((sub) => sub != "ALL").map((sub) => _buildDesktopSubChip(sub)).toList(),
+                                ),
+                              ],
+                            ],
+                          ),
+                        ),
+                        const Divider(color: Color(0xFF333333), height: 1),
+
+                        Expanded(
+                          child: GestureDetector(
+                            onTap: () => FocusScope.of(context).unfocus(),
+                            child: _isLoading
+                                ? const Center(child: CircularProgressIndicator(color: Color(0xFF39FF14)))
+                                : _filteredItems.isEmpty
+                                ? const Center(child: Text("NO ITEMS FOUND.", style: TextStyle(color: Colors.white54, fontWeight: FontWeight.bold)))
+                                : GridView.builder(
+                              padding: EdgeInsets.only(top: 10, left: 10, right: 10, bottom: hasItemsInCart ? 80 : 10),
+                              gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
+                                maxCrossAxisExtent: 450,
+                                mainAxisExtent: 110,
+                                crossAxisSpacing: 10,
+                                mainAxisSpacing: 10,
+                              ),
+                              itemCount: _filteredItems.length,
+                              itemBuilder: (context, index) {
+                                final item = _filteredItems[index];
+                                final itemId = item['item_id'];
+                                final currentQty = _cart[itemId] ?? 0;
+                                final maxAllowed = _getMaxAllowed(item);
+
+                                return _MarketItemCard(
+                                  itemData: item,
+                                  currentQuantity: currentQty,
+                                  maxAllowed: maxAllowed,
+                                  onQuantityChanged: (newQty) => _updateCart(itemId, newQty),
+                                  onBuy: () => _processPurchase(singleItem: item, singleQty: currentQty),
+                                  effectsMap: _getEffectsMap(item),
+                                );
+                              },
+                            ),
+                          ),
+                        ),
+                      ],
                     ),
                   ),
                 ],
               ),
-              if (_selectedCategory != "ALL" && _subCategories.containsKey(_selectedCategory)) ...[
-                const SizedBox(height: 8),
-                Align(
-                  alignment: Alignment.centerLeft,
-                  child: SingleChildScrollView(
-                    scrollDirection: Axis.horizontal,
-                    child: Row(
-                      children: _subCategories[_selectedCategory]!.map((sub) => _buildChip(sub, false)).toList(),
-                    ),
-                  ),
+            ),
+
+            if (hasItemsInCart)
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                decoration: const BoxDecoration(
+                  color: Colors.black,
+                  border: Border(top: BorderSide(color: Color(0xFF39FF14), width: 1)),
                 ),
-              ],
-            ],
-          ),
-        ),
-        const Divider(color: Color(0xFF333333), height: 1),
-
-        Expanded(
-          child: GestureDetector(
-            onTap: () => FocusScope.of(context).unfocus(),
-            child: _isLoading
-                ? const Center(child: CircularProgressIndicator(color: Color(0xFF39FF14)))
-                : _filteredItems.isEmpty
-                ? const Center(child: Text("NO ITEMS FOUND.", style: TextStyle(color: Colors.white54, fontWeight: FontWeight.bold)))
-                : ListView.builder(
-              padding: EdgeInsets.only(top: 10, left: 10, right: 10, bottom: hasItemsInCart ? 80 : 10),
-              itemCount: _filteredItems.length,
-              itemBuilder: (context, index) {
-                final item = _filteredItems[index];
-                final itemId = item['item_id'];
-                final currentQty = _cart[itemId] ?? 0;
-
-                final maxAllowed = _getMaxAllowed(item);
-
-                return _MarketItemCard(
-                  itemData: item,
-                  currentQuantity: currentQty,
-                  maxAllowed: maxAllowed,
-                  onQuantityChanged: (newQty) => _updateCart(itemId, newQty),
-                  onBuy: () => _processPurchase(singleItem: item, singleQty: currentQty),
-                  // V1.2: Pass down the parsed effects so the card can display it natively
-                  parsedEffects: _parseEffects(item),
-                );
-              },
-            ),
-          ),
-        ),
-
-        if (hasItemsInCart)
-          Container(
-            width: double.infinity,
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-            decoration: const BoxDecoration(
-              color: Colors.black,
-              border: Border(top: BorderSide(color: Color(0xFF39FF14), width: 1)),
-            ),
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
-                    const Text("TOTAL COST", style: TextStyle(color: Colors.white54, fontSize: 10, fontWeight: FontWeight.bold)),
-                    Text("\$$_cartTotal", style: const TextStyle(color: Colors.greenAccent, fontSize: 18, fontWeight: FontWeight.w900)),
+                    Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text("TOTAL COST", style: TextStyle(color: Colors.white54, fontSize: 10, fontWeight: FontWeight.bold)),
+                        Text("\$$_cartTotal", style: const TextStyle(color: Colors.greenAccent, fontSize: 18, fontWeight: FontWeight.w900)),
+                      ],
+                    ),
+                    ElevatedButton.icon(
+                      onPressed: () => _processPurchase(),
+                      icon: const Icon(Icons.shopping_cart_checkout, size: 16, color: Colors.black),
+                      label: const Text("BUY CART", style: TextStyle(color: Colors.black, fontSize: 12, fontWeight: FontWeight.bold, letterSpacing: 1)),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: const Color(0xFF39FF14),
+                        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+                      ),
+                    )
                   ],
                 ),
-                ElevatedButton.icon(
-                  onPressed: () => _processPurchase(),
-                  icon: const Icon(Icons.shopping_cart_checkout, size: 16, color: Colors.black),
-                  label: const Text("BUY CART", style: TextStyle(color: Colors.black, fontSize: 12, fontWeight: FontWeight.bold, letterSpacing: 1)),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: const Color(0xFF39FF14),
-                    padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
-                  ),
-                )
-              ],
-            ),
-          )
-      ],
+              )
+          ],
+        );
+      },
     );
   }
 
-  Widget _buildChip(String label, bool isMain) {
-    bool isSelected = isMain ? (_selectedCategory == label) : (_selectedSubCategory == label);
+  Widget _buildMainCategoryChip(String label) {
+    bool isSelected = _selectedCategory == label;
     return GestureDetector(
       onTap: () {
         setState(() {
-          if (isMain) {
-            _selectedCategory = label;
-            _selectedSubCategory = "ALL";
-          } else {
-            _selectedSubCategory = label;
-          }
+          _selectedCategory = label;
+          _activeFilters.clear();
           _applyFilters();
         });
-        FocusScope.of(context).unfocus();
       },
       child: Container(
         margin: const EdgeInsets.only(right: 8),
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+        decoration: BoxDecoration(
+          color: isSelected ? const Color(0xFF39FF14).withValues(alpha: 0.1) : const Color(0xFF1E1E1E),
+          border: Border.all(color: isSelected ? const Color(0xFF39FF14) : const Color(0xFF333333)),
+          borderRadius: BorderRadius.circular(4),
+        ),
+        child: Text(
+          label,
+          style: TextStyle(color: isSelected ? const Color(0xFF39FF14) : Colors.white54, fontSize: 10, fontWeight: FontWeight.bold),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildDesktopSubChip(String label) {
+    bool isSelected = _activeFilters.contains(label);
+    return GestureDetector(
+      onTap: () {
+        setState(() {
+          if (isSelected) {
+            _activeFilters.remove(label);
+          } else {
+            _activeFilters.add(label);
+          }
+          _applyFilters();
+        });
+      },
+      child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
         decoration: BoxDecoration(
           color: isSelected ? const Color(0xFF39FF14).withValues(alpha: 0.1) : const Color(0xFF1E1E1E),
@@ -379,7 +584,7 @@ class _MarketItemCard extends StatefulWidget {
   final int maxAllowed;
   final Function(int) onQuantityChanged;
   final VoidCallback onBuy;
-  final String parsedEffects; // V1.2 Prop
+  final Map<String, dynamic> effectsMap; // V1.6 Changed to Raw Map
 
   const _MarketItemCard({
     required this.itemData,
@@ -387,7 +592,7 @@ class _MarketItemCard extends StatefulWidget {
     required this.maxAllowed,
     required this.onQuantityChanged,
     required this.onBuy,
-    required this.parsedEffects,
+    required this.effectsMap,
   });
 
   @override
@@ -395,7 +600,6 @@ class _MarketItemCard extends StatefulWidget {
 }
 
 class _MarketItemCardState extends State<_MarketItemCard> {
-  bool _isExpanded = false;
   late TextEditingController _qtyController;
 
   @override
@@ -420,13 +624,58 @@ class _MarketItemCardState extends State<_MarketItemCard> {
     super.dispose();
   }
 
+  // V1.6: The Custom Stat Renderer. Parses specific keys into a beautiful grid.
+  Widget _buildStatBlock() {
+    if (widget.effectsMap.isEmpty) return const SizedBox.shrink();
+
+    List<Widget> rows = [];
+
+    widget.effectsMap.forEach((key, value) {
+      // Ignore nulls or zeros so the UI stays clean
+      if (value == null || value == 0 || value == "0") return;
+
+      // Clean the key (e.g., "ranged_damage" -> "RANGED DAMAGE")
+      String cleanKey = key.replaceAll('_', ' ').toUpperCase();
+      String displayValue = value.toString().toUpperCase();
+
+      // RPG formatting touches
+      if (cleanKey.contains("DAMAGE")) displayValue = "$displayValue DMG";
+      if (cleanKey.contains("MITIGATION") || cleanKey.contains("ACCURACY")) displayValue = "$displayValue%";
+
+      rows.add(
+          Padding(
+            padding: const EdgeInsets.only(bottom: 6.0),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Text(cleanKey, style: const TextStyle(color: Colors.white54, fontSize: 11, fontWeight: FontWeight.bold)),
+                Text(displayValue, style: const TextStyle(color: Color(0xFF39FF14), fontSize: 11, fontWeight: FontWeight.bold)),
+              ],
+            ),
+          )
+      );
+    });
+
+    if (rows.isEmpty) return const SizedBox.shrink();
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Divider(color: Color(0xFF333333), height: 16),
+        const Text("STATISTICS", style: TextStyle(color: Colors.white38, fontSize: 9, letterSpacing: 1, fontWeight: FontWeight.bold)),
+        const SizedBox(height: 8),
+        ...rows,
+      ],
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     int currentStock = widget.itemData['stock'] ?? 0;
     bool isOutOfStock = currentStock <= 0;
-    int basePrice = widget.itemData['base_value'] as int;
-    int totalPrice = widget.currentQuantity * basePrice;
 
+    int basePrice = int.tryParse(widget.itemData['base_value'].toString()) ?? 0;
+    int totalPrice = widget.currentQuantity * basePrice;
     int circulation = int.tryParse(widget.itemData['circulation']?.toString() ?? '0') ?? 0;
 
     String name = widget.itemData['name'].toString().toUpperCase();
@@ -437,110 +686,116 @@ class _MarketItemCardState extends State<_MarketItemCard> {
 
     return GestureDetector(
       onTap: () {
-        setState(() => _isExpanded = !_isExpanded);
-        FocusScope.of(context).unfocus();
+        showDialog(
+          context: context,
+          builder: (context) => AlertDialog(
+            backgroundColor: const Color(0xFF1E1E1E),
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(4), side: const BorderSide(color: Color(0xFF333333))),
+            title: Text(name, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+            content: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(desc, style: const TextStyle(color: Colors.white70, fontSize: 12, fontStyle: FontStyle.italic)),
+                  const SizedBox(height: 12),
+
+                  // V1.6: Injecting the new dynamic stat block
+                  _buildStatBlock(),
+
+                  const Divider(color: Color(0xFF333333), height: 16),
+                  Text("VALUE: \$$basePrice", style: const TextStyle(color: Colors.white54, fontSize: 11, fontWeight: FontWeight.bold)),
+                  Text("CIRCULATION: $circulation", style: const TextStyle(color: Colors.white54, fontSize: 11, fontWeight: FontWeight.bold)),
+                  Text("TYPE: $type", style: const TextStyle(color: Colors.white54, fontSize: 11, fontWeight: FontWeight.bold)),
+                ],
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: const Text("CLOSE", style: TextStyle(color: Colors.white54)),
+              )
+            ],
+          ),
+        );
       },
-      child: AnimatedContainer(
-        duration: const Duration(milliseconds: 200),
-        margin: const EdgeInsets.symmetric(horizontal: 5, vertical: 6),
+      child: Container(
         padding: const EdgeInsets.all(12),
         decoration: BoxDecoration(
           color: const Color(0xFF1E1E1E),
           border: Border(left: BorderSide(
-              color: isOutOfStock ? Colors.redAccent.withValues(alpha: 0.5) : (_isExpanded ? const Color(0xFF39FF14) : const Color(0xFF333333)),
+              color: isOutOfStock ? Colors.redAccent.withValues(alpha: 0.5) : const Color(0xFF333333),
               width: 3
           )),
         ),
         child: Column(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
           children: [
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Expanded(
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text(name, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: Colors.white)),
+                      Text(name, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: Colors.white)),
                       const SizedBox(height: 4),
                       Text(isOutOfStock ? "OUT OF STOCK" : "STOCK: $currentStock",
                           style: TextStyle(color: isOutOfStock ? Colors.redAccent : Colors.white24, fontSize: 10, fontWeight: FontWeight.bold)),
                     ],
                   ),
                 ),
-                Row(
-                  children: [
-                    Text("\$$basePrice", style: const TextStyle(color: Colors.white54, fontSize: 10)),
-                    const SizedBox(width: 8),
-                    SizedBox(
-                      width: 38,
-                      height: 24,
-                      child: TextField(
-                        controller: _qtyController,
-                        enabled: !isOutOfStock,
-                        keyboardType: TextInputType.number,
-                        textAlign: TextAlign.center,
-                        textAlignVertical: TextAlignVertical.center,
-                        style: const TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.bold),
-                        decoration: const InputDecoration(
-                          isDense: true,
-                          contentPadding: EdgeInsets.zero,
-                          filled: true,
-                          fillColor: Color(0xFF121212),
-                          border: OutlineInputBorder(borderSide: BorderSide(color: Color(0xFF333333))),
-                        ),
-                        onChanged: (val) {
-                          int parsed = int.tryParse(val) ?? 0;
-                          if (parsed > widget.maxAllowed) {
-                            parsed = widget.maxAllowed;
-                            _qtyController.text = parsed.toString();
-                            _qtyController.selection = TextSelection.fromPosition(TextPosition(offset: _qtyController.text.length));
-                          }
-                          widget.onQuantityChanged(parsed);
-                        },
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    SizedBox(
-                      height: 28,
-                      child: ElevatedButton(
-                        onPressed: canBuy ? widget.onBuy : null,
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: canBuy ? const Color(0xFF39FF14).withValues(alpha: 0.1) : Colors.transparent,
-                          padding: const EdgeInsets.symmetric(horizontal: 10),
-                          side: BorderSide(color: canBuy ? const Color(0xFF39FF14) : Colors.white12),
-                        ),
-                        child: Text("BUY \$$totalPrice",
-                            style: TextStyle(color: canBuy ? const Color(0xFF39FF14) : Colors.white24, fontSize: 10, fontWeight: FontWeight.bold)),
-                      ),
-                    )
-                  ],
-                ),
+                Text("\$$basePrice", style: const TextStyle(color: Colors.white54, fontSize: 10)),
               ],
             ),
-            if (_isExpanded) ...[
-              const SizedBox(height: 12),
-              const Divider(color: Color(0xFF333333), height: 1),
-              const SizedBox(height: 12),
-              Align(
-                alignment: Alignment.centerLeft,
-                // V1.2 FIX: Displays the parsed JSON object cleanly
-                child: Text("EFFECT: ${widget.parsedEffects}", style: const TextStyle(color: Color(0xFF39FF14), fontSize: 11, fontWeight: FontWeight.bold)),
-              ),
-              const SizedBox(height: 8),
-              Align(
-                alignment: Alignment.centerLeft,
-                child: Text(desc, style: const TextStyle(color: Colors.white70, fontSize: 11, fontStyle: FontStyle.italic)),
-              ),
-              const SizedBox(height: 12),
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  Text("VALUE: \$$basePrice", style: const TextStyle(color: Colors.white54, fontSize: 10, fontWeight: FontWeight.bold)),
-                  Text("CIRCULATION: $circulation", style: const TextStyle(color: Colors.white54, fontSize: 10, fontWeight: FontWeight.bold)),
-                  Text("TYPE: $type", style: const TextStyle(color: Colors.white54, fontSize: 10, fontWeight: FontWeight.bold)),
-                ],
-              ),
-            ]
+            Row(
+              mainAxisAlignment: MainAxisAlignment.end,
+              children: [
+                SizedBox(
+                  width: 38,
+                  height: 24,
+                  child: TextField(
+                    controller: _qtyController,
+                    enabled: !isOutOfStock,
+                    keyboardType: TextInputType.number,
+                    textAlign: TextAlign.center,
+                    textAlignVertical: TextAlignVertical.center,
+                    style: const TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.bold),
+                    decoration: const InputDecoration(
+                      isDense: true,
+                      contentPadding: EdgeInsets.zero,
+                      filled: true,
+                      fillColor: Color(0xFF121212),
+                      border: OutlineInputBorder(borderSide: BorderSide(color: Color(0xFF333333))),
+                    ),
+                    onChanged: (val) {
+                      int parsed = int.tryParse(val) ?? 0;
+                      if (parsed > widget.maxAllowed) {
+                        parsed = widget.maxAllowed;
+                        _qtyController.text = parsed.toString();
+                        _qtyController.selection = TextSelection.fromPosition(TextPosition(offset: _qtyController.text.length));
+                      }
+                      widget.onQuantityChanged(parsed);
+                    },
+                  ),
+                ),
+                const SizedBox(width: 8),
+                SizedBox(
+                  height: 28,
+                  child: ElevatedButton(
+                    onPressed: canBuy ? widget.onBuy : null,
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: canBuy ? const Color(0xFF39FF14).withValues(alpha: 0.1) : Colors.transparent,
+                      padding: const EdgeInsets.symmetric(horizontal: 10),
+                      side: BorderSide(color: canBuy ? const Color(0xFF39FF14) : Colors.white12),
+                    ),
+                    child: Text("BUY",
+                        style: TextStyle(color: canBuy ? const Color(0xFF39FF14) : Colors.white24, fontSize: 10, fontWeight: FontWeight.bold)),
+                  ),
+                )
+              ],
+            ),
           ],
         ),
       ),
