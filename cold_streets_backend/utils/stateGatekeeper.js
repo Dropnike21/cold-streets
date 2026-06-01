@@ -19,6 +19,9 @@ async function checkPlayerState(req, res, next) {
         const user = rows[0];
         const now = new Date();
 
+if (req.originalUrl.includes('/character/level') || req.originalUrl.includes('/character/hold')) {
+        return next();
+    }
         // 1. JAIL CHECK (Takes priority)
         if (user.jail_expires_at && new Date(user.jail_expires_at) > now) {
             return res.status(403).json({

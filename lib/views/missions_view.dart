@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
+import 'dart:math' as math;
 import '../api_config.dart';
 import 'tutorial_beacon.dart';
 
@@ -21,9 +22,14 @@ class MissionsView extends StatefulWidget {
   final bool tut3Search;
   final bool tut3Shop;
   final bool tut3Pick;
-
-  // 🚨 NEW PROP TO RECEIVE THE SILENT COUNTER
   final int tut3CrimesDoneCount;
+
+  // 🚨 TASK 4 PROPS
+  final bool tut4Gym;
+  final int tut4EnergyStr;
+  final int tut4EnergyDef;
+  final int tut4EnergyDex;
+  final int tut4EnergySpd;
 
   const MissionsView({
     super.key,
@@ -42,6 +48,11 @@ class MissionsView extends StatefulWidget {
     this.tut3Shop = false,
     this.tut3Pick = false,
     this.tut3CrimesDoneCount = 0,
+    this.tut4Gym = false,
+    this.tut4EnergyStr = 0,
+    this.tut4EnergyDef = 0,
+    this.tut4EnergyDex = 0,
+    this.tut4EnergySpd = 0,
   });
 
   @override
@@ -131,6 +142,8 @@ class _MissionsViewState extends State<MissionsView> {
       case 1: return { "title": "GET YOUR BEARINGS", "message": "Before you hit the streets, you need to know your limits and what's in your pockets. Get familiar with your HUD.", "objective": "Check your Vitals and Inspect your Assets.", "reward": "\$500 Dirty Cash" };
       case 2: return { "title": "KNOW YOUR STASH", "message": "You survived day one. Now, memorize where you keep your gear, where you sleep, and what you've accomplished. Navigate through your core menus.", "objective": "Navigate to your Inventory, Properties, and Achievements.", "reward": "50 Nerve & \$100 Cash" };
       case 3: return { "title": "FIRST BLOOD", "message": "Now that you know your way around, it's time to earn your keep. Scope out the local crime spots and pull off a successful job.", "objective": "Open Searching, Shoplifting, and Pickpocket tabs, then pull off 20 successful crimes.", "reward": "700 Gym Energy" };
+    // 🚨 TASK 4 FALLBACK
+      case 4: return { "title": "IRON AND BLOOD", "message": "You survived the streets, but you're still weak. Head to the local gym. Burn some of that energy to build your body. I want to see you push your limits in all areas.", "objective": "Navigate to Gym, spend 150 Energy on STR, DEF, DEX, and SPD.", "reward": "\$500 Clean Cash" };
       default: return { "title": "END OF THE LINE", "message": "I've taught you all I can. A guy named Kevin is looking for reliable muscle. Check your contact list.", "objective": "No further objectives.", "reward": "None." };
     }
   }
@@ -307,7 +320,6 @@ class _MissionsViewState extends State<MissionsView> {
         ],
       );
     }
-    // 🚨 REP 3: 20-CRIME SILENT CHECKLIST LOGIC
     else if (anonExp == 3) {
       bool hasDoneCrime = widget.tut3CrimesDoneCount >= 20;
       int displayCount = widget.tut3CrimesDoneCount > 20 ? 20 : widget.tut3CrimesDoneCount;
@@ -320,6 +332,26 @@ class _MissionsViewState extends State<MissionsView> {
           _buildChecklistItem("Scout the Shoplifting area", widget.tut3Shop),
           _buildChecklistItem("Scout the Pickpocketing area", widget.tut3Pick),
           _buildChecklistItem("Pull off 20 successful crimes ($displayCount / 20)", hasDoneCrime),
+        ],
+      );
+    }
+    // 🚨 TASK 4 LOGIC
+    else if (anonExp == 4) {
+      bool strDone = widget.tut4EnergyStr >= 150;
+      bool defDone = widget.tut4EnergyDef >= 150;
+      bool dexDone = widget.tut4EnergyDex >= 150;
+      bool spdDone = widget.tut4EnergySpd >= 150;
+
+      canVerify = widget.tut4Gym && strDone && defDone && dexDone && spdDone;
+
+      objectiveWidget = Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _buildChecklistItem("Navigate to the Training Gym", widget.tut4Gym),
+          _buildChecklistItem("Spend 150 Energy on STR (${math.min(widget.tut4EnergyStr, 150)}/150)", strDone),
+          _buildChecklistItem("Spend 150 Energy on DEF (${math.min(widget.tut4EnergyDef, 150)}/150)", defDone),
+          _buildChecklistItem("Spend 150 Energy on DEX (${math.min(widget.tut4EnergyDex, 150)}/150)", dexDone),
+          _buildChecklistItem("Spend 150 Energy on SPD (${math.min(widget.tut4EnergySpd, 150)}/150)", spdDone),
         ],
       );
     }

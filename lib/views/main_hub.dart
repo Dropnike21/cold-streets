@@ -203,8 +203,18 @@ class _MainHubState extends State<MainHub> {
       maxNerve = _parseSafeInt(updatedStats['max_nerve'] ?? maxNerve);
       hp = _parseSafeInt(updatedStats['hp'] ?? hp);
       heat = _parseDouble(updatedStats['heat'] ?? heat);
+      // 🚨 1. Save the PREVIOUS state before applying the new stats
+      bool wasInHosp = hospitalExpiry != null && DateTime.parse(hospitalExpiry!).toLocal().isAfter(DateTime.now());
+      bool wasInJail = jailExpiry != null && DateTime.parse(jailExpiry!).toLocal().isAfter(DateTime.now());
+
+      // 🚨 2. Apply the NEW stats from the database
       hospitalExpiry = updatedStats['hospital_expires_at'];
       jailExpiry = updatedStats['jail_expires_at'];
+
+      // 🚨 3. Check the CURRENT state
+      bool nowInHosp = hospitalExpiry != null && DateTime.parse(hospitalExpiry!).toLocal().isAfter(DateTime.now());
+      bool nowInJail = jailExpiry != null && DateTime.parse(jailExpiry!).toLocal().isAfter(DateTime.now());
+
       currentJobId = _parseSafeInt(updatedStats['current_job_id'] ?? currentJobId);
       level = _parseSafeInt(updatedStats['level'] ?? level);
       exp = _parseSafeInt(updatedStats['exp'] ?? exp);
@@ -216,6 +226,25 @@ class _MainHubState extends State<MainHub> {
       if (liveCrimeExp > oldCrimeExp && _getAnonExp() == 3) {
         _tutState.tut3CrimesDoneCount++;
         _tutState.saveInt(userId, 'tut3Crimes', _tutState.tut3CrimesDoneCount);
+      }
+      // 🚨 TASK 4 STAT WATCHER
+      int oldStr = _parseSafeInt(widget.userData['stat_str']);
+      int liveStr = _parseSafeInt(updatedStats['stat_str'] ?? widget.userData['stat_str']);
+      int oldDef = _parseSafeInt(widget.userData['stat_def']);
+      int liveDef = _parseSafeInt(updatedStats['stat_def'] ?? widget.userData['stat_def']);
+      int oldDex = _parseSafeInt(widget.userData['stat_dex']);
+      int liveDex = _parseSafeInt(updatedStats['stat_dex'] ?? widget.userData['stat_dex']);
+      int oldSpd = _parseSafeInt(widget.userData['stat_spd']);
+      int liveSpd = _parseSafeInt(updatedStats['stat_spd'] ?? widget.userData['stat_spd']);
+
+      int oldEnergy = energy; // 'energy' holds the current UI state before updating
+
+      if (_getAnonExp() == 4 && oldEnergy > energy) { // Energy dropped!
+        int energySpent = oldEnergy - energy;
+        if (liveStr > oldStr) { _tutState.tut4EnergyStr += energySpent; _tutState.saveInt(userId, 'tut4EnergyStr', _tutState.tut4EnergyStr); }
+        else if (liveDef > oldDef) { _tutState.tut4EnergyDef += energySpent; _tutState.saveInt(userId, 'tut4EnergyDef', _tutState.tut4EnergyDef); }
+        else if (liveDex > oldDex) { _tutState.tut4EnergyDex += energySpent; _tutState.saveInt(userId, 'tut4EnergyDex', _tutState.tut4EnergyDex); }
+        else if (liveSpd > oldSpd) { _tutState.tut4EnergySpd += energySpent; _tutState.saveInt(userId, 'tut4EnergySpd', _tutState.tut4EnergySpd); }
       }
 
       if (updatedStats.containsKey('contact_exp')) {
@@ -252,6 +281,18 @@ class _MainHubState extends State<MainHub> {
       widget.userData['exp'] = exp;
       widget.userData['crime_exp'] = liveCrimeExp;
       widget.userData['level_holding'] = levelHolding;
+      // 🚨 CACHE THE LIVE STATS
+      widget.userData['stat_str'] = liveStr;
+      widget.userData['stat_def'] = liveDef;
+      widget.userData['stat_dex'] = liveDex;
+      widget.userData['stat_spd'] = liveSpd;
+      // 🚨 4. AUTO-KICK LOGIC
+      // If they weren't in jail/hosp a second ago, but they are NOW, force them there!
+      if (!wasInJail && nowInJail) {
+        _navigateTo(14); // Force to Jail View
+      } else if (!wasInHosp && nowInHosp) {
+        _navigateTo(15); // Force to Hospital View
+      }
     });
   }
 
@@ -262,6 +303,31 @@ class _MainHubState extends State<MainHub> {
   }
 
   void _navigateTo(int index) {
+    // 🚨 FRONTEND GATEKEEPER: Check if player is incapacitated
+    bool inHosp = hospitalExpiry != null && DateTime.parse(hospitalExpiry!).toLocal().isAfter(DateTime.now());
+    bool inJail = jailExpiry != null && DateTime.parse(jailExpiry!).toLocal().isAfter(DateTime.now());
+
+    if (inHosp || inJail) {
+      // 🚨 THE WHITELIST (Matches your server.js whitelist)
+      // 0: Hub, 4: Inventory, 8: City Hall, 9: Achievements, 10: Events,
+      // 13: Info Broker, 14: Jail, 15: Hospital, 16: University, 17: Bank, 29: Burner Phone
+      List<int> allowedIndices = [0, 4, 8, 9, 10, 13, 14, 15, 16, 17, 29];
+
+      if (!allowedIndices.contains(index)) {
+        ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(
+                inHosp ? "ACCESS DENIED: You are in the Hospital." : "ACCESS DENIED: You are in State Prison.",
+                style: const TextStyle(fontWeight: FontWeight.bold),
+              ),
+              backgroundColor: Colors.redAccent,
+              duration: const Duration(seconds: 2),
+            )
+        );
+        return; // 🚨 BLOCKS THE NAVIGATION
+      }
+    }
+
     setState(() {
       _selectedIndex = index;
 
@@ -280,6 +346,11 @@ class _MainHubState extends State<MainHub> {
       if (index == 28 && !_tutState.tut3Pick) {
         _tutState.tut3Pick = true;
         _tutState.saveBool(userId, 'tut3Pick', true);
+      }
+      // 🚨 TRACK GYM NAVIGATION
+      if (index == 5 && !_tutState.tut4Gym) {
+        _tutState.tut4Gym = true;
+        _tutState.saveBool(userId, 'tut4Gym', true);
       }
     });
   }

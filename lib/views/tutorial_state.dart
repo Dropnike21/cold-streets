@@ -14,6 +14,13 @@ class TutorialState {
   bool tut3Pick = false;
   int tut3CrimesDoneCount = 0;
 
+  // 🚨 TASK 4: GYM & STAT TRACKERS
+  bool tut4Gym = false;
+  int tut4EnergyStr = 0;
+  int tut4EnergyDef = 0;
+  int tut4EnergyDex = 0;
+  int tut4EnergySpd = 0;
+
   // Load from Device
   Future<void> load(String userId) async {
     final prefs = await SharedPreferences.getInstance();
@@ -21,6 +28,13 @@ class TutorialState {
     tut3Shop = prefs.getBool('tut3Shop_$userId') ?? false;
     tut3Pick = prefs.getBool('tut3Pick_$userId') ?? false;
     tut3CrimesDoneCount = prefs.getInt('tut3Crimes_$userId') ?? 0;
+
+    // 🚨 LOAD TASK 4
+    tut4Gym = prefs.getBool('tut4Gym_$userId') ?? false;
+    tut4EnergyStr = prefs.getInt('tut4EnergyStr_$userId') ?? 0;
+    tut4EnergyDef = prefs.getInt('tut4EnergyDef_$userId') ?? 0;
+    tut4EnergyDex = prefs.getInt('tut4EnergyDex_$userId') ?? 0;
+    tut4EnergySpd = prefs.getInt('tut4EnergySpd_$userId') ?? 0;
   }
 
   // Save to Device
@@ -34,7 +48,7 @@ class TutorialState {
     await prefs.setInt('${key}_$userId', value);
   }
 
-  // The Smart Beacon Engine (Moved out of MainHub!)
+  // The Smart Beacon Engine
   String? getActiveBeacon({
     required bool showIntroStory,
     required bool isWaitingForMessage,
@@ -47,7 +61,7 @@ class TutorialState {
     if (showIntroStory) return null;
     if (isWaitingForMessage) return null;
 
-    if (lastReadMissionExp < anonExp && anonExp <= 3) {
+    if (lastReadMissionExp < anonExp && anonExp <= 4) { // 🚨 Expanded to cover Task 4
       if (selectedIndex != 29) return 'fab_phone';
       return 'contact_anonymous';
     }
@@ -75,17 +89,34 @@ class TutorialState {
 
     if (anonExp == 3) {
       if (!tut3Search || !tut3Shop || !tut3Pick) {
-        if (selectedIndex != 1 && selectedIndex != 26 && selectedIndex != 27 && selectedIndex != 28) return 'nav_streets';
+        if (selectedIndex != 1 && selectedIndex != 26 && selectedIndex != 27 && selectedIndex != 28) {
+          return isDesktop ? 'drawer_streets' : 'nav_streets';
+        }
         if (!tut3Search && selectedIndex == 1) return 'cat_search';
         if (!tut3Shop && selectedIndex == 1) return 'cat_shop';
         if (!tut3Pick && selectedIndex == 1) return 'cat_pickpocket';
       }
 
       if (tut3CrimesDoneCount < 20) {
-        if (selectedIndex != 1 && selectedIndex != 26 && selectedIndex != 27 && selectedIndex != 28) return 'nav_streets';
+        if (selectedIndex != 1 && selectedIndex != 26 && selectedIndex != 27 && selectedIndex != 28) {
+          return isDesktop ? 'drawer_streets' : 'nav_streets';
+        }
         return 'btn_do_crime';
       }
 
+      if (selectedIndex != 29) return 'fab_phone';
+      return 'btn_verify_anon';
+    }
+
+    // 🚨 TASK 4 BEACON LOGIC
+    if (anonExp == 4) {
+      if (!tut4Gym) {
+        if (selectedIndex != 5) return isDesktop ? 'drawer_gym' : 'nav_gym';
+      }
+      if (tut4EnergyStr < 150 || tut4EnergyDef < 150 || tut4EnergyDex < 150 || tut4EnergySpd < 150) {
+        if (selectedIndex != 5) return isDesktop ? 'drawer_gym' : 'nav_gym';
+        return null; // They are in the gym, let them train freely!
+      }
       if (selectedIndex != 29) return 'fab_phone';
       return 'btn_verify_anon';
     }

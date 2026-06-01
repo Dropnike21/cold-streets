@@ -1,16 +1,14 @@
 const { trackAndCheckAchievement } = require('../../utils/achievement_engine');
 
-// Helper to calculate if the current time is inside a window (handles midnight wrap-around)
+// Helper to calculate if the current time is inside a window
 function isInsideWindow(progress, window) {
     if (!window || window.length !== 2) return false;
     const start = window[0];
     const end = window[1];
 
     if (start > end) {
-        // Wrap-around logic (e.g., 0.95 to 0.05)
         return progress >= start || progress <= end;
     } else {
-        // Normal logic (e.g., 0.10 to 0.15)
         return progress >= start && progress <= end;
     }
 }
@@ -23,24 +21,26 @@ async function execute(client, user, crime, req, res) {
         const flavor = crime.flavor_text_json || {};
         const mechanics = crime.mechanics_json || {};
 
-        // 1. Resource & Tool Check
+        // 1. Resource Check
         if (user.nerve < crime.nerve_cost) {
             await client.query('ROLLBACK');
             return res.status(400).json({ error: "Not enough Nerve." });
         }
 
-        const toolReq = reqs.tool_req;
-        if (toolReq !== undefined && toolReq !== "NONE" && toolReq !== "NULL" && toolReq !== "") {
-            let toolQuery = `SELECT ui.quantity, im.name FROM user_inventory ui JOIN items_master im ON ui.item_id = im.item_id WHERE ui.user_id = $1 AND `;
+        // 🚨 THE BUG FIX: Bulletproof Tool Requirement Parsing
+        const rawToolReq = reqs.tool_req ? String(reqs.tool_req).trim().toUpperCase() : "NONE";
+
+        if (rawToolReq !== "NONE" && rawToolReq !== "NULL" && rawToolReq !== "") {
+            let toolQuery = `SELECT ui.quantity FROM user_inventory ui JOIN items_master im ON ui.item_id = im.item_id WHERE ui.user_id = $1 AND `;
             let param;
 
-            // Allow looking up tools by ID (e.g., 371) or by Name
-            if (!isNaN(toolReq)) {
+            // Strict Regex: Only passes if the requirement is 100% numerical digits
+            if (/^\d+$/.test(rawToolReq)) {
                 toolQuery += `im.item_id = $2`;
-                param = parseInt(toolReq);
+                param = parseInt(rawToolReq);
             } else {
                 toolQuery += `UPPER(im.name) = $2`;
-                param = toolReq.toString().trim().toUpperCase();
+                param = rawToolReq;
             }
 
             const toolCheck = await client.query(toolQuery, [user.user_id, param]);
@@ -63,7 +63,7 @@ async function execute(client, user, crime, req, res) {
             return res.json({ status: "jailed", arrested: true, message: "100% HEAT REACHED! The cops were waiting. You lost all Dirty Cash and were sent to state prison." });
         }
 
-        // 3. THE SHOPLIFTING MATH ENGINE (Synced with UTC Master Clock)
+        // 3. THE SHOPLIFTING MATH ENGINE
         const now = new Date();
         const secondsInDay = (now.getUTCHours() * 3600) + (now.getUTCMinutes() * 60) + now.getUTCSeconds();
         const timeProgress = secondsInDay / 86400.0;
@@ -73,19 +73,19 @@ async function execute(client, user, crime, req, res) {
 
         if (mechanics.has_cctv) {
             if (isInsideWindow(timeProgress, mechanics.cctv_reboot)) {
-                cctvScore = 99.0; // Cameras blind
+                cctvScore = 99.0;
             } else {
-                cctvScore = 15.0; // Cameras recording! High penalty.
+                cctvScore = 15.0;
             }
         }
 
         if (mechanics.has_guards) {
             if (isInsideWindow(timeProgress, mechanics.guard_break)) {
-                guardScore = 99.0; // On Break
+                guardScore = 99.0;
             } else if (isInsideWindow(timeProgress, mechanics.guard_swap)) {
-                guardScore = 60.0; // Shift Swap
+                guardScore = 60.0;
             } else {
-                guardScore = 10.0; // On Duty! Max Penalty.
+                guardScore = 10.0;
             }
         }
 
@@ -94,10 +94,8 @@ async function execute(client, user, crime, req, res) {
 
         // 4. Outcome Processing
         if (roll <= successChance) {
-            // SUCCESS
             const payout = Math.floor(Math.random() * ((rewards.max_cash || 0) - (rewards.min_cash || 0) + 1)) + (rewards.min_cash || 0);
 
-            // Give item loot if it procs
             const lootData = rewards.loot || {};
             if (lootData.item_id && lootData.chance) {
                 const lootRoll = Math.random() * 100;
@@ -121,7 +119,6 @@ async function execute(client, user, crime, req, res) {
 
             return res.json({ status: "success", message: getRandomText(flavor.success), gained_cash: payout, user: updatedUser.rows[0] });
         } else {
-            // FAILURE / ESCAPE LOGIC
             await client.query("UPDATE user_crime_records SET total_crimes = total_crimes + 1, total_fails = total_fails + 1 WHERE user_id = $1", [user.user_id]);
 
             const playerSpd = parseFloat(user.stat_spd) || 10.0;

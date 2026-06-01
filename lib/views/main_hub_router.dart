@@ -95,6 +95,12 @@ class MainHubRouter {
         tut3Shop: tutState.tut3Shop,
         tut3Pick: tutState.tut3Pick,
         tut3CrimesDoneCount: tutState.tut3CrimesDoneCount,
+        // 🚨 ADD THE 5 NEW VARIABLES HERE
+        tut4Gym: tutState.tut4Gym,
+        tut4EnergyStr: tutState.tut4EnergyStr,
+        tut4EnergyDef: tutState.tut4EnergyDef,
+        tut4EnergyDex: tutState.tut4EnergyDex,
+        tut4EnergySpd: tutState.tut4EnergySpd,
         onMissionRead: onMissionRead,
       );
 

@@ -47,6 +47,21 @@ class MainHubAppBar extends StatelessWidget implements PreferredSizeWidget {
     return (25 * math.pow(currentLevel, 1.7)).floor();
   }
 
+  // 🚨 NEW FORMATTER: Calculates remaining time for Jail & Hospital!
+  String _formatRemainingTime(String? expiryDate) {
+    if (expiryDate == null) return "00:00";
+    DateTime expiry = DateTime.parse(expiryDate).toLocal();
+    Duration diff = expiry.difference(DateTime.now());
+    if (diff.isNegative) return "00:00";
+
+    String twoDigits(int n) => n.toString().padLeft(2, '0');
+    String h = diff.inHours > 0 ? "${diff.inHours}:" : "";
+    String m = twoDigits(diff.inMinutes.remainder(60));
+    String s = twoDigits(diff.inSeconds.remainder(60));
+
+    return "$h$m:$s";
+  }
+
   Widget _buildLevelIndicator() {
     int requiredExp = _getRequiredExp(level);
     bool canLevelUp = exp >= requiredExp;
@@ -70,28 +85,64 @@ class MainHubAppBar extends StatelessWidget implements PreferredSizeWidget {
     );
   }
 
-  Widget _buildVital(IconData icon, String val, Color color) {
-    return Container(
-      margin: const EdgeInsets.only(left: 8),
-      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-      decoration: BoxDecoration(color: const Color(0xFF1E1E1E), border: Border.all(color: color.withOpacity(0.5), width: 1), borderRadius: BorderRadius.circular(4)),
-      child: Row(children: [Icon(icon, color: color, size: 14), const SizedBox(width: 4), Text(val, style: const TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.bold))]),
+  // 🚨 RESTORED: Tooltips for Vitals
+  Widget _buildVital(IconData icon, String val, Color color, String tooltipText) {
+    return Tooltip(
+      message: tooltipText,
+      preferBelow: true,
+      triggerMode: TooltipTriggerMode.tap, // Allows tap-to-view on Mobile
+      textStyle: const TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.bold),
+      decoration: BoxDecoration(color: const Color(0xFF1E1E1E), borderRadius: BorderRadius.circular(4), border: Border.all(color: color)),
+      child: Container(
+        margin: const EdgeInsets.only(left: 8),
+        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+        decoration: BoxDecoration(color: const Color(0xFF1E1E1E), border: Border.all(color: color.withOpacity(0.5), width: 1), borderRadius: BorderRadius.circular(4)),
+        child: Row(children: [Icon(icon, color: color, size: 14), const SizedBox(width: 4), Text(val, style: const TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.bold))]),
+      ),
     );
   }
 
+  // 🚨 RESTORED: Tooltips & Timers for Jail, Hospital, and Heat
   Widget _buildHeatAndStatus() {
     bool inHosp = hospitalExpiry != null && DateTime.parse(hospitalExpiry!).toLocal().isAfter(DateTime.now());
     bool inJail = jailExpiry != null && DateTime.parse(jailExpiry!).toLocal().isAfter(DateTime.now());
+
     return Row(
       children: [
-        if (inHosp) Container(margin: const EdgeInsets.only(left: 8), padding: const EdgeInsets.all(4), decoration: BoxDecoration(color: Colors.redAccent.withOpacity(0.2), border: Border.all(color: Colors.redAccent), borderRadius: BorderRadius.circular(4)), child: const Icon(Icons.medical_services, color: Colors.redAccent, size: 14)),
-        if (inJail) Container(margin: const EdgeInsets.only(left: 8), padding: const EdgeInsets.all(4), decoration: BoxDecoration(color: Colors.orangeAccent.withOpacity(0.2), border: Border.all(color: Colors.orangeAccent), borderRadius: BorderRadius.circular(4)), child: const Icon(Icons.gavel, color: Colors.orangeAccent, size: 14)),
-        if (heat > 0) Container(
-          margin: const EdgeInsets.only(left: 8),
-          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-          decoration: BoxDecoration(color: const Color(0xFF1E1E1E), border: Border.all(color: heat > 80 ? Colors.redAccent : Colors.deepOrangeAccent, width: 1), borderRadius: BorderRadius.circular(4)),
-          child: Row(children: [Icon(Icons.local_fire_department, color: heat > 80 ? Colors.redAccent : Colors.deepOrangeAccent, size: 14), const SizedBox(width: 4), Text("${heat.toStringAsFixed(0)}%", style: TextStyle(color: heat > 80 ? Colors.redAccent : Colors.deepOrangeAccent, fontSize: 11, fontWeight: FontWeight.bold))]),
-        )
+        if (inHosp)
+          Tooltip(
+            message: "Hospitalized: ${_formatRemainingTime(hospitalExpiry)}",
+            preferBelow: true,
+            triggerMode: TooltipTriggerMode.tap,
+            textStyle: const TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.bold),
+            decoration: BoxDecoration(color: const Color(0xFF1E1E1E), borderRadius: BorderRadius.circular(4), border: Border.all(color: Colors.redAccent)),
+            child: Container(margin: const EdgeInsets.only(left: 8), padding: const EdgeInsets.all(4), decoration: BoxDecoration(color: Colors.redAccent.withOpacity(0.2), border: Border.all(color: Colors.redAccent), borderRadius: BorderRadius.circular(4)), child: const Icon(Icons.medical_services, color: Colors.redAccent, size: 14)),
+          ),
+
+        if (inJail)
+          Tooltip(
+            message: "Jailed: ${_formatRemainingTime(jailExpiry)}",
+            preferBelow: true,
+            triggerMode: TooltipTriggerMode.tap,
+            textStyle: const TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.bold),
+            decoration: BoxDecoration(color: const Color(0xFF1E1E1E), borderRadius: BorderRadius.circular(4), border: Border.all(color: Colors.orangeAccent)),
+            child: Container(margin: const EdgeInsets.only(left: 8), padding: const EdgeInsets.all(4), decoration: BoxDecoration(color: Colors.orangeAccent.withOpacity(0.2), border: Border.all(color: Colors.orangeAccent), borderRadius: BorderRadius.circular(4)), child: const Icon(Icons.gavel, color: Colors.orangeAccent, size: 14)),
+          ),
+
+        if (heat > 0)
+          Tooltip(
+            message: "Wanted Level (Decays over time)",
+            preferBelow: true,
+            triggerMode: TooltipTriggerMode.tap,
+            textStyle: const TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.bold),
+            decoration: BoxDecoration(color: const Color(0xFF1E1E1E), borderRadius: BorderRadius.circular(4), border: Border.all(color: heat > 80 ? Colors.redAccent : Colors.deepOrangeAccent)),
+            child: Container(
+              margin: const EdgeInsets.only(left: 8),
+              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+              decoration: BoxDecoration(color: const Color(0xFF1E1E1E), border: Border.all(color: heat > 80 ? Colors.redAccent : Colors.deepOrangeAccent, width: 1), borderRadius: BorderRadius.circular(4)),
+              child: Row(children: [Icon(Icons.local_fire_department, color: heat > 80 ? Colors.redAccent : Colors.deepOrangeAccent, size: 14), const SizedBox(width: 4), Text("${heat.toStringAsFixed(0)}%", style: TextStyle(color: heat > 80 ? Colors.redAccent : Colors.deepOrangeAccent, fontSize: 11, fontWeight: FontWeight.bold))]),
+            ),
+          )
       ],
     );
   }
@@ -143,9 +194,9 @@ class MainHubAppBar extends StatelessWidget implements PreferredSizeWidget {
                     child: Row(
                       mainAxisSize: MainAxisSize.min,
                       children: [
-                        _buildVital(Icons.bolt, "$energy", Colors.yellowAccent),
-                        _buildVital(Icons.psychology, "$nerve", Colors.purpleAccent),
-                        _buildVital(Icons.favorite, "$hp", Colors.redAccent),
+                        _buildVital(Icons.bolt, "$energy", Colors.yellowAccent, "Energy"),
+                        _buildVital(Icons.psychology, "$nerve", Colors.purpleAccent, "Nerve"),
+                        _buildVital(Icons.favorite, "$hp", Colors.redAccent, "Health Points"),
                         _buildHeatAndStatus(),
                       ],
                     ),

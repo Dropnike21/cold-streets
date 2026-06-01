@@ -55,6 +55,7 @@ class MainHubDrawer extends StatelessWidget {
       shape: const RoundedRectangleBorder(borderRadius: BorderRadius.zero),
       child: Column(
         children: [
+          // 🚨 HEADER: PLAYER PROFILE & CURRENCY
           TutorialBeacon(
             id: 'drawer_assets',
             activeId: activeBeacon,
@@ -96,10 +97,74 @@ class MainHubDrawer extends StatelessWidget {
             ),
           ),
 
+          // 🚨 BODY: SCROLLABLE NAVIGATION MENUS
           Expanded(
             child: ListView(
               padding: EdgeInsets.zero,
               children: [
+                const SizedBox(height: 16),
+
+                // --- 1. COMPACT DESKTOP QUICK NAV (Strictly matches Mobile Bottom Nav) ---
+                if (!isMobile) ...[
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 12.0, vertical: 8.0),
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(vertical: 2),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF1A1A1A),
+                        border: Border.all(color: const Color(0xFF333333)),
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                        children: [
+                          IconButton(
+                            icon: const Icon(Icons.dashboard, color: Colors.white70, size: 22),
+                            tooltip: "Dashboard Hub",
+                            onPressed: () => onNavigate(0),
+                          ),
+
+                          TutorialBeacon(
+                            id: 'drawer_streets',
+                            activeId: activeBeacon,
+                            child: IconButton(
+                              icon: const Icon(Icons.local_fire_department, color: Colors.deepOrangeAccent, size: 22),
+                              tooltip: "The Streets",
+                              onPressed: () => onNavigate(1),
+                            ),
+                          ),
+
+                          if (anonExp >= 4)
+                            TutorialBeacon(
+                              id: 'drawer_gym',
+                              activeId: activeBeacon,
+                              child: IconButton(
+                                icon: const Icon(Icons.fitness_center, color: Colors.white70, size: 22),
+                                tooltip: "Training Gym",
+                                onPressed: () => onNavigate(5),
+                              ),
+                            ),
+
+                          if (anonExp >= 50) ...[
+                            IconButton(
+                              icon: const Icon(Icons.map, color: Colors.white70, size: 22),
+                              tooltip: "City Map",
+                              onPressed: () => onNavigate(24),
+                            ),
+                            IconButton(
+                              icon: const Icon(Icons.group, color: Colors.white70, size: 22),
+                              tooltip: "Syndicate",
+                              onPressed: () => onNavigate(3),
+                            ),
+                          ],
+                        ],
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                ],
+
+                // --- 2. MOBILE-ONLY QUICK LINKS ---
                 if (isMobile) ...[
                   Container(
                     color: const Color(0xFF121212),
@@ -108,6 +173,21 @@ class MainHubDrawer extends StatelessWidget {
                   const Divider(color: Color(0xFF333333), height: 1),
                 ],
 
+                // --- 3. PUBLIC FACILITIES (Always Visible!) ---
+                _buildDistrictAccordion(
+                    context: context,
+                    title: "CIVIC CENTER",
+                    initiallyExpanded: !showAdvancedCity, // Auto-expands for new players
+                    children: [
+                      _buildMenuTile(icon: Icons.newspaper, color: Colors.white, title: "Info Broker", onTap: () => _handleNavigation(context, 13)),
+                      _buildMenuTile(icon: Icons.school, color: Colors.lightBlueAccent, title: "University", onTap: () => _handleNavigation(context, 16)),
+                      _buildMenuTile(icon: Icons.local_hospital, color: Colors.redAccent, title: "City Hospital", onTap: () => _handleNavigation(context, 15)),
+                      _buildMenuTile(icon: Icons.gavel, color: Colors.orange, title: "State Prison", onTap: () => _handleNavigation(context, 14)),
+                      _buildMenuTile(icon: Icons.location_city, color: Colors.deepPurpleAccent, title: "City Hall", onTap: () => _handleNavigation(context, 8)),
+                    ]
+                ),
+
+                // --- 4. ADVANCED CITY LOCATIONS ---
                 if (showAdvancedCity) ...[
                   _buildDistrictAccordion(
                       context: context,
@@ -138,17 +218,6 @@ class MainHubDrawer extends StatelessWidget {
                   ),
                   _buildDistrictAccordion(
                       context: context,
-                      title: "CIVIC CENTER",
-                      children: [
-                        _buildMenuTile(icon: Icons.newspaper, color: Colors.white, title: "Info Broker", onTap: () => _handleNavigation(context, 13)),
-                        _buildMenuTile(icon: Icons.school, color: Colors.lightBlueAccent, title: "University", onTap: () => _handleNavigation(context, 16)),
-                        _buildMenuTile(icon: Icons.local_hospital, color: Colors.redAccent, title: "City Hospital", onTap: () => _handleNavigation(context, 15)),
-                        _buildMenuTile(icon: Icons.gavel, color: Colors.grey, title: "State Jail", onTap: () => _handleNavigation(context, 14)),
-                        _buildMenuTile(icon: Icons.location_city, color: Colors.deepPurpleAccent, title: "City Hall", onTap: () => _handleNavigation(context, 8)),
-                      ]
-                  ),
-                  _buildDistrictAccordion(
-                      context: context,
                       title: "TRANSIT & AUTO",
                       children: [
                         _buildMenuTile(icon: Icons.flight_takeoff, color: Colors.white70, title: "Airport (undeveloped)", onTap: () {}),
@@ -160,18 +229,20 @@ class MainHubDrawer extends StatelessWidget {
                     padding: const EdgeInsets.all(24.0),
                     child: Center(
                       child: Text(
-                        "CITY MAP CURRENTLY RESTRICTED.\nCOMPLETE MISSIONS TO UNLOCK SECTORS.",
+                        "OTHER CITY SECTORS RESTRICTED.\nCOMPLETE MISSIONS TO UNLOCK.",
                         textAlign: TextAlign.center,
                         style: TextStyle(color: Colors.white.withOpacity(0.2), fontSize: 10, letterSpacing: 1.5, fontWeight: FontWeight.bold),
                       ),
                     ),
                   ),
                 ],
+
                 const SizedBox(height: 16),
               ],
             ),
           ),
 
+          // 🚨 FOOTER: PINNED PERSONAL ASSETS (Always stays at bottom)
           Container(
             decoration: BoxDecoration(color: const Color(0xFF121212), border: Border(top: BorderSide(color: Colors.grey.shade900, width: 1))),
             child: SafeArea(
@@ -203,7 +274,6 @@ class MainHubDrawer extends StatelessWidget {
     );
   }
 
-  // 🚨 RESTORED HELPER METHOD
   Widget _buildDistrictAccordion({required BuildContext context, required String title, required List<Widget> children, bool initiallyExpanded = false}) {
     return Theme(
       data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
