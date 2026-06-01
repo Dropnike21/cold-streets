@@ -50,12 +50,12 @@ app.use('/casino', require('./routes/casino')); // This loads the hub!
 
 
 
-// Runs every 30 seconds for testing (Change to 5 minutes for production: 5 * 60 * 1000)[cite: 7]
+// Runs every 30 seconds for testing (Change to 5 minutes for production: 5 * 60 * 1000)
 setInterval(async () => {
     try {
         console.log("⏱️ THE VITAL TICK: Regenerating player stats and checking Wardens...");
 
-        // 1. Clear legacy cooldowns (You can eventually phase this table out for core states)
+        // 1. Clear legacy cooldowns
         await pool.query("DELETE FROM user_cooldowns WHERE expires_at <= NOW()");
 
         // 2. Clear expired Jail/Hospital timers directly in the users table
@@ -69,13 +69,14 @@ setInterval(async () => {
             WHERE hospital_expires_at <= NOW();
         `);
 
-        // 3. The Vital Tick: Restore Stats & Calculate Heat Decay
+        // 3. The Vital Tick: Restore Stats (Safely!) & Calculate Heat Decay
+        // 🚨 FIX: Added CASE statements. It will no longer steal "Over-maxed" mission rewards!
         await pool.query(`
             UPDATE users
             SET
-                energy = LEAST(energy + 5, 100),
-                nerve = LEAST(nerve + 2, max_nerve),
-                hp = LEAST(hp + 10, max_hp),
+                energy = CASE WHEN energy < 100 THEN LEAST(energy + 5, 100) ELSE energy END,
+                nerve = CASE WHEN nerve < max_nerve THEN LEAST(nerve + 2, max_nerve) ELSE nerve END,
+                hp = CASE WHEN hp < max_hp THEN LEAST(hp + 10, max_hp) ELSE hp END,
                 heat = GREATEST(0, heat - CASE
                     WHEN jail_expires_at > NOW() THEN 2.00
                     WHEN last_active_at < NOW() - INTERVAL '5 minutes' THEN 2.00
