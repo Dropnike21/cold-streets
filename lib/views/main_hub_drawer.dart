@@ -48,7 +48,10 @@ class MainHubDrawer extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    bool showAdvancedCity = anonExp >= 50;
+    // 🚨 DISTRICT UNLOCK LOGIC
+    bool showFinancial = anonExp >= 5;
+    bool showUnderworld = anonExp >= 6;
+    bool showMapAndSyndicate = anonExp >= 7;
 
     return Drawer(
       backgroundColor: const Color(0xFF161616),
@@ -104,7 +107,7 @@ class MainHubDrawer extends StatelessWidget {
               children: [
                 const SizedBox(height: 16),
 
-                // --- 1. COMPACT DESKTOP QUICK NAV (Strictly matches Mobile Bottom Nav) ---
+                // --- 1. COMPACT DESKTOP QUICK NAV (Horizontal Icon Bar) ---
                 if (!isMobile) ...[
                   Padding(
                     padding: const EdgeInsets.symmetric(horizontal: 12.0, vertical: 8.0),
@@ -145,7 +148,7 @@ class MainHubDrawer extends StatelessWidget {
                               ),
                             ),
 
-                          if (anonExp >= 50) ...[
+                          if (showMapAndSyndicate) ...[
                             IconButton(
                               icon: const Icon(Icons.map, color: Colors.white70, size: 22),
                               tooltip: "City Map",
@@ -173,11 +176,11 @@ class MainHubDrawer extends StatelessWidget {
                   const Divider(color: Color(0xFF333333), height: 1),
                 ],
 
-                // --- 3. PUBLIC FACILITIES (Always Visible!) ---
+                // --- 3. CIVIC CENTER (Always Visible) ---
                 _buildDistrictAccordion(
                     context: context,
                     title: "CIVIC CENTER",
-                    initiallyExpanded: !showAdvancedCity, // Auto-expands for new players
+                    initiallyExpanded: anonExp < 5,
                     children: [
                       _buildMenuTile(icon: Icons.newspaper, color: Colors.white, title: "Info Broker", onTap: () => _handleNavigation(context, 13)),
                       _buildMenuTile(icon: Icons.school, color: Colors.lightBlueAccent, title: "University", onTap: () => _handleNavigation(context, 16)),
@@ -187,8 +190,35 @@ class MainHubDrawer extends StatelessWidget {
                     ]
                 ),
 
-                // --- 4. ADVANCED CITY LOCATIONS ---
-                if (showAdvancedCity) ...[
+                // --- 4. FINANCIAL DISTRICT (Unlocks at Task 5) ---
+                if (showFinancial) ...[
+                  _buildDistrictAccordion(
+                      context: context,
+                      title: "FINANCIAL DISTRICT",
+                      initiallyExpanded: anonExp == 5,
+                      children: [
+                        _buildMenuTile(icon: Icons.account_balance, color: Colors.blueAccent, title: "The Bank", onTap: () => _handleNavigation(context, 17)),
+                        _buildMenuTile(icon: Icons.domain, color: Colors.tealAccent, title: "Real Estate", onTap: () => _handleNavigation(context, 18)),
+                        _buildMenuTile(icon: Icons.shopping_bag, color: Colors.amber, title: "Trade Network (undeveloped)", onTap: () => _handleNavigation(context, 25)),
+                        _buildMenuTile(icon: Icons.gavel, color: Colors.orange, title: "Auction House (undeveloped)", onTap: () {}),
+                      ]
+                  ),
+                ],
+
+                // --- 5. THE UNDERWORLD (Unlocks at Task 6) ---
+                if (showUnderworld) ...[
+                  _buildDistrictAccordion(
+                      context: context,
+                      title: "THE UNDERWORLD",
+                      initiallyExpanded: anonExp == 6,
+                      children: [
+                        _buildMenuTile(icon: Icons.diamond, color: Colors.cyanAccent, title: "Credit Broker / Item Market", onTap: () => _handleNavigation(context, 6)),
+                        _buildMenuTile(icon: Icons.security, color: Colors.grey, title: "Underground Munitions (undeveloped)", onTap: () {}),
+                        _buildMenuTile(icon: Icons.casino, color: Colors.purpleAccent, title: "The Casino", onTap: ()  => _handleNavigation(context, 20)),
+                      ]
+                  ),
+
+                  // Secondary areas shown with Underworld
                   _buildDistrictAccordion(
                       context: context,
                       title: "LOCAL NEIGHBORHOOD",
@@ -199,32 +229,16 @@ class MainHubDrawer extends StatelessWidget {
                   ),
                   _buildDistrictAccordion(
                       context: context,
-                      title: "THE UNDERWORLD",
-                      children: [
-                        _buildMenuTile(icon: Icons.diamond, color: Colors.cyanAccent, title: "Credit Broker / Item Market", onTap: () => _handleNavigation(context, 6)),
-                        _buildMenuTile(icon: Icons.security, color: Colors.grey, title: "Underground Munitions (undeveloped)", onTap: () {}),
-                        _buildMenuTile(icon: Icons.casino, color: Colors.purpleAccent, title: "The Casino", onTap: ()  => _handleNavigation(context, 20)),
-                      ]
-                  ),
-                  _buildDistrictAccordion(
-                      context: context,
-                      title: "FINANCIAL DISTRICT",
-                      children: [
-                        _buildMenuTile(icon: Icons.account_balance, color: Colors.blueAccent, title: "The Bank", onTap: () => _handleNavigation(context, 17)),
-                        _buildMenuTile(icon: Icons.domain, color: Colors.tealAccent, title: "Real Estate", onTap: () => _handleNavigation(context, 18)),
-                        _buildMenuTile(icon: Icons.shopping_bag, color: Colors.amber, title: "Trade Network (undeveloped)", onTap: () => _handleNavigation(context, 25)),
-                        _buildMenuTile(icon: Icons.gavel, color: Colors.orange, title: "Auction House (undeveloped)", onTap: () {}),
-                      ]
-                  ),
-                  _buildDistrictAccordion(
-                      context: context,
                       title: "TRANSIT & AUTO",
                       children: [
                         _buildMenuTile(icon: Icons.flight_takeoff, color: Colors.white70, title: "Airport (undeveloped)", onTap: () {}),
                         _buildMenuTile(icon: Icons.car_repair, color: Colors.grey, title: "The Chop Shop (undeveloped)", onTap: () {}),
                       ]
                   ),
-                ] else ...[
+                ],
+
+                // --- 6. RESTRICTED NOTIFICATION ---
+                if (!showFinancial && !showUnderworld) ...[
                   Padding(
                     padding: const EdgeInsets.all(24.0),
                     child: Center(
@@ -274,18 +288,30 @@ class MainHubDrawer extends StatelessWidget {
     );
   }
 
+  // 🚨 ACCORDION HELPER WIDGET
   Widget _buildDistrictAccordion({required BuildContext context, required String title, required List<Widget> children, bool initiallyExpanded = false}) {
     return Theme(
       data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
       child: ExpansionTile(
-        initiallyExpanded: initiallyExpanded, iconColor: const Color(0xFF39FF14), collapsedIconColor: Colors.grey[600], tilePadding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 0),
+        initiallyExpanded: initiallyExpanded,
+        iconColor: const Color(0xFF39FF14),
+        collapsedIconColor: Colors.grey[600],
+        tilePadding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 0),
         title: Text(title, style: TextStyle(color: Colors.grey[500], fontSize: 10, letterSpacing: 1.5, fontWeight: FontWeight.bold)),
         children: children,
       ),
     );
   }
 
+  // 🚨 MENU TILE HELPER WIDGET
   Widget _buildMenuTile({required IconData icon, required Color color, required String title, required VoidCallback onTap, Color textColor = Colors.white}) {
-    return ListTile(dense: true, visualDensity: const VisualDensity(horizontal: 0, vertical: -4), contentPadding: const EdgeInsets.symmetric(horizontal: 24, vertical: 0), leading: Icon(icon, color: color, size: 16), title: Text(title, style: TextStyle(color: textColor, fontSize: 12, fontWeight: FontWeight.w600)), onTap: onTap);
+    return ListTile(
+        dense: true,
+        visualDensity: const VisualDensity(horizontal: 0, vertical: -4),
+        contentPadding: const EdgeInsets.symmetric(horizontal: 24, vertical: 0),
+        leading: Icon(icon, color: color, size: 16),
+        title: Text(title, style: TextStyle(color: textColor, fontSize: 12, fontWeight: FontWeight.w600)),
+        onTap: onTap
+    );
   }
 }

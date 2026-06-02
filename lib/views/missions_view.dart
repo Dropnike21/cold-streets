@@ -30,6 +30,10 @@ class MissionsView extends StatefulWidget {
   final int tut4EnergyDef;
   final int tut4EnergyDex;
   final int tut4EnergySpd;
+  final bool tut5Bank;
+  final bool tut5Estate;
+  final bool tut6Broker;
+  final bool tut6Casino;
 
   const MissionsView({
     super.key,
@@ -53,6 +57,12 @@ class MissionsView extends StatefulWidget {
     this.tut4EnergyDef = 0,
     this.tut4EnergyDex = 0,
     this.tut4EnergySpd = 0,
+    // 🚨 FIX: Add these 4 missing lines here!
+    this.tut5Bank = false,
+    this.tut5Estate = false,
+    this.tut6Broker = false,
+    this.tut6Casino = false,
+
   });
 
   @override
@@ -144,6 +154,10 @@ class _MissionsViewState extends State<MissionsView> {
       case 3: return { "title": "FIRST BLOOD", "message": "Now that you know your way around, it's time to earn your keep. Scope out the local crime spots and pull off a successful job.", "objective": "Open Searching, Shoplifting, and Pickpocket tabs, then pull off 20 successful crimes.", "reward": "700 Gym Energy" };
     // 🚨 TASK 4 FALLBACK
       case 4: return { "title": "IRON AND BLOOD", "message": "You survived the streets, but you're still weak. Head to the local gym. Burn some of that energy to build your body. I want to see you push your limits in all areas.", "objective": "Navigate to Gym, spend 150 Energy on STR, DEF, DEX, and SPD.", "reward": "\$500 Clean Cash" };
+      case 5: return { "title": "FOLLOW THE MONEY", "message": "If you want to survive, you need to protect your assets. I've unlocked the Financial District for you.", "objective": "Navigate to the Bank and Real Estate.", "reward": "\$1,000 Clean Cash" };
+      case 6: return { "title": "INTO THE SHADOWS", "message": "Now for the real city. The Underworld is where the big players trade. Be careful.", "objective": "Navigate to the Credit Broker and The Casino.", "reward": "\$2,000 Dirty Cash" };
+      case 7: return { "title": "END OF THE LINE", "message": "I've taught you all I can. A guy named Kevin is looking for reliable muscle.", "objective": "No further objectives.", "reward": "None." };
+
       default: return { "title": "END OF THE LINE", "message": "I've taught you all I can. A guy named Kevin is looking for reliable muscle. Check your contact list.", "objective": "No further objectives.", "reward": "None." };
     }
   }
@@ -352,6 +366,26 @@ class _MissionsViewState extends State<MissionsView> {
           _buildChecklistItem("Spend 150 Energy on DEF (${math.min(widget.tut4EnergyDef, 150)}/150)", defDone),
           _buildChecklistItem("Spend 150 Energy on DEX (${math.min(widget.tut4EnergyDex, 150)}/150)", dexDone),
           _buildChecklistItem("Spend 150 Energy on SPD (${math.min(widget.tut4EnergySpd, 150)}/150)", spdDone),
+        ],
+      );
+    }
+    else if (anonExp == 5) {
+      canVerify = widget.tut5Bank && widget.tut5Estate;
+      objectiveWidget = Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _buildChecklistItem("Navigate to The Bank (Financial District)", widget.tut5Bank),
+          _buildChecklistItem("Navigate to Real Estate (Financial District)", widget.tut5Estate),
+        ],
+      );
+    }
+    else if (anonExp == 6) {
+      canVerify = widget.tut6Broker && widget.tut6Casino;
+      objectiveWidget = Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _buildChecklistItem("Navigate to Credit Broker (The Underworld)", widget.tut6Broker),
+          _buildChecklistItem("Navigate to The Casino (The Underworld)", widget.tut6Casino),
         ],
       );
     }

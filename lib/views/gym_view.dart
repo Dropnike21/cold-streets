@@ -157,11 +157,14 @@ class _GymViewState extends State<GymView> {
 
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
+
+        // 🚨 1. FIRE ONSTATECHANGE FIRST! Let the parent process old vs new stats.
+        widget.onStateChange(data['user']);
+
         setState(() {
-          widget.userData.addAll(data['user']);
+          // 🚨 2. DO NOT mutate widget.userData here anymore. Just update local UI variables.
           playerGymExp = data['user']['gym_exp'] ?? playerGymExp;
         });
-        widget.onStateChange(data['user']);
 
         String actionText = currentGym['${statType}_action'] ?? "trained hard";
         _showFeedback("You $actionText for ${_formatTrainingTime(finalEnergySpent)} and gained ${data['gained']} $statName.");

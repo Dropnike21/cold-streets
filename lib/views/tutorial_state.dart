@@ -21,6 +21,12 @@ class TutorialState {
   int tut4EnergyDex = 0;
   int tut4EnergySpd = 0;
 
+  // 🚨 TASK 5 & 6: DISTRICT EXPLORATION
+  bool tut5Bank = false;
+  bool tut5Estate = false;
+  bool tut6Broker = false;
+  bool tut6Casino = false;
+
   // Load from Device
   Future<void> load(String userId) async {
     final prefs = await SharedPreferences.getInstance();
@@ -35,6 +41,11 @@ class TutorialState {
     tut4EnergyDef = prefs.getInt('tut4EnergyDef_$userId') ?? 0;
     tut4EnergyDex = prefs.getInt('tut4EnergyDex_$userId') ?? 0;
     tut4EnergySpd = prefs.getInt('tut4EnergySpd_$userId') ?? 0;
+
+    tut5Bank = prefs.getBool('tut5Bank_$userId') ?? false;
+    tut5Estate = prefs.getBool('tut5Estate_$userId') ?? false;
+    tut6Broker = prefs.getBool('tut6Broker_$userId') ?? false;
+    tut6Casino = prefs.getBool('tut6Casino_$userId') ?? false;
   }
 
   // Save to Device
@@ -117,6 +128,16 @@ class TutorialState {
         if (selectedIndex != 5) return isDesktop ? 'drawer_gym' : 'nav_gym';
         return null; // They are in the gym, let them train freely!
       }
+      if (selectedIndex != 29) return 'fab_phone';
+      return 'btn_verify_anon';
+    }
+    if (anonExp == 5) {
+      if (!tut5Bank || !tut5Estate) return isDesktop ? null : 'btn_menu';
+      if (selectedIndex != 29) return 'fab_phone';
+      return 'btn_verify_anon';
+    }
+    if (anonExp == 6) {
+      if (!tut6Broker || !tut6Casino) return isDesktop ? null : 'btn_menu';
       if (selectedIndex != 29) return 'fab_phone';
       return 'btn_verify_anon';
     }

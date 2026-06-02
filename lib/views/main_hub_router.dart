@@ -101,6 +101,10 @@ class MainHubRouter {
         tut4EnergyDef: tutState.tut4EnergyDef,
         tut4EnergyDex: tutState.tut4EnergyDex,
         tut4EnergySpd: tutState.tut4EnergySpd,
+        tut5Bank: tutState.tut5Bank,
+        tut5Estate: tutState.tut5Estate,
+        tut6Broker: tutState.tut6Broker,
+        tut6Casino: tutState.tut6Casino,
         onMissionRead: onMissionRead,
       );
 
