@@ -1,0 +1,36 @@
+name: Cold Streets validation
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  backend-syntax:
+    name: Backend syntax and dependencies
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: cold_streets_backend/package-lock.json
+      - run: npm ci
+        working-directory: cold_streets_backend
+      - name: Check JavaScript syntax (no database required)
+        run: find cold_streets_backend -type f -name '*.js' -not -path '*/node_modules/*' -print0 | xargs -0 -n1 node --check
+
+  flutter-smoke:
+    name: Flutter smoke tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+      - run: flutter pub get
+      - run: flutter test
