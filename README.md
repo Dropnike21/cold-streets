@@ -1,17 +1,36 @@
-# cold_streets
+# Cold Streets
 
-A new Flutter project.
+A cross-platform, persistent, interface-driven crime RPG built with Flutter, an Express backend and PostgreSQL.
 
-## Getting Started
+## Repository layout
 
-This project is a starting point for a Flutter application.
+- `lib/` — Flutter client and gameplay views.
+- `assets/` — checked-in game art and map resources.
+- `cold_streets_backend/` — Node.js API, routes and game systems.
+- `test/` — Flutter smoke tests.
+- `docs/REMOTE_DEVELOPMENT.md` — development setup, recovery status, safety constraints and first milestones.
 
-A few resources to get you started if this is your first Flutter project:
+## Getting started
 
-- [Learn Flutter](https://docs.flutter.dev/get-started/learn-flutter)
-- [Write your first Flutter app](https://docs.flutter.dev/get-started/codelab)
-- [Flutter learning resources](https://docs.flutter.dev/reference/learning-resources)
+For local client development:
 
-For help getting started with Flutter development, view the
-[online documentation](https://docs.flutter.dev/), which offers tutorials,
-samples, guidance on mobile development, and a full API reference.
+```sh
+flutter pub get
+flutter test
+flutter run -d chrome --dart-define=API_BASE_URL=http://127.0.0.1:3000
+```
+
+For the API:
+
+```sh
+cd cold_streets_backend
+npm ci
+# Copy .env.example to .env and supply your development-only DB settings.
+npm start
+```
+
+The backend requires a verified PostgreSQL schema. The recovered Drive SQL data dump is **not** a standalone database restore. See the remote-development guide before setting up a new database.
+
+**Security:** This repo is not production-ready. The existing backend needs account authentication and authorization, transaction safety and further tests before it is reachable by untrusted users. Never commit credentials or private database dumps.
+
+Reference game design documentation is kept separately in the Cold Streets Google Drive folder.
