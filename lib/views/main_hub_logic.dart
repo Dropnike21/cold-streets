@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 import '../services/game_http.dart' as http;
 import 'dart:convert';
 import 'dart:async';
@@ -51,6 +52,8 @@ mixin MainHubLogic on State<MainHub> {
 
   Timer? syncTimer;
   Timer? countdownTimer;
+  StreamSubscription<AuthState>? _authSubscription;
+  bool _leavingGame = false;
 
   int regenSecondsLeft = 30;
   List<Map<String, dynamic>> activeCooldowns = [];
@@ -75,6 +78,16 @@ mixin MainHubLogic on State<MainHub> {
   @override
   void initState() {
     super.initState();
+    _authSubscription = Supabase.instance.client.auth.onAuthStateChange.listen(
+      (event) {
+        if (event.event == AuthChangeEvent.signedOut && mounted) {
+          _returnToSignIn();
+        }
+      },
+      onError: (Object error) {
+        debugPrint('Cold Streets authentication session error.');
+      },
+    );
     userId = widget.userData['user_id']?.toString() ?? "0";
     username = widget.userData['username']?.toString() ?? "Unknown";
     hasBazaar = widget.userData['has_bazaar'] == true;
@@ -118,6 +131,7 @@ mixin MainHubLogic on State<MainHub> {
   void dispose() {
     syncTimer?.cancel();
     countdownTimer?.cancel();
+    _authSubscription?.cancel();
     super.dispose();
   }
 
@@ -298,10 +312,29 @@ mixin MainHubLogic on State<MainHub> {
     });
   }
 
-  void logout() {
+  void _returnToSignIn() {
+    if (_leavingGame || !mounted) return;
+    _leavingGame = true;
     syncTimer?.cancel();
     countdownTimer?.cancel();
-    Navigator.pushReplacement(context, MaterialPageRoute(builder: (context) => const AuthView()));
+    Navigator.of(context).pushAndRemoveUntil(
+      MaterialPageRoute(builder: (_) => const AuthView()),
+      (route) => false,
+    );
+  }
+
+  Future<void> logout() async {
+    if (_leavingGame) return;
+    try {
+      await Supabase.instance.client.auth.signOut();
+      if (mounted) _returnToSignIn();
+    } on AuthException {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Sign out failed. Please try again.')),
+        );
+      }
+    }
   }
 
   void navigateTo(int index) {
