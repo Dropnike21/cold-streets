@@ -1,6 +1,7 @@
 // File Path: lib/views/syndicate_view.dart
 
 import 'package:flutter/material.dart';
+import '../api_config.dart';
 import '../services/game_http.dart' as http;
 import 'dart:convert';
 import 'dart:async';
@@ -18,7 +19,7 @@ class SyndicateView extends StatefulWidget {
 
 class _SyndicateViewState extends State<SyndicateView> {
   // NOTE: 10.0.2.2 is for Android Emulator. Use local IPv4 if testing on a physical device.
-  final String apiUrl = "http://10.0.2.2:3000/syndicate";
+  String get apiUrl => '\${ApiConfig.baseUrl}/syndicate';
 
   List<dynamic> _activeCrew = [];
   List<dynamic> _recruitmentBoard = [];
