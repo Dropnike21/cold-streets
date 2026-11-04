@@ -213,9 +213,15 @@ router.post('/apply', async (req, res) => {
         const inserted = await client.query(
             `INSERT INTO company_applicants (company_id, user_id, pitch_message)
              VALUES ($1, $2, $3)
+             ON CONFLICT (company_id, user_id)
+                 WHERE status = 'Pending'
+             DO NOTHING
              RETURNING application_id`,
             [companyId, userId, pitch]
         );
+        if (inserted.rowCount !== 1) {
+            throw new ActionError(409, 'Your previous application is still pending.');
+        }
         const response = {
             success: true,
             message: 'Application submitted to the Director.',
