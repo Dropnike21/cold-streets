@@ -167,7 +167,13 @@ router.get('/crimes_board/:user_id', async (_req, res) => {
 // --- HELPER: CHECK DOMAIN TRANSFER ---
 async function handleDomainTransfer(client, userId, crewId, newDomain) {
     const crewRes = await client.query(
-        `SELECT current_domain, last_transfer_at
+        `SELECT current_domain,
+                GREATEST(
+                    0,
+                    CEIL(EXTRACT(EPOCH FROM (
+                        (last_transfer_at + INTERVAL '10 minutes') - NOW()
+                    )))
+                )::bigint AS transfer_seconds_remaining
            FROM user_crew
           WHERE crew_id = $1 AND user_id = $2
           FOR UPDATE`,
@@ -176,16 +182,20 @@ async function handleDomainTransfer(client, userId, crewId, newDomain) {
     if (crewRes.rowCount !== 1) throw new ActionError(404, 'Crew member not found.');
     const crew = crewRes.rows[0];
     const currentDomain = crew.current_domain || 'IDLE';
+    const remainingSeconds = crew.transfer_seconds_remaining == null
+        ? 0
+        : Number(crew.transfer_seconds_remaining);
 
+    if (!Number.isSafeInteger(remainingSeconds) || remainingSeconds < 0) {
+        throw new Error('Invalid crew transfer cooldown state.');
+    }
     if (currentDomain !== 'IDLE' && currentDomain !== newDomain &&
-        crew.last_transfer_at) {
-        const diffMinutes = (Date.now() - new Date(crew.last_transfer_at).getTime()) / 60000;
-        if (diffMinutes < 10) {
-            throw new ActionError(
-                409,
-                'Transfer cooldown active for ' + Math.ceil(10 - diffMinutes) + ' more minute(s).'
-            );
-        }
+        remainingSeconds > 0) {
+        throw new ActionError(
+            409,
+            'Transfer cooldown active for ' +
+                Math.ceil(remainingSeconds / 60) + ' more minute(s).'
+        );
     }
     if (currentDomain !== newDomain) {
         await client.query(
