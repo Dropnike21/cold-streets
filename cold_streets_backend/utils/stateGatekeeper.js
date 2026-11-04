@@ -1,11 +1,11 @@
 const pool = require('../db'); // Adjust path to your db.js if necessary
 
 async function checkPlayerState(req, res, next) {
-    // FIX: Added optional chaining (?.) so it doesn't crash if req.body is undefined
-    const userId = req.body?.user_id || req.params?.user_id || req.query?.user_id;
-
-    // If no user ID is provided, let the specific route handle the missing param error
-    if (!userId) return next();
+    // Read the identity established by verified Supabase Auth middleware.
+    // The old code trusted a user ID supplied by the client and skipped the
+    // gatekeeper entirely for GET endpoints whose route params were not yet parsed.
+    const userId = req.player?.userId;
+    if (!userId) return res.status(401).json({ error: 'Authentication required.' });
 
     try {
         const { rows } = await pool.query(`
