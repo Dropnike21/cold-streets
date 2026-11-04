@@ -26,9 +26,12 @@ Future<Map<String, String>> _authorized(Uri uri, Map<String, String>? headers) a
   if (session == null || session.isExpired) {
     throw StateError('Your game session has expired. Sign in again.');
   }
-  // Ignore any caller-supplied Authorization header.
+  // Header names are case-insensitive. Remove any alternate spelling of
+  // Authorization before attaching the verified session token.
+  final safeHeaders = Map<String, String>.from(headers ?? const {});
+  safeHeaders.removeWhere((name, _) => name.toLowerCase() == 'authorization');
   return <String, String>{
-    ...?headers,
+    ...safeHeaders,
     'Authorization': 'Bearer ${session.accessToken}',
   };
 }
