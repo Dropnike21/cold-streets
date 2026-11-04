@@ -121,19 +121,16 @@ setInterval(async () => {
             WHERE hospital_expires_at <= NOW();
         `);
 
-        // 3. The Vital Tick: Restore Stats (Safely!) & Calculate Heat Decay
-        // 🚨 FIX: Added CASE statements. It will no longer steal "Over-maxed" mission rewards!
+        // 3. Legacy Vital Tick only.
+        // Heat decay is intentionally excluded: recovered sources disagree on
+        // the authoritative cadence, so this opt-in legacy timer must not
+        // silently choose one generation.
         await pool.query(`
             UPDATE users
             SET
                 energy = CASE WHEN energy < 100 THEN LEAST(energy + 5, 100) ELSE energy END,
                 nerve = CASE WHEN nerve < max_nerve THEN LEAST(nerve + 2, max_nerve) ELSE nerve END,
-                hp = CASE WHEN hp < max_hp THEN LEAST(hp + 10, max_hp) ELSE hp END,
-                heat = GREATEST(0, heat - CASE
-                    WHEN jail_expires_at > NOW() THEN 2.00
-                    WHEN last_active_at < NOW() - INTERVAL '5 minutes' THEN 2.00
-                    ELSE 1.00
-                END)
+                hp = CASE WHEN hp < max_hp THEN LEAST(hp + 10, max_hp) ELSE hp END
         `);
     } catch (err) {
         console.error("🔴 CRITICAL WARDEN ERROR:", err.message);

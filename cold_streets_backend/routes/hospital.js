@@ -6,6 +6,29 @@ const { requireIdempotencyKey, beginIdempotent, completeIdempotent } = require('
 const { hasEducationUnlock } = require('../utils/educationEntitlements');
 
 const REVIVE_ENERGY_COST = 75;
+const REVIVE_JOB_NAME = 'City Hospital';
+const REVIVE_PASSIVE_DESC =
+    'Medical Revive Skill: Unlocks the ability to revive others from the hospital. Cost: 75 Energy.';
+const REVIVE_PASSIVE_LOGIC =
+    'passive: {ability: revive, energy_cost: 75}';
+
+async function resolveReviveRule(client) {
+    const result = await client.query(
+        `SELECT job_id, mastery_passive_desc, mastery_logic_json::text AS mastery_logic_json
+           FROM jobs_master
+          WHERE job_name = $1`,
+        [REVIVE_JOB_NAME]
+    );
+    if (result.rowCount !== 1 ||
+        result.rows[0].mastery_passive_desc !== REVIVE_PASSIVE_DESC ||
+        !String(result.rows[0].mastery_logic_json || '').includes(REVIVE_PASSIVE_LOGIC)) {
+        throw new ActionError(
+            409,
+            'Medical Revive is paused because its City Hospital source rule changed.'
+        );
+    }
+    return result.rows[0];
+}
 
 // ==========================================
 // 1. GET PATIENT LIST (WITH PAGINATION)
@@ -47,7 +70,7 @@ router.get('/patients', async (req, res) => {
 });
 
 // ==========================================
-// 2. USE REVIVE SKILL (PLACEHOLDER)
+// 2. USE SOURCE-BACKED MEDICAL REVIVE
 // ==========================================
 router.post('/revive', async (req, res) => {
     let client, transaction = false;
@@ -68,7 +91,11 @@ router.post('/revive', async (req, res) => {
         // Cross-player actions lock all affected users in deterministic ID order
         // before the idempotency row to avoid A->B / B->A deadlocks.
         const users = await client.query(
-            `SELECT user_id, username, energy, hospital_expires_at
+            `SELECT user_id, username, energy, hp,
+                    hospital_expires_at, jail_expires_at,
+                    (hospital_expires_at > NOW()) AS is_hospitalized,
+                    (jail_expires_at > NOW()) AS is_jailed,
+                    (hp > 0) AS has_revivable_hp
                FROM users
               WHERE user_id = ANY($1::bigint[])
               ORDER BY user_id
@@ -89,15 +116,16 @@ router.post('/revive', async (req, res) => {
             return res.status(idem.status).json(idem.response);
         }
 
+        const reviveRule = await resolveReviveRule(client);
         const mastery = await client.query(
             `SELECT 1
-               FROM user_job_data ujd
-               JOIN jobs_master jm ON jm.job_id = ujd.job_id
-              WHERE ujd.user_id = $1
-                AND jm.job_name = 'City Hospital'
-                AND ujd.is_mastered = true
+               FROM user_job_data
+              WHERE user_id = $1
+                AND job_id = $2
+                AND current_rank = 5
+                AND is_mastered = true
               LIMIT 1`,
-            [actor]
+            [actor, reviveRule.job_id]
         );
         const universityUnlock = await hasEducationUnlock(
             client, actor, 'revive_ally'
@@ -108,9 +136,20 @@ router.post('/revive', async (req, res) => {
                 'Medical Revive requires City Hospital mastery or the Combat Medic Training university unlock.'
             );
         }
-        if (!targetRow.hospital_expires_at ||
-            new Date(targetRow.hospital_expires_at).getTime() <= Date.now()) {
+        if (targetRow.is_hospitalized !== true) {
             throw new ActionError(409, 'This patient has already been discharged.');
+        }
+        if (targetRow.is_jailed === true) {
+            throw new ActionError(
+                409,
+                'Revive is paused for this patient because Jail and Hospital state conflict.'
+            );
+        }
+        if (targetRow.has_revivable_hp !== true) {
+            throw new ActionError(
+                409,
+                'Revive is paused for zero-HP patients until the canonical revive HP value is recovered.'
+            );
         }
 
         const energy = await client.query(
@@ -126,10 +165,11 @@ router.post('/revive', async (req, res) => {
         const revived = await client.query(
             `UPDATE users
                 SET hospital_expires_at = NULL,
-                    hp = GREATEST(hp, 20),
                     state_reason = NULL
               WHERE user_id = $1
                 AND hospital_expires_at > NOW()
+                AND NOT COALESCE(jail_expires_at > NOW(), false)
+                AND hp > 0
               RETURNING username, hp`,
             [target]
         );
