@@ -1,4 +1,4 @@
-const { ActionError } = require('./economyValidation');
+const { ActionError, dbInteger } = require('./economyValidation');
 
 function positiveCatalogInteger(value, field) {
     const raw = String(value ?? '').trim();
@@ -70,6 +70,14 @@ async function assertRequiredCrimeTool(client, userId, crime) {
     return { itemId, name: result.rows[0].name };
 }
 
+async function reachesFederalHeatThreshold(client, currentHeat, heatGen) {
+    const result = await client.query(
+        `SELECT ($1::numeric + $2::numeric) >= 100::numeric AS reached`,
+        [String(currentHeat), String(heatGen)]
+    );
+    return result.rows[0]?.reached === true;
+}
+
 async function getFederalMaximumJailSeconds(client) {
     const result = await client.query(
         `SELECT COUNT(*) FILTER (
@@ -96,14 +104,22 @@ async function getFederalMaximumJailSeconds(client) {
     return String(result.rows[0].max_jail_seconds);
 }
 
-async function applyFederalArrest(client, { userId, nerveCost }) {
+async function applyFederalArrest(client, { userId, nerveCost, currentInfluence }) {
+    const influence = dbInteger(currentInfluence, { field: 'Influence' });
+    if (influence < 50n) {
+        throw new ActionError(
+            409,
+            'Federal arrest is paused for this player until negative Influence semantics are resolved.'
+        );
+    }
+
     const jailSeconds = await getFederalMaximumJailSeconds(client);
     const result = await client.query(
         `UPDATE users
             SET nerve = nerve - $1::numeric,
                 heat = 100,
                 dirty_cash = 0,
-                influence = GREATEST(0, influence - 50),
+                influence = influence - 50,
                 jail_initial_seconds = $2::bigint,
                 jail_expires_at = NOW() + ($2::bigint * INTERVAL '1 second'),
                 hospital_expires_at = NULL,
@@ -161,6 +177,7 @@ async function applyCrimeJail(client, {
 module.exports = {
     getCrimePenaltyRule,
     assertRequiredCrimeTool,
+    reachesFederalHeatThreshold,
     getFederalMaximumJailSeconds,
     applyFederalArrest,
     applyCrimeHospitalization,
