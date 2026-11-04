@@ -70,7 +70,7 @@ router.get('/patients', async (req, res) => {
 });
 
 // ==========================================
-// 2. USE REVIVE SKILL (PLACEHOLDER)
+// 2. USE SOURCE-BACKED MEDICAL REVIVE
 // ==========================================
 router.post('/revive', async (req, res) => {
     let client, transaction = false;
@@ -168,7 +168,7 @@ router.post('/revive', async (req, res) => {
                     state_reason = NULL
               WHERE user_id = $1
                 AND hospital_expires_at > NOW()
-                AND NOT (jail_expires_at > NOW())
+                AND NOT COALESCE(jail_expires_at > NOW(), false)
                 AND hp > 0
               RETURNING username, hp`,
             [target]
