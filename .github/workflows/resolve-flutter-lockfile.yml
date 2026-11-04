@@ -32,4 +32,8 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add pubspec.lock
           git commit -m "chore(flutter): regenerate dependency lockfile"
+          # Preserve any non-lockfile commits that landed after this run began.
+          # Never force-push or replace the developer's branch.
+          git fetch origin feature/flutter-supabase-auth-20261104
+          git rebase origin/feature/flutter-supabase-auth-20261104
           git push origin HEAD:refs/heads/feature/flutter-supabase-auth-20261104
