@@ -1,6 +1,13 @@
 const { trackAndCheckAchievement } = require('../../utils/achievement_engine');
 const { incrementKevinProgress } = require('../../utils/missionProgress');
 const { randomPercent, randomInclusive, randomText, commitCrimeOutcome } = require('../../utils/crimeSettlement');
+const {
+    getCrimePenaltyRule,
+    assertRequiredCrimeTool,
+    applyFederalArrest,
+    applyCrimeHospitalization,
+    applyCrimeJail
+} = require('../../utils/crimePenaltyCatalog');
 
 // --- 🚨 ADDED: MATH & ENVIRONMENT HELPERS ---
 function getCrowdDensity(now) {
@@ -110,6 +117,7 @@ async function execute(client, user, crime, req, res) {
         const reqs = crime.requirements_json || {};
         const rewards = crime.rewards_json || {};
         const penalties = crime.penalties_json || {};
+        const penaltyRule = getCrimePenaltyRule(crime);
         const flavor = crime.flavor_text_json || {};
         const mechanics = crime.mechanics_json || {};
 
@@ -119,29 +127,23 @@ async function execute(client, user, crime, req, res) {
             return res.status(400).json({ error: "Not enough Nerve." });
         }
 
-        const rawToolReq = reqs.tool_req ? reqs.tool_req.toString().trim().toUpperCase() : "NONE";
-        if (rawToolReq !== "NONE" && rawToolReq !== "NULL" && rawToolReq !== "") {
-            const toolCheck = await client.query(
-                `SELECT ui.quantity FROM user_inventory ui
-                 JOIN items_master im ON ui.item_id = im.item_id
-                 WHERE ui.user_id = $1 AND UPPER(im.name) = $2`,
-                [user.user_id, rawToolReq]
-            );
-            if (toolCheck.rows.length === 0 || toolCheck.rows[0].quantity < 1) {
-                await client.query('ROLLBACK');
-                return res.status(400).json({ error: `You need a [${rawToolReq}] to execute this.` });
-            }
-        }
+        await assertRequiredCrimeTool(client, user.user_id, crime);
 
         const getRandomText = (array) => randomText(array, "The streets are silent.");
 
         // 2. Heat Check
         let currentHeat = parseFloat(user.heat) || 0.0;
-        let heatGained = penalties.heat_gen || 0.50;
+        const heatGained = penaltyRule.heatGen;
 
-        if (currentHeat + heatGained >= 100.00) {
-            await client.query(`UPDATE users SET nerve = nerve - $1, heat = LEAST(heat + 60.00, 100.00), dirty_cash = 0, influence = GREATEST(0, influence - 50), jail_initial_seconds = 7200, jail_expires_at = NOW() + INTERVAL '7200 seconds', state_reason = 'Arrested by Federal Agents.' WHERE user_id = $2`, [crime.nerve_cost, user.user_id]);
-            await client.query("UPDATE user_crime_records SET total_crimes = total_crimes + 1, total_jailed = total_jailed + 1 WHERE user_id = $1", [user.user_id]);
+        if (currentHeat + Number(heatGained) >= 100.00) {
+            await applyFederalArrest(client, {
+                userId: user.user_id,
+                nerveCost: crime.nerve_cost
+            });
+            await client.query(
+                "UPDATE user_crime_records SET total_crimes = total_crimes + 1, total_jailed = total_jailed + 1 WHERE user_id = $1",
+                [user.user_id]
+            );
             return commitCrimeOutcome(client, req, res, {
                 status: "jailed",
                 arrested: true,
@@ -203,19 +205,36 @@ async function execute(client, user, crime, req, res) {
                     user: updatedUser.rows[0]
                 });
             } else if (failRoll <= (escapeChance + ((100 - escapeChance) / 2))) {
-                const hospSeconds = penalties.hosp_time || 60;
                 const textHosp = getRandomText(flavor.hosp);
-                const updatedUser = await client.query(`UPDATE users SET nerve = nerve - $1, hp = 1, heat = LEAST(heat + $2, 100.00), hospital_expires_at = NOW() + INTERVAL '${hospSeconds} seconds', state_reason = $4 WHERE user_id = $3 RETURNING dirty_cash, energy, nerve, max_nerve, hp, heat`, [crime.nerve_cost, heatGained, user.user_id, textHosp]);
+                const updatedUser = {
+                    rows: [await applyCrimeHospitalization(client, {
+                        userId: user.user_id,
+                        nerveCost: crime.nerve_cost,
+                        heatGen: penaltyRule.heatGen,
+                        hospitalSeconds: penaltyRule.hospitalSeconds,
+                        reason: textHosp
+                    })]
+                };
                 return commitCrimeOutcome(client, req, res, {
                     status: "hospitalized",
                     message: textHosp,
                     user: updatedUser.rows[0]
                 });
             } else {
-                const jailSeconds = penalties.jail_time || 60;
                 const textJail = getRandomText(flavor.jail);
-                await client.query("UPDATE user_crime_records SET total_jailed = total_jailed + 1 WHERE user_id = $1", [user.user_id]);
-                const updatedUser = await client.query(`UPDATE users SET nerve = nerve - $1, heat = LEAST(heat + $2, 100.00), jail_initial_seconds = $5, jail_expires_at = NOW() + INTERVAL '${jailSeconds} seconds', state_reason = $4 WHERE user_id = $3 RETURNING dirty_cash, energy, nerve, max_nerve, hp, heat`, [crime.nerve_cost, heatGained, user.user_id, textJail, jailSeconds]);
+                await client.query(
+                    "UPDATE user_crime_records SET total_jailed = total_jailed + 1 WHERE user_id = $1",
+                    [user.user_id]
+                );
+                const updatedUser = {
+                    rows: [await applyCrimeJail(client, {
+                        userId: user.user_id,
+                        nerveCost: crime.nerve_cost,
+                        heatGen: penaltyRule.heatGen,
+                        jailSeconds: penaltyRule.jailSeconds,
+                        reason: textJail
+                    })]
+                };
                 return commitCrimeOutcome(client, req, res, {
                     status: "jailed",
                     message: textJail,
