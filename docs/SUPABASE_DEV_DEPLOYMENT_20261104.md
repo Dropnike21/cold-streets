@@ -29,7 +29,7 @@ The private Google Drive data-only dump remains the authoritative recovered sour
 | credit_upgrades_master | 18 | 18 |
 | education_tracks_master | 18 | 18 |
 
-**Confirmed imported total: 437/2,093.** The other 1,656 rows have not been imported. Some large/complex insert batches were blocked by the tool safety layer; **do not misrepresent partial import as completion**. No imports were attempted for original player accounts.
+**Original recovery checkpoint: 437/2,093.** A further 80 recovered gym rows have since been imported; see the addendum below. Some large/complex insert batches were blocked by the tool safety layer; **do not misrepresent partial import as completion**. No imports were attempted for original player accounts.
 
 The recommended supported follow-up is a controlled PostgreSQL client-side restore using the **original private dump** and psql 18 in a trusted environment, after reviewing compatibility with PostgreSQL 17 and SQL parsing. Do not put database passwords or the data dump in the public GitHub repository. Check each table count, source checksum, sequences, and all foreign-key constraints on completion. Import should be idempotent and should not overwrite current rows without an explicit recovery policy.
 
@@ -42,7 +42,7 @@ The recommended supported follow-up is a controlled PostgreSQL client-side resto
 - `users.supabase_auth_uid` now has an FK to `auth.users(id)`, retaining NULL for unmapped legacy players.
 - `time_deposits_one_active_per_user` partial unique index enforces a single active deposit per player.
 
-**Identity sequence synchronization is pending.** Since some imported catalog IDs were explicit, execute source-aware `setval` after the remaining dump imports. Otherwise new catalog inserts may collide with restored IDs.
+**Identity sequences for the currently imported catalog tables (achievements, credit upgrades, education tracks, gyms) were synchronized** after import using `setval`. Repeat this procedure for every remaining catalog whose historical primary keys are explicitly restored.
 
 ## Important security boundary
 
@@ -67,3 +67,11 @@ The Node.js game API **is not yet authenticated** and should not be placed on a 
 5. Run migrations and gameplay integration tests in a later phase when testing is authorized.
 
 Supabase project console: https://supabase.com/dashboard/project/qbrntyrlzxhilwrbcriq
+
+## Import addendum — 2026-11-04
+
+- Imported all **80 rows** of `gyms_master` from the unchanged private Drive data-only dump; verified starter gym ID 1 is **Rusty Barbell** and the new table count is 80.
+- Confirmed current catalog totals: achievements 400; casino jackpots 1; credit upgrades 18; education tracks 18; gyms 80. **517/2,093** recovered rows imported; **1,576** remain absent.
+- Synchronized generated-ID sequences for `gyms_master.gym_id` (80), `achievements_master.achievement_id` (400), `credit_upgrades_master.upgrade_id` (18) and `education_tracks_master.track_id` (18).
+- The new-player starter-gym presence check in security PR #4 now has its catalog prerequisite. **This does not mean player login or gameplay was tested**; there are no player rows, the Node server has not been deployed, and other catalogs are incomplete.
+- No additional player data, credentials or schema migrations were applied in this addendum.
