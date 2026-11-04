@@ -1,6 +1,6 @@
 # Cold Streets — database reconstruction status
 
-**Working draft: 2026-11-04. No live database was accessed, no migrations were executed and no gameplay tests were run.**
+**Originally drafted 2026-11-04; three schema migrations have now been applied to the isolated Cold-streets Supabase development database. See [deployment journal](SUPABASE_DEV_DEPLOYMENT_20261104.md) for verified status, partial import counts and security checks. No gameplay tests were run.**
 
 ## Objective and authority
 
@@ -58,17 +58,17 @@ The following source columns are **not valid JSON in the recovered rows**. They 
 
 ## Supabase setup when an account is available
 
-No Supabase project or credentials have been created or configured through this work.
+A new isolated Supabase development project (`Cold-streets`) is now connected and contains the 53 reconstructed tables. Private credentials have not been exported or committed. **Do not rerun these migrations on that populated schema.**
 
-1. Create a dedicated **development** Supabase project separate from any existing/live database.
-2. Review both SQL migrations and the unresolved assumptions above. Run migrations **only** against this empty development project after review.
+1. The dedicated **development** Supabase project now exists; do not create or modify a production database.
+2. Review the applied SQL migrations and the unresolved assumptions above. The two foundational migrations and one bank/identity invariants migration are recorded; do not reapply them.
 3. Transfer the recovered dump privately from its original Drive source to an authenticated development shell. **Do not commit the dump to public GitHub** or paste it into chat.
 4. Import the dump with compatible `psql` (the source uses PostgreSQL 18 psql directives) through a trusted database connection. Never run it against a nonempty/live database. Use `ON_ERROR_STOP=1` and keep a record of any import errors.
 5. Validate row counts and FK relationships before loading any player data. Recheck all generated identity sequences if an import explicitly supplies their IDs.
 6. Store DB access details in the hosting provider's secret store or an encrypted password manager; not in Flutter, Google Docs plaintext, GitHub code or issues.
 7. Only then connect the private Node.js server. Add verified Supabase Auth token handling and server-side user ownership checks before external access.
 
-**Do not execute these migrations, load data, expose APIs or consider gameplay stable until a separate review-and-test phase has been authorized.**
+**Do not re-execute the migrations on the existing development project, expose APIs, or consider gameplay stable until the later review-and-test phase.**
 
 ## Work order after schema review
 
