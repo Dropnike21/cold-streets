@@ -25,8 +25,9 @@ const ELIGIBILITY_SQL = `
     AND c.requirements_json->>'time_of_day' = 'Any'
     AND NOT EXISTS (
         SELECT 1
-          FROM jsonb_object_keys(COALESCE(c.requirements_json, '{}'::jsonb)) key
-         WHERE key NOT IN ('tool_req', 'time_of_day')
+          FROM jsonb_object_keys(COALESCE(c.requirements_json, '{}'::jsonb))
+               AS keys(key)
+         WHERE keys.key NOT IN ('tool_req', 'time_of_day')
     )
     AND (
         c.requirements_json->>'tool_req' = 'NONE'
