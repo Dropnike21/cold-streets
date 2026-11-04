@@ -36,6 +36,7 @@ class _JobsViewState extends State<JobsView> {
 
   bool _isInterviewing = false;
   int _applyingForJobId = 0;
+  String? _interviewId;
   List<dynamic> _interviewQuestions = [];
   Map<int, int> _selectedAnswers = {};
 
@@ -79,6 +80,7 @@ class _JobsViewState extends State<JobsView> {
       if (response.statusCode == 200) {
         setState(() {
           _applyingForJobId = jobId;
+          _interviewId = data['interview_id']?.toString();
           _interviewQuestions = data['questions'];
           _selectedAnswers.clear();
           _isInterviewing = true;
@@ -94,19 +96,28 @@ class _JobsViewState extends State<JobsView> {
   }
 
   Future<void> _submitInterview() async {
-    if (_selectedAnswers.length < 5) return;
+    if (_selectedAnswers.length < 5 || _interviewId == null) return;
     setState(() => _isProcessing = true);
-    List<Map<String, int>> answersPayload = _selectedAnswers.entries.map((e) => {"question_id": e.key, "selected_index": e.value}).toList();
+    List<Map<String, int>> answersPayload = _selectedAnswers.entries
+        .map((e) => {"question_id": e.key, "selected_index": e.value})
+        .toList();
 
     try {
       final response = await http.post(Uri.parse('$apiUrl/interview/submit'),
           headers: {"Content-Type": "application/json"},
-          body: jsonEncode({"user_id": widget.userData['user_id'], "job_id": _applyingForJobId, "answers": answersPayload}));
+          body: jsonEncode({
+            "user_id": widget.userData['user_id'],
+            "interview_id": _interviewId,
+            "answers": answersPayload,
+          }));
 
       final data = jsonDecode(response.body);
       _showSnackbar(data['message'], isError: !data['passed']);
 
-      setState(() => _isInterviewing = false);
+      setState(() {
+        _isInterviewing = false;
+        _interviewId = null;
+      });
       await _fetchJobsDashboard();
     } catch (e) {} finally { if (mounted) setState(() => _isProcessing = false); }
   }
@@ -498,12 +509,19 @@ class _JobsViewState extends State<JobsView> {
     final int pre = _parseSafeInt(widget.userData['stat_pre']);
     final int res = _parseSafeInt(widget.userData['stat_res']);
 
-    // Check if they have the specific stat required to promote
-    int playerPrimaryStat = _parseSafeInt(widget.userData['stat_$primaryStat']);
     bool statsMet = false;
-    if (currentRank < 5 && ranksList.length > currentRank) {
-      final nextRankDetails = ranksList.firstWhere((r) => r['rank_level'] == currentRank + 1);
-      statsMet = playerPrimaryStat >= nextRankDetails['stat_req_value'];
+    if (currentRank < 5 && ranksList.isNotEmpty) {
+      final nextRankDetails = ranksList.firstWhere(
+        (r) => r['rank_level'] == currentRank + 1,
+        orElse: () => <String, dynamic>{},
+      );
+      final req = Map<String, dynamic>.from(
+        nextRankDetails['requirements'] ?? const <String, dynamic>{},
+      );
+      statsMet = acu >= _parseSafeInt(req['acu']) &&
+          ops >= _parseSafeInt(req['ops']) &&
+          pre >= _parseSafeInt(req['pre']) &&
+          res >= _parseSafeInt(req['res']);
     }
 
     return SingleChildScrollView(
