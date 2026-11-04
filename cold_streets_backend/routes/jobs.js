@@ -294,6 +294,131 @@ router.post('/interview/submit', async (req, res) => {
     } finally { if (client) client.release(); }
 });
 
+// --- 4. CLAIM DAILY CITY JOB PAY ---
+router.post('/claim-daily', async (req, res) => {
+    let client, transaction = false;
+    try {
+        const userId = actorId(req);
+        const idempotencyKey = requireIdempotencyKey(req);
+
+        client = await pool.connect();
+        await client.query('BEGIN');
+        transaction = true;
+
+        const userRes = await client.query(
+            `SELECT current_job_id, daily_job_claimed_at
+               FROM users
+              WHERE user_id = $1
+              FOR UPDATE`,
+            [userId]
+        );
+        if (userRes.rowCount !== 1) throw new ActionError(404, 'Player not found.');
+        const jobId = userRes.rows[0].current_job_id;
+        if (!jobId) throw new ActionError(409, 'You are not employed in a City Job.');
+
+        const idem = await beginIdempotent(
+            client,
+            userId,
+            'jobs.claim_daily',
+            idempotencyKey,
+            { jobId: String(jobId) }
+        );
+        if (idem.replay) {
+            await client.query('COMMIT');
+            transaction = false;
+            return res.status(idem.status).json(idem.response);
+        }
+
+        const lastClaimed = userRes.rows[0].daily_job_claimed_at;
+        if (lastClaimed) {
+            const eligible = await client.query(
+                'SELECT ($1::timestamptz <= NOW() - INTERVAL \'24 hours\') AS eligible',
+                [lastClaimed]
+            );
+            if (!eligible.rows[0].eligible) {
+                throw new ActionError(409, 'Daily City Job pay is not ready yet.');
+            }
+        }
+
+        const jobDataRes = await client.query(
+            `SELECT current_rank, incentive_balance
+               FROM user_job_data
+              WHERE user_id = $1 AND job_id = $2
+              FOR UPDATE`,
+            [userId, jobId]
+        );
+        if (jobDataRes.rowCount !== 1) throw new Error('Job progress row missing.');
+        const rankLevel = Number(jobDataRes.rows[0].current_rank);
+        if (!Number.isInteger(rankLevel) || rankLevel < 1 || rankLevel > 5) {
+            throw new Error('Invalid City Job rank.');
+        }
+
+        const rankRes = await client.query(
+            `SELECT daily_pay, daily_incentives
+               FROM job_ranks
+              WHERE job_id = $1 AND rank_level = $2`,
+            [jobId, rankLevel]
+        );
+        if (rankRes.rowCount !== 1) throw new Error('City Job rank catalog row missing.');
+
+        const pay = dbInteger(rankRes.rows[0].daily_pay, { field: 'Daily City Job pay' });
+        const incentives = integer(rankRes.rows[0].daily_incentives, {
+            field: 'Daily Job Incentives', min: 0n, max: 1000000n
+        });
+        if (pay < 0n) throw new Error('City Job catalog contains negative daily pay.');
+
+        const paid = await client.query(
+            `UPDATE users
+                SET clean_cash = clean_cash + $1::numeric,
+                    daily_job_claimed_at = NOW()
+              WHERE user_id = $2
+                AND current_job_id = $3
+                AND (
+                    daily_job_claimed_at IS NULL
+                    OR daily_job_claimed_at <= NOW() - INTERVAL '24 hours'
+                )
+              RETURNING clean_cash, daily_job_claimed_at`,
+            [pay.toString(), userId, jobId]
+        );
+        if (paid.rowCount !== 1) {
+            throw new ActionError(409, 'Daily City Job pay is not ready or employment changed.');
+        }
+
+        const jobData = await client.query(
+            `UPDATE user_job_data
+                SET incentive_balance = incentive_balance + $1::bigint
+              WHERE user_id = $2 AND job_id = $3 AND current_rank = $4
+              RETURNING incentive_balance`,
+            [incentives.toString(), userId, jobId, rankLevel]
+        );
+        if (jobData.rowCount !== 1) {
+            throw new ActionError(409, 'Job progress changed before daily settlement.');
+        }
+
+        const response = {
+            success: true,
+            message: 'Daily City Job pay collected.',
+            clean_cash: exactJsonAmount(dbInteger(paid.rows[0].clean_cash)),
+            daily_pay: exactJsonAmount(pay),
+            incentives_gained: exactJsonAmount(incentives),
+            incentive_balance: jobData.rows[0].incentive_balance,
+            claimed_at: paid.rows[0].daily_job_claimed_at
+        };
+        await completeIdempotent(client, idem, 200, response);
+        await client.query('COMMIT');
+        transaction = false;
+        return res.json(response);
+    } catch (err) {
+        if (transaction) {
+            try { await client.query('ROLLBACK'); }
+            catch (rollback) { console.error('Daily job settlement rollback:', rollback); }
+        }
+        return sendActionError(res, err, 'Daily City Job settlement failed:');
+    } finally {
+        if (client) client.release();
+    }
+});
+
 // --- 4. PROMOTE ---
 
 router.post('/promote', async (req, res) => {
