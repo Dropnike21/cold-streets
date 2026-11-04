@@ -3,6 +3,7 @@ const pool = require('../db');
 const router = express.Router();
 const { ActionError, integer, actorId, sendActionError } = require('../utils/economyValidation');
 const { requireIdempotencyKey, beginIdempotent, completeIdempotent } = require('../utils/idempotency');
+const { hasEducationUnlock } = require('../utils/educationEntitlements');
 
 const REVIVE_ENERGY_COST = 75;
 
@@ -98,8 +99,14 @@ router.post('/revive', async (req, res) => {
               LIMIT 1`,
             [actor]
         );
-        if (!mastery.rowCount) {
-            throw new ActionError(403, 'City Hospital mastery is required to perform Medical Revive.');
+        const universityUnlock = await hasEducationUnlock(
+            client, actor, 'revive_ally'
+        );
+        if (!mastery.rowCount && !universityUnlock) {
+            throw new ActionError(
+                403,
+                'Medical Revive requires City Hospital mastery or the Combat Medic Training university unlock.'
+            );
         }
         if (!targetRow.hospital_expires_at ||
             new Date(targetRow.hospital_expires_at).getTime() <= Date.now()) {
@@ -133,7 +140,8 @@ router.post('/revive', async (req, res) => {
         const response = {
             success: true,
             message: 'Successfully revived ' + revived.rows[0].username + '.',
-            energy: energy.rows[0].energy
+            energy: energy.rows[0].energy,
+            revive_source: mastery.rowCount ? 'city_hospital_mastery' : 'university_revive_ally'
         };
         await completeIdempotent(client, idem, 200, response);
         await client.query('COMMIT');
