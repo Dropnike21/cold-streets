@@ -164,14 +164,19 @@ class _SyndicateViewState extends State<SyndicateView> {
       final response = await http.post(
         Uri.parse('$apiUrl/hire'),
         headers: {"Content-Type": "application/json"},
-        body: jsonEncode({"user_id": userIdStr, "recruit": recruit}),
+        body: jsonEncode({
+          "user_id": userIdStr,
+          "offer_id": recruit["offer_id"],
+        }),
       ).timeout(const Duration(seconds: 8));
 
       if (response.statusCode == 200) {
-        // V1.3 FIX: Locally deduct cash so the UI instantly updates without waiting for sync
+        final data = jsonDecode(response.body);
         if (widget.onStateChange != null) {
-          Map<String, dynamic> updatedUser = Map.from(widget.userData);
-          updatedUser['dirty_cash'] = currentCash - recruitPrice;
+          final Map<String, dynamic> updatedUser = Map.from(widget.userData);
+          updatedUser['dirty_cash'] =
+              int.tryParse(data['dirty_cash']?.toString() ?? '') ??
+                  (currentCash - recruitPrice);
           widget.onStateChange!(updatedUser);
         }
 
