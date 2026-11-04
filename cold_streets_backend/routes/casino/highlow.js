@@ -4,6 +4,7 @@ const router = express.Router();
 const db = require('../../db');
 const { requireOwnedPlayerParam } = require('../../middleware/playerIdentity');
 const { ActionError, integer, dbInteger, exactJsonAmount, actorId, sendActionError } = require('../../utils/economyValidation');
+const { requireIdempotencyKey, beginIdempotent, completeIdempotent } = require('../../utils/idempotency');
 router.param('userId', requireOwnedPlayerParam);
 
 const SUITS = ['HEARTS', 'DIAMONDS', 'CLUBS', 'SPADES'];
@@ -38,6 +39,7 @@ router.post('/start', async (req, res) => {
     let client, active = false;
     try {
         const userId = actorId(req);
+        const idempotencyKey = requireIdempotencyKey(req);
         const bet = integer(req.body?.betAmount, { field: 'Bet', min: 1n, max: MAX_BET });
         client = await db.connect();
         await client.query('BEGIN');
@@ -48,6 +50,15 @@ router.post('/start', async (req, res) => {
         );
         if (!wallet.rowCount) throw new ActionError(404, 'Player not found.');
         const user = wallet.rows[0];
+        const idem = await beginIdempotent(
+            client, userId, 'casino.highlow_start', idempotencyKey,
+            { betAmount: bet.toString() }
+        );
+        if (idem.replay) {
+            await client.query('COMMIT');
+            active = false;
+            return res.status(idem.status).json(idem.response);
+        }
         if (dbInteger(user.casino_tokens) < 1n) throw new ActionError(409, 'Out of Casino Tokens.');
         const dirty = dbInteger(user.dirty_cash), clean = dbInteger(user.clean_cash);
         if (dirty + clean < bet) throw new ActionError(409, 'Insufficient Cash.');
@@ -70,9 +81,11 @@ router.post('/start', async (req, res) => {
             'INSERT INTO hilo_sessions (user_id, bet_amount, current_card_value, current_card_suit) VALUES ($1, $2::numeric, $3, $4)',
             [userId, bet.toString(), card.value, card.suit]
         );
+        const response = { card, updatedBalances: updated.rows[0] };
+        await completeIdempotent(client, idem, 200, response);
         await client.query('COMMIT');
         active = false;
-        return res.json({ card, updatedBalances: updated.rows[0] });
+        return res.json(response);
     } catch (err) {
         if (active) try { await client.query('ROLLBACK'); } catch (rollback) { console.error('High/Low start rollback:', rollback); }
         return sendActionError(res, err, 'High/Low start error:');
@@ -83,11 +96,24 @@ router.post('/guess', async (req, res) => {
     let client, active = false;
     try {
         const userId = actorId(req);
+        const idempotencyKey = requireIdempotencyKey(req);
         const guess = req.body?.guess;
         if (!['HIGH', 'LOW', 'SAME'].includes(guess)) throw new ActionError(400, 'Invalid guess.');
         client = await db.connect();
         await client.query('BEGIN');
         active = true;
+        const player = await client.query(
+            'SELECT user_id FROM users WHERE user_id = $1 FOR UPDATE', [userId]
+        );
+        if (!player.rowCount) throw new ActionError(404, 'Player not found.');
+        const idem = await beginIdempotent(
+            client, userId, 'casino.highlow_guess', idempotencyKey, { guess }
+        );
+        if (idem.replay) {
+            await client.query('COMMIT');
+            active = false;
+            return res.status(idem.status).json(idem.response);
+        }
         const result = await client.query('SELECT * FROM hilo_sessions WHERE user_id = $1 FOR UPDATE', [userId]);
         if (!result.rowCount) throw new ActionError(409, 'No active game found.');
         const session = result.rows[0];
@@ -107,9 +133,16 @@ router.post('/guess', async (req, res) => {
                    current_card_suit = $4 WHERE user_id = $5`,
                 [nextMultiplier, streak, nextCard.value, nextCard.suit, userId]
             );
+            const response = {
+                status: 'WIN',
+                nextCard,
+                newMultiplier: Number(nextMultiplier),
+                newStreak: streak
+            };
+            await completeIdempotent(client, idem, 200, response);
             await client.query('COMMIT');
             active = false;
-            return res.json({ status: 'WIN', nextCard, newMultiplier: Number(nextMultiplier), newStreak: streak });
+            return res.json(response);
         }
         const wager = dbInteger(session.bet_amount);
         const feed = wager / 10n;
@@ -123,9 +156,11 @@ router.post('/guess', async (req, res) => {
             "INSERT INTO casino_audit (user_id, game_name, bet_amount, payout) VALUES ($1, 'HighLow', $2::numeric, 0)",
             [userId, wager.toString()]
         );
+        const response = { status: 'LOSS', nextCard };
+        await completeIdempotent(client, idem, 200, response);
         await client.query('COMMIT');
         active = false;
-        return res.json({ status: 'LOSS', nextCard });
+        return res.json(response);
     } catch (err) {
         if (active) try { await client.query('ROLLBACK'); } catch (rollback) { console.error('High/Low guess rollback:', rollback); }
         return sendActionError(res, err, 'High/Low guess error:');
@@ -136,12 +171,21 @@ router.post('/cashout', async (req, res) => {
     let client, active = false;
     try {
         const userId = actorId(req);
+        const idempotencyKey = requireIdempotencyKey(req);
         client = await db.connect();
         await client.query('BEGIN');
         active = true;
         // Wallet first, then session: same order as /start.
         const wallet = await client.query('SELECT user_id FROM users WHERE user_id = $1 FOR UPDATE', [userId]);
         if (!wallet.rowCount) throw new ActionError(404, 'Player not found.');
+        const idem = await beginIdempotent(
+            client, userId, 'casino.highlow_cashout', idempotencyKey, {}
+        );
+        if (idem.replay) {
+            await client.query('COMMIT');
+            active = false;
+            return res.status(idem.status).json(idem.response);
+        }
         const session = await client.query(
             'SELECT bet_amount, current_multiplier FROM hilo_sessions WHERE user_id = $1 FOR UPDATE',
             [userId]
@@ -160,9 +204,14 @@ router.post('/cashout', async (req, res) => {
             "INSERT INTO casino_audit (user_id, game_name, bet_amount, payout) VALUES ($1, 'HighLow', $2::numeric, $3::numeric)",
             [userId, wager.toString(), payout.toString()]
         );
+        const response = {
+            payout: exactJsonAmount(payout),
+            updatedBalances: updated.rows[0]
+        };
+        await completeIdempotent(client, idem, 200, response);
         await client.query('COMMIT');
         active = false;
-        return res.json({ payout: exactJsonAmount(payout), updatedBalances: updated.rows[0] });
+        return res.json(response);
     } catch (err) {
         if (active) try { await client.query('ROLLBACK'); } catch (rollback) { console.error('High/Low payout rollback:', rollback); }
         return sendActionError(res, err, 'High/Low cashout error:');

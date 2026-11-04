@@ -1,7 +1,8 @@
 const express = require('express');
 const pool = require('../db');
 const { randomInt } = require('node:crypto');
-const { ActionError, integer, actorId, sendActionError } = require('../utils/economyValidation');
+const { ActionError, integer, actorId, sendActionError, exactJsonAmount } = require('../utils/economyValidation');
+const { assertKevinContractComplete } = require('../utils/missionProgress');
 const router = express.Router();
 // Reject URLs referencing any player other than the verified session owner.
 const { requireOwnedPlayerParam } = require('../middleware/playerIdentity');
@@ -42,6 +43,14 @@ router.get('/details/:user_id/:contact', async (req, res) => {
             }
         }
 
+        if (contact === 'kevin') {
+            return res.json({
+                status: user.active_contract?.fixer === 'kevin' ? 'active' : 'available',
+                contract: user.active_contract?.fixer === 'kevin' ? user.active_contract : null,
+                reputation: rep
+            });
+        }
+
         return res.json({ status: "unknown", message: "Contact logic not built." });
 
     } catch (err) {
@@ -66,13 +75,13 @@ router.post('/action', async (req, res) => {
         if (contact === 'anonymous' && actionType === 'VERIFY') {
             throw new ActionError(503, 'Tutorial completion verification is temporarily disabled pending server-side progress tracking.');
         }
-        // Kevin's stored contract progress is not updated by the existing
-        // gym/crime routes. Until that evidence is authoritative, these
-        // settlement requests cannot safely credit money or reputation.
-        if (contact === 'kevin' && ['TURN_IN', 'PARTIAL'].includes(actionType)) {
-            throw new ActionError(503, 'Contract settlement is unavailable until objective progress is verified by the server.');
+        // PARTIAL still has no source-backed completion threshold or payout
+        // rule beyond the old unsafe client-triggered endpoint, so it remains
+        // disabled. TURN_IN is now backed by server-recorded crime/gym progress.
+        if (contact === 'kevin' && actionType === 'PARTIAL') {
+            throw new ActionError(503, 'Partial contract settlement is paused pending an explicit design rule.');
         }
-        if (contact !== 'kevin' || !['REQUEST', 'ABORT'].includes(actionType)) {
+        if (contact !== 'kevin' || !['REQUEST', 'TURN_IN', 'ABORT'].includes(actionType)) {
             throw new ActionError(400, 'Unsupported mission action.');
         }
 
@@ -116,6 +125,32 @@ router.post('/action', async (req, res) => {
             ? { ...user.contact_exp }
             : { anonymous: 1, kevin: 0, uncle_john: 0 };
         const existingRep = Number(contactExp.kevin) || 0;
+
+        if (actionType === 'TURN_IN') {
+            assertKevinContractComplete(current);
+            const reward = integer(current.reward_cash, {
+                field: 'Contract reward', min: 0n, max: 999999999999999999999999n
+            });
+            contactExp.kevin = existingRep + 2;
+            const updated = await client.query(
+                `UPDATE users
+                 SET dirty_cash = dirty_cash + $1::numeric,
+                     contact_exp = $2::jsonb,
+                     active_contract = NULL
+                 WHERE user_id = $3 AND active_contract IS NOT NULL
+                 RETURNING *`,
+                [reward.toString(), JSON.stringify(contactExp), userId]
+            );
+            if (updated.rowCount !== 1) throw new ActionError(409, 'Contract changed before settlement.');
+            await client.query('COMMIT');
+            transaction = false;
+            return res.json({
+                message: 'Contract completed. Payment transferred.',
+                payout: exactJsonAmount(reward),
+                user: updated.rows[0]
+            });
+        }
+
         contactExp.kevin = Math.max(0, existingRep - 2);
         const updated = await client.query(
             'UPDATE users SET contact_exp = $1::jsonb, active_contract = NULL WHERE user_id = $2 RETURNING *',

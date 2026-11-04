@@ -16,7 +16,7 @@ app.use(cors({
         if (!origin || allowedOrigins.has(origin)) return callback(null, true);
         return callback(null, false);
     },
-    allowedHeaders: ['Content-Type', 'Authorization']
+    allowedHeaders: ['Content-Type', 'Authorization', 'Idempotency-Key']
 }));
 app.use(express.json({ limit: '64kb' }));
 

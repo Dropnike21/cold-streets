@@ -2,6 +2,7 @@ const express = require('express');
 const pool = require('../db');
 const router = express.Router();
 const { ActionError, integer, dbInteger, exactJsonAmount, actorId, sendActionError } = require('../utils/economyValidation');
+const { requireIdempotencyKey, beginIdempotent, completeIdempotent } = require('../utils/idempotency');
 
 // --- HELPER: Fix pgAdmin's stripped JSON strings ---
 // This handles ANY key name and ANY string value dynamically
@@ -71,6 +72,7 @@ router.post('/buy-bulk', async (req, res) => {
     let userId, entries;
     try {
         userId = actorId(req);
+        const idempotencyKey = requireIdempotencyKey(req);
         const cart = req.body?.cart;
         if (!Array.isArray(cart) || cart.length < 1 || cart.length > 100) {
             throw new ActionError(400, 'Cart must contain 1–100 line items.');
@@ -104,6 +106,15 @@ router.post('/buy-bulk', async (req, res) => {
         );
         if (wallet.rowCount !== 1) throw new ActionError(404, 'Player not found.');
         const balance = dbInteger(wallet.rows[0].dirty_cash);
+        const idem = await beginIdempotent(
+            client, userId, 'market.buy_bulk', idempotencyKey,
+            { cart: entries.map(line => ({ itemId: line.itemId, quantity: line.qty.toString() })) }
+        );
+        if (idem.replay) {
+            await client.query('COMMIT');
+            active = false;
+            return res.status(idem.status).json(idem.response);
+        }
         let totalCost = 0n;
         const selected = [];
 
@@ -153,14 +164,29 @@ router.post('/buy-bulk', async (req, res) => {
             );
         }
 
-        await client.query('COMMIT');
-        active = false;
-        return res.status(200).json({
+        const response = {
             status: 'success',
-            message: 'Bulk purchase successful. Spent $' + totalCost.toString() + '.',
+            message: 'Bulk purchase successful. Spent 
+    } catch (error) {
+        if (active) {
+            try { await client.query('ROLLBACK'); }
+            catch (rollbackError) { console.error('Market rollback failed:', rollbackError); }
+        }
+        return sendActionError(res, error, 'Market purchase failed:');
+    } finally {
+        if (client) client.release();
+    }
+});
+
+module.exports = router;
+ + totalCost.toString() + '.',
             total_cost: exactJsonAmount(totalCost),
             user: debit.rows[0]
-        });
+        };
+        await completeIdempotent(client, idem, 200, response);
+        await client.query('COMMIT');
+        active = false;
+        return res.status(200).json(response);
     } catch (error) {
         if (active) {
             try { await client.query('ROLLBACK'); }
