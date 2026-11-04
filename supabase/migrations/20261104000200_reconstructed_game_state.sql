@@ -6,7 +6,7 @@
 -- Do NOT deploy this migration against a live game database.
 -- IMPORTANT: this is NOT a production authentication implementation. The existing
 -- password_hash column is retained for legacy backend compatibility; Supabase Auth
--- UUID linking and verified-token middleware are separate, required work.
+-- UUID linking and verified-token middleware are separate, required work.\n-- password_hash is nullable: future Supabase Auth users must not require\n-- a second plaintext/password hash in game tables.
 
 BEGIN;
 
@@ -15,7 +15,7 @@ CREATE TABLE public.users (
   supabase_auth_uid UUID UNIQUE,
   email TEXT NOT NULL UNIQUE,
   username TEXT NOT NULL UNIQUE,
-  password_hash TEXT NOT NULL,
+  password_hash TEXT,
   role TEXT NOT NULL DEFAULT 'player',
   dirty_cash NUMERIC(24, 0) NOT NULL DEFAULT 0 CHECK (dirty_cash >= 0),
   clean_cash NUMERIC(24, 0) NOT NULL DEFAULT 0 CHECK (clean_cash >= 0),
