@@ -1,0 +1,21 @@
+# Prevent secrets, recovered data, host files and local dependencies
+# from entering the container build context.
+.git
+.github
+node_modules
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*.pfx
+*.backup
+*.dump
+*.sql
+*.sqlite
+*.sqlite3
+*.log
+logs
+coverage
+.cache
+.DS_Store
