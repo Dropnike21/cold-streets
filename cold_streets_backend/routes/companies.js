@@ -116,7 +116,7 @@ router.get('/:company_id/dashboard/:user_id', async (req, res) => {
     try {
         const { company_id, user_id } = req.params;
 
-        const employeeCheck = await pool.query('SELECT position_role FROM company_employees WHERE company_id = $1 AND employee_id = $2', [company_id, user_id]);
+        const employeeCheck = await pool.query('SELECT position_role FROM company_employees WHERE company_id = $1 AND employee_id = $2 AND is_npc = false', [company_id, user_id]);
         if (employeeCheck.rows.length === 0) return res.status(403).json({ error: "Access Denied." });
         const userRole = employeeCheck.rows[0].position_role;
 
@@ -147,7 +147,7 @@ router.get('/:company_id/dashboard/:user_id', async (req, res) => {
             pool.query(`
                 SELECT ce.*, u.username, u.level, u.stat_acu, u.stat_ops, u.stat_pre, u.stat_res
                 FROM company_employees ce
-                LEFT JOIN users u ON ce.employee_id = u.user_id
+                LEFT JOIN users u ON ce.employee_id = u.user_id AND ce.is_npc = false
                 WHERE ce.company_id = $1
             `, [company_id]),
             pool.query(`SELECT * FROM company_logs WHERE company_id = $1 ORDER BY created_at DESC LIMIT 50`, [company_id]),
