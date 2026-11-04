@@ -1,6 +1,10 @@
 const express = require('express');
 const pool = require('../db');
 const router = express.Router();
+// Reject URLs referencing any player other than the verified session owner.
+const { requireOwnedPlayerParam } = require('../middleware/playerIdentity');
+router.param('user_id', requireOwnedPlayerParam);
+
 
 // --- 1. GET PLAYER INVENTORY ---
 router.get('/:user_id', async (req, res) => {

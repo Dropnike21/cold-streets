@@ -1,17 +1,31 @@
 const express = require('express');
 const cors = require('cors');
 const pool = require('./db');
+const { requireAuthenticatedPlayer } = require('./middleware/playerIdentity');
 
 require('dotenv').config();
 
 const app = express();
 
-app.use(cors());
-app.use(express.json());
+// Browser origins must be explicitly allowlisted. Native Flutter requests do not
+// carry an Origin header. Do not expose a wildcard credentialed CORS policy.
+const allowedOrigins = new Set((process.env.CORS_ALLOWED_ORIGINS || '')
+  .split(',').map(origin => origin.trim()).filter(Boolean));
+app.use(cors({
+    origin(origin, callback) {
+        if (!origin || allowedOrigins.has(origin)) return callback(null, true);
+        return callback(null, false);
+    },
+    allowedHeaders: ['Content-Type', 'Authorization']
+}));
+app.use(express.json({ limit: '64kb' }));
 
 // Check Database Connection
 pool.connect()
-  .then(() => console.log("🟢 SYSTEM ONLINE: Connected to Cold Streets Database."))
+  .then(client => {
+      client.release();
+      console.log("🟢 SYSTEM ONLINE: Connected to Cold Streets Database.");
+  })
   .catch(err => console.error("🔴 CRITICAL ERROR: Database connection failed.", err.message));
 
 // --- MODULAR ROUTERS ---
@@ -19,6 +33,12 @@ const checkPlayerState = require('./utils/stateGatekeeper');
 
 // 🟢 WHITELISTED ROUTES (Can be accessed anywhere)
 app.use('/auth', require('./routes/auth'));
+
+// Fail closed for ALL gameplay routes, including previously "whitelisted"
+// menus (inventory, banking, jail, hospital, missions, etc.). A public route
+// with a client-supplied player ID must never bypass verified authentication.
+app.use(requireAuthenticatedPlayer);
+
 app.use('/inventory', require('./routes/inventory')); // Allows using medical/lawyer items
 app.use('/info-broker', require('./routes/infoBroker'));
 app.use('/cityhall', require('./routes/cityhall'));

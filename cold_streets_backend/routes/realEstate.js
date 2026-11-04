@@ -1,5 +1,9 @@
 const express = require('express');
 const router = express.Router();
+// Reject URLs referencing any player other than the verified session owner.
+const { requireOwnedPlayerParam } = require('../middleware/playerIdentity');
+router.param('userId', requireOwnedPlayerParam);
+
 const db = require('../db'); 
 
 // --- HELPER: Safely parse Postgres numeric strings ---

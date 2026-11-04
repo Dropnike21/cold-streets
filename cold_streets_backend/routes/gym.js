@@ -1,5 +1,9 @@
 const express = require('express');
 const router = express.Router();
+// Reject URLs referencing any player other than the verified session owner.
+const { requireOwnedPlayerParam } = require('../middleware/playerIdentity');
+router.param('user_id', requireOwnedPlayerParam);
+
 const pool = require('../db');
 const { trackAndCheckAchievement } = require('../utils/achievement_engine'); // INJECTED ACHIEVEMENT ENGINE
 

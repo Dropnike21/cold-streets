@@ -1,6 +1,10 @@
 const express = require('express');
 const pool = require('../db');
 const router = express.Router();
+// Route parameters are parsed after app-level middleware; enforce actor ownership here.
+const { requireOwnedPlayerParam } = require('../middleware/playerIdentity');
+router.param('user_id', requireOwnedPlayerParam);
+
 
 // Fetch all upgrades for a specific user
 router.get('/:user_id', async (req, res) => {

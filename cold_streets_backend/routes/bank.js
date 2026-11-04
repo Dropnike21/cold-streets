@@ -1,5 +1,9 @@
 const express = require('express');
 const router = express.Router();
+// Route parameters are parsed after app-level middleware; enforce actor ownership here.
+const { requireOwnedPlayerParam } = require('../middleware/playerIdentity');
+router.param('userId', requireOwnedPlayerParam);
+
 const db = require('../db'); // Adjust this path to wherever your database connection file is
 
 // The exact same rates we used in the app to ensure server/client match

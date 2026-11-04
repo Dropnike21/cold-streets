@@ -1,5 +1,9 @@
 const express = require('express');
 const router = express.Router();
+// Route parameters are parsed after app-level middleware; enforce actor ownership here.
+const { requireOwnedPlayerParam } = require('../middleware/playerIdentity');
+router.param('user_id', requireOwnedPlayerParam);
+
 const pool = require('../db');
 
 // --- 1. GET ALL COMPANY BLUEPRINTS ---
