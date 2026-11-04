@@ -1,7 +1,7 @@
 // File Path: lib/views/gym_view.dart
 
 import 'package:flutter/material.dart';
-import 'package:http/http.dart' as http;
+import '../services/game_http.dart' as http;
 import 'dart:convert';
 import 'dart:async';
 import '../api_config.dart';
