@@ -259,9 +259,27 @@ class _UniversityViewState extends State<UniversityView> {
 
     Color cardBorderColor = isCompleted ? neonGreen : (isLocked ? Colors.redAccent : Colors.lightBlueAccent);
 
-    String rewardStr = "";
-    if (course['reward_stat_1'] != null) rewardStr += "+${course['reward_amount_1']} ${course['reward_stat_1'].toString().toUpperCase()}  ";
-    if (course['reward_stat_2'] != null) rewardStr += "+${course['reward_amount_2']} ${course['reward_stat_2'].toString().toUpperCase()}";
+    final Map<String, dynamic> rewardData = course['rewards_jsonb'] is Map
+        ? Map<String, dynamic>.from(course['rewards_jsonb'])
+        : <String, dynamic>{};
+    final Map<String, dynamic> rewardStats = rewardData['stats'] is Map
+        ? Map<String, dynamic>.from(rewardData['stats'])
+        : <String, dynamic>{};
+    final statParts = <String>[];
+    for (final key in const ['acu', 'ops', 'pre', 'res']) {
+      final value = int.tryParse(rewardStats[key]?.toString() ?? '0') ?? 0;
+      if (value > 0) statParts.add("+$value ${key.toUpperCase()}");
+    }
+    final perks = rewardData['perks'] is List ? rewardData['perks'] as List : const [];
+    final unlocks = rewardData['unlocks'] is List ? rewardData['unlocks'] as List : const [];
+    String rewardStr = statParts.join("  ");
+    if (perks.isNotEmpty) {
+      rewardStr += "${rewardStr.isEmpty ? '' : '  '}+${perks.length} PERK${perks.length == 1 ? '' : 'S'}";
+    }
+    if (unlocks.isNotEmpty) {
+      rewardStr += "${rewardStr.isEmpty ? '' : '  '}+${unlocks.length} UNLOCK${unlocks.length == 1 ? '' : 'S'}";
+    }
+    if (rewardStr.isEmpty) rewardStr = "COURSE COMPLETION";
 
     return Container(
       margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
