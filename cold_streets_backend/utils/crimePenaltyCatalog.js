@@ -1,4 +1,4 @@
-const { ActionError, dbInteger } = require('./economyValidation');
+const { ActionError } = require('./economyValidation');
 
 function positiveCatalogInteger(value, field) {
     const raw = String(value ?? '').trim();
@@ -105,8 +105,11 @@ async function getFederalMaximumJailSeconds(client) {
 }
 
 async function applyFederalArrest(client, { userId, nerveCost, currentInfluence }) {
-    const influence = dbInteger(currentInfluence, { field: 'Influence' });
-    if (influence < 50n) {
+    const influenceGuard = await client.query(
+        `SELECT $1::numeric >= 50::numeric AS can_deduct`,
+        [String(currentInfluence)]
+    );
+    if (influenceGuard.rows[0]?.can_deduct !== true) {
         throw new ActionError(
             409,
             'Federal arrest is paused for this player until negative Influence semantics are resolved.'
