@@ -62,6 +62,10 @@ router.post('/session', requireSupabaseIdentity, async (req, res) => {
             if (starterGym.rowCount !== 1) {
                 throw Object.assign(new Error('Game catalogs are still being restored; new player creation is unavailable.'), { status: 503 });
             }
+            const starterProperty = await client.query('SELECT 1 FROM properties_master WHERE id = 1 AND cost = 0');
+            if (starterProperty.rowCount !== 1) {
+                throw Object.assign(new Error('Starter property catalog is unavailable; account creation is temporarily disabled.'), { status: 503 });
+            }
 
             // Use only a verified subject + email. Do NOT auto-link older
             // password accounts solely by matching email; that requires
@@ -87,6 +91,12 @@ router.post('/session', requireSupabaseIdentity, async (req, res) => {
                 );
                 await client.query(
                     'INSERT INTO user_owned_gyms (user_id, gym_id) VALUES ($1, 1)',
+                    [userId]
+                );
+                // Exactly one initial residence is granted at verified profile
+                // creation, never by visiting a GET endpoint.
+                await client.query(
+                    "INSERT INTO owned_properties (user_id, property_type_id, status) VALUES ($1, 1, 'active_residence')",
                     [userId]
                 );
                 await client.query(

@@ -1,6 +1,7 @@
 const express = require('express');
 const pool = require('../db');
 const router = express.Router();
+const { ActionError, integer, dbInteger, exactJsonAmount, actorId, sendActionError } = require('../utils/economyValidation');
 
 // --- HELPER: Fix pgAdmin's stripped JSON strings ---
 // This handles ANY key name and ANY string value dynamically
@@ -63,88 +64,111 @@ router.get('/list', async (req, res) => {
     }
 });
 
-// --- 2. BULK BUY ITEMS (Shopping Cart) ---
+// --- 2. BULK BUY ITEMS ---
+// One transaction and one database client cover money, stock, inventory
+// and audit rows. The server alone determines item eligibility and prices.
 router.post('/buy-bulk', async (req, res) => {
-    // V1.1 FIX: Must use a dedicated client for Transactions, NOT the global pool!
-    const client = await pool.connect();
-
+    let userId, entries;
     try {
-        const { user_id, cart } = req.body;
-        if (!cart || cart.length === 0) return res.status(400).json({ error: "Cart is empty." });
-
-        await client.query('BEGIN');
-
-        // V1.1 FIX: FOR UPDATE lock on the user to prevent rapid-fire macro exploits
-        const userCheck = await client.query("SELECT dirty_cash FROM users WHERE user_id = $1 FOR UPDATE", [user_id]);
-        if (userCheck.rows.length === 0) throw new Error("Ghost account.");
-        const dirtyCash = userCheck.rows[0].dirty_cash;
-
-        let totalCost = 0;
-        let totalItemsInCart = 0;
-
-        // V1.1 FIX: Sort cart by item_id to absolutely prevent PostgreSQL Deadlocks
-        cart.sort((a, b) => a.item_id - b.item_id);
-
-        // Pre-flight check & totals loop
-        for (let cartItem of cart) {
-            // V1.1 FIX: Prevent Negative Quantity Exploit
-            if (cartItem.quantity < 1) throw new Error("Invalid quantity detected.");
-            totalItemsInCart += cartItem.quantity;
+        userId = actorId(req);
+        const cart = req.body?.cart;
+        if (!Array.isArray(cart) || cart.length < 1 || cart.length > 100) {
+            throw new ActionError(400, 'Cart must contain 1–100 line items.');
         }
-
-        // --- [TODO: MVP TESTING ONLY - UNCOMMENT FOR PRODUCTION] ---
-        // const dailyLimitCheck = await client.query("SELECT COALESCE(SUM(quantity), 0) as daily_bought FROM user_purchases WHERE user_id = $1 AND purchase_date = CURRENT_DATE", [user_id]);
-        // const alreadyBoughtToday = parseInt(dailyLimitCheck.rows[0].daily_bought);
-        // if (alreadyBoughtToday + totalItemsInCart > 100) {
-        //     throw new Error(`Daily purchase limit exceeded. You can only buy ${100 - alreadyBoughtToday} more items today.`);
-        // }
-        // -----------------------------------------------------------
-
-        for (let cartItem of cart) {
-            // V1.1 FIX: FOR UPDATE lock on the item to prevent negative stock
-            const itemCheck = await client.query("SELECT * FROM items_master WHERE item_id = $1 FOR UPDATE", [cartItem.item_id]);
-            if (itemCheck.rows.length === 0) throw new Error(`Item missing from database.`);
-            const item = itemCheck.rows[0];
-
-            if (item.stock < cartItem.quantity) throw new Error(`Not enough stock for ${item.name}.`);
-
-            totalCost += (item.base_value * cartItem.quantity);
-
-            // Deduct from Market Stock
-            await client.query("UPDATE items_master SET stock = stock - $1 WHERE item_id = $2", [cartItem.quantity, item.item_id]);
-
-            // Add to User Inventory
-            const invCheck = await client.query("SELECT * FROM user_inventory WHERE user_id = $1 AND item_id = $2", [user_id, item.item_id]);
-            if (invCheck.rows.length > 0) {
-                await client.query("UPDATE user_inventory SET quantity = quantity + $1 WHERE user_id = $2 AND item_id = $3", [cartItem.quantity, user_id, item.item_id]);
-            } else {
-                await client.query("INSERT INTO user_inventory (user_id, item_id, quantity) VALUES ($1, $2, $3)", [user_id, item.item_id, cartItem.quantity]);
+        const seen = new Set();
+        let totalQty = 0n;
+        entries = cart.map(raw => {
+            if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+                throw new ActionError(400, 'Invalid cart line.');
             }
+            const itemId = integer(raw.item_id, { field: 'Item ID', min: 1n, max: 9223372036854775807n }).toString();
+            const qty = integer(raw.quantity, { field: 'Quantity', min: 1n, max: 10000n });
+            if (seen.has(itemId)) throw new ActionError(400, 'Duplicate items in cart.');
+            seen.add(itemId);
+            totalQty += qty;
+            if (totalQty > 10000n) throw new ActionError(400, 'Cart quantity exceeds the allowed transaction limit.');
+            return { itemId, qty };
+        }).sort((a, b) => a.itemId.length - b.itemId.length || a.itemId.localeCompare(b.itemId));
+    } catch (error) {
+        return sendActionError(res, error, 'Invalid market cart:');
+    }
 
-            // --- [TODO: MVP TESTING ONLY - UNCOMMENT FOR PRODUCTION] ---
-            // await client.query("INSERT INTO user_purchases (user_id, item_id, quantity, purchase_date) VALUES ($1, $2, $3, CURRENT_DATE)", [user_id, item.item_id, cartItem.quantity]);
-            // -----------------------------------------------------------
-        }
+    let client, active = false;
+    try {
+        client = await pool.connect();
+        await client.query('BEGIN');
+        active = true;
 
-        if (dirtyCash < totalCost) throw new Error("Not enough Dirty Cash for this transaction.");
-
-        // Deduct Cash
-        const updatedUser = await client.query(
-            "UPDATE users SET dirty_cash = dirty_cash - $1 WHERE user_id = $2 RETURNING dirty_cash, energy, nerve, max_nerve, hp",
-            [totalCost, user_id]
+        const wallet = await client.query(
+            'SELECT dirty_cash FROM users WHERE user_id = $1 FOR UPDATE', [userId]
         );
+        if (wallet.rowCount !== 1) throw new ActionError(404, 'Player not found.');
+        const balance = dbInteger(wallet.rows[0].dirty_cash);
+        let totalCost = 0n;
+        const selected = [];
+
+        // Lock item rows in deterministic order after locking the player.
+        for (const line of entries) {
+            const result = await client.query(
+                'SELECT item_id, name, source, base_value, stock FROM items_master WHERE item_id = $1 FOR UPDATE',
+                [line.itemId]
+            );
+            if (result.rowCount !== 1 || result.rows[0].source !== 'city_market') {
+                throw new ActionError(400, 'This item is not sold at the city market.');
+            }
+            const item = result.rows[0];
+            const price = dbInteger(item.base_value, { field: 'Item price' });
+            const stock = dbInteger(item.stock, { field: 'Item stock' });
+            if (price < 0n) throw new Error('Catalog has a negative item price.');
+            if (stock < line.qty) throw new ActionError(409, 'Market stock is insufficient for ' + item.name + '.');
+            const lineCost = price * line.qty;
+            totalCost += lineCost;
+            if (totalCost > 999999999999999999999999n) throw new ActionError(400, 'Cart exceeds maximum transaction value.');
+            selected.push(line);
+        }
+        if (balance < totalCost) throw new ActionError(409, 'Not enough Dirty Cash.');
+
+        const debit = await client.query(
+            'UPDATE users SET dirty_cash = dirty_cash - $1::numeric WHERE user_id = $2 AND dirty_cash >= $1::numeric RETURNING dirty_cash, energy, nerve, max_nerve, hp',
+            [totalCost.toString(), userId]
+        );
+        if (debit.rowCount !== 1) throw new ActionError(409, 'Balance changed before purchase.');
+
+        for (const line of selected) {
+            const stockUpdate = await client.query(
+                'UPDATE items_master SET stock = stock - $1::bigint WHERE item_id = $2 AND stock >= $1::bigint RETURNING item_id',
+                [line.qty.toString(), line.itemId]
+            );
+            if (stockUpdate.rowCount !== 1) throw new ActionError(409, 'Market stock changed before purchase.');
+            await client.query(
+                `INSERT INTO user_inventory (user_id, item_id, quantity)
+                 VALUES ($1, $2, $3::bigint)
+                 ON CONFLICT (user_id, item_id) DO UPDATE
+                   SET quantity = user_inventory.quantity + EXCLUDED.quantity`,
+                [userId, line.itemId, line.qty.toString()]
+            );
+            await client.query(
+                'INSERT INTO user_purchases (user_id, item_id, quantity) VALUES ($1, $2, $3::bigint)',
+                [userId, line.itemId, line.qty.toString()]
+            );
+        }
 
         await client.query('COMMIT');
-
-        res.json({ status: "success", message: `Bulk purchase successful! Spent $${totalCost}.`, user: updatedUser.rows[0] });
-
-    } catch (err) {
-        await client.query('ROLLBACK');
-        console.error("Bulk Buy Error:", err.message);
-        res.status(400).json({ error: err.message || "Transaction failed." });
+        active = false;
+        return res.status(200).json({
+            status: 'success',
+            message: 'Bulk purchase successful. Spent $' + totalCost.toString() + '.',
+            total_cost: exactJsonAmount(totalCost),
+            user: debit.rows[0]
+        });
+    } catch (error) {
+        if (active) {
+            try { await client.query('ROLLBACK'); }
+            catch (rollbackError) { console.error('Market rollback failed:', rollbackError); }
+        }
+        return sendActionError(res, error, 'Market purchase failed:');
     } finally {
-        // ALWAYS release the client back to the pool
-        client.release();
+        if (client) client.release();
     }
 });
 

@@ -5,41 +5,117 @@ const { requireOwnedPlayerParam } = require('../middleware/playerIdentity');
 router.param('user_id', requireOwnedPlayerParam);
 
 const pool = require('../db');
+const { ActionError, integer, dbInteger, actorId, sendActionError } = require('../utils/economyValidation');
 
-// --- 1. VAULT MANAGEMENT (DEPOSIT / WITHDRAW) ---
-router.post('/funds', async (req, res) => {
-    const { company_id, user_id, amount, action_type, currency_type } = req.body;
-    const client = await pool.connect();
+// Central actor/company ownership check. The original route checks allowed
+// some company_id operations with no director authorization at all.
+const pausedManagementActions = new Set([
+    '/manage-employee', '/change-director', '/sell-company',
+    '/buy-upgrade', '/manage-applicant'
+]);
+router.use(async (req, res, next) => {
+    if (req.method !== 'POST') return next();
     try {
-        await client.query('BEGIN');
-        const roleRes = await client.query("SELECT position_role FROM company_employees WHERE company_id=$1 AND employee_id=$2", [company_id, user_id]);
-        if (roleRes.rows.length === 0 || roleRes.rows[0].position_role !== 'Director') throw new Error("Only the Director can manage funds.");
-
-        const amt = parseInt(amount);
-        if (isNaN(amt) || amt <= 0) throw new Error("Invalid amount.");
-
-        const userCol = currency_type === 'clean' ? 'clean_cash' : 'dirty_cash';
-        const corpCol = currency_type === 'clean' ? 'bank_clean' : 'bank_dirty';
-
-        if (action_type === 'deposit') {
-            const uCheck = await client.query(`SELECT ${userCol} FROM users WHERE user_id=$1`, [user_id]);
-            if (uCheck.rows[0][userCol] < amt) throw new Error("Insufficient personal funds.");
-            await client.query(`UPDATE users SET ${userCol} = ${userCol} - $1 WHERE user_id=$2`, [amt, user_id]);
-            await client.query(`UPDATE player_companies SET ${corpCol} = ${corpCol} + $1 WHERE company_id=$2`, [amt, company_id]);
-            await client.query(`INSERT INTO company_logs (company_id, log_type, log_text) VALUES ($1, 'FUNDS', $2)`, [company_id, `Director deposited $${amt.toLocaleString()} ${currency_type} cash.`]);
-        } else if (action_type === 'withdraw') {
-            const cCheck = await client.query(`SELECT ${corpCol} FROM player_companies WHERE company_id=$1`, [company_id]);
-            if (cCheck.rows[0][corpCol] < amt) throw new Error("Insufficient corporate funds.");
-            await client.query(`UPDATE player_companies SET ${corpCol} = ${corpCol} - $1 WHERE company_id=$2`, [amt, company_id]);
-            await client.query(`UPDATE users SET ${userCol} = ${userCol} + $1 WHERE user_id=$2`, [amt, user_id]);
-            await client.query(`INSERT INTO company_logs (company_id, log_type, log_text) VALUES ($1, 'FUNDS', $2)`, [company_id, `Director withdrew $${amt.toLocaleString()} ${currency_type} cash.`]);
+        const actor = actorId(req);
+        const companyId = integer(req.body?.company_id, {
+            field: 'Company ID', min: 1n, max: 9223372036854775807n
+        }).toString();
+        const allowed = await pool.query(
+            `SELECT 1 FROM player_companies pc
+             JOIN company_employees ce ON ce.company_id = pc.company_id
+             WHERE pc.company_id = $1 AND pc.owner_id = $2
+               AND ce.employee_id = $2 AND ce.is_npc = false
+               AND ce.position_role = 'Director'`,
+            [companyId, actor]
+        );
+        if (allowed.rowCount !== 1) {
+            throw new ActionError(403, 'Only the current company owner/director may manage it.');
         }
-        await client.query('COMMIT');
-        res.json({ success: true, message: `Vault transfer successful.` });
+        req.managedCompanyId = companyId;
+        if (pausedManagementActions.has(req.path)) {
+            throw new ActionError(503, 'This management action is paused pending a server-authoritative rules audit.');
+        }
+        return next();
     } catch (err) {
-        await client.query('ROLLBACK');
-        res.status(400).json({ error: err.message || "Transfer failed." });
-    } finally { client.release(); }
+        return sendActionError(res, err, 'Company authorization:');
+    }
+});
+
+
+// --- 1. VAULT MANAGEMENT: exact money, owner row lock, atomic transfer.
+router.post('/funds', async (req, res) => {
+    let client, transaction = false;
+    try {
+        const actor = actorId(req);
+        const companyId = req.managedCompanyId;
+        const { action_type: action, currency_type: currency } = req.body || {};
+        if (!['deposit', 'withdraw'].includes(action) || !['clean', 'dirty'].includes(currency)) {
+            throw new ActionError(400, 'Invalid company transfer action or currency.');
+        }
+        const amount = integer(req.body?.amount, { field: 'Transfer amount', min: 1n });
+        const userColumn = currency === 'clean' ? 'clean_cash' : 'dirty_cash';
+        const companyColumn = currency === 'clean' ? 'bank_clean' : 'bank_dirty';
+
+        client = await pool.connect();
+        await client.query('BEGIN');
+        transaction = true;
+        // Always lock actor BEFORE company; consistent with incorporation.
+        const user = await client.query(
+            'SELECT clean_cash, dirty_cash FROM users WHERE user_id = $1 FOR UPDATE', [actor]
+        );
+        if (user.rowCount !== 1) throw new ActionError(404, 'Player not found.');
+        const company = await client.query(
+            'SELECT owner_id, bank_clean, bank_dirty FROM player_companies WHERE company_id = $1 FOR UPDATE',
+            [companyId]
+        );
+        if (company.rowCount !== 1 || String(company.rows[0].owner_id) !== actor) {
+            throw new ActionError(403, 'Company ownership changed.');
+        }
+        const sourceBalance = action === 'deposit'
+            ? dbInteger(user.rows[0][userColumn])
+            : dbInteger(company.rows[0][companyColumn]);
+        if (sourceBalance < amount) throw new ActionError(409, 'Insufficient funds.');
+
+        if (action === 'deposit') {
+            const debit = await client.query(
+                'UPDATE users SET ' + userColumn + ' = ' + userColumn +
+                ' - $1::numeric WHERE user_id = $2 AND ' + userColumn + ' >= $1::numeric RETURNING user_id',
+                [amount.toString(), actor]
+            );
+            if (debit.rowCount !== 1) throw new ActionError(409, 'Player wallet changed.');
+            await client.query(
+                'UPDATE player_companies SET ' + companyColumn + ' = ' + companyColumn +
+                ' + $1::numeric WHERE company_id = $2',
+                [amount.toString(), companyId]
+            );
+        } else {
+            const debit = await client.query(
+                'UPDATE player_companies SET ' + companyColumn + ' = ' + companyColumn +
+                ' - $1::numeric WHERE company_id = $2 AND ' + companyColumn +
+                ' >= $1::numeric RETURNING company_id',
+                [amount.toString(), companyId]
+            );
+            if (debit.rowCount !== 1) throw new ActionError(409, 'Company vault changed.');
+            await client.query(
+                'UPDATE users SET ' + userColumn + ' = ' + userColumn +
+                ' + $1::numeric WHERE user_id = $2',
+                [amount.toString(), actor]
+            );
+        }
+        await client.query(
+            "INSERT INTO company_logs (company_id, log_type, log_text) VALUES ($1, 'FUNDS', $2)",
+            [companyId, 'Director ' + (action === 'deposit' ? 'deposited ' : 'withdrew ') +
+                amount.toString() + ' ' + currency + ' cash.']
+        );
+        await client.query('COMMIT');
+        transaction = false;
+        return res.json({ success: true, message: 'Vault transfer successful.' });
+    } catch (err) {
+        if (transaction) {
+            try { await client.query('ROLLBACK'); } catch (rollback) { console.error('Company vault rollback:', rollback); }
+        }
+        return sendActionError(res, err, 'Company vault failed:');
+    } finally { if (client) client.release(); }
 });
 
 // --- 2. EDIT COMPANY PROFILE ---
@@ -147,53 +223,106 @@ router.post('/sell-company', async (req, res) => {
     } finally { client.release(); }
 });
 
-// --- 6. UPDATE PRICING ---
+// --- 6. UPDATE PRICING: exact non-negative integer and known inventory.
 router.post('/update-pricing', async (req, res) => {
-    const { company_id, user_id, item_id, product_price } = req.body;
     try {
-        const roleRes = await pool.query("SELECT position_role FROM company_employees WHERE company_id=$1 AND employee_id=$2", [company_id, user_id]);
-        if (roleRes.rows.length === 0 || roleRes.rows[0].position_role !== 'Director') return res.status(403).json({ error: "Unauthorized." });
-        const price = parseInt(product_price) || 0;
-        await pool.query("UPDATE company_inventory SET price_per_unit = $1 WHERE company_id = $2 AND product_id = $3", [price, company_id, item_id]);
-        await pool.query(`INSERT INTO company_logs (company_id, log_type, log_text) VALUES ($1, 'MAIN', 'Director updated product pricing to $${price.toLocaleString()}.')`, [company_id]);
-        res.json({ success: true, message: "Pricing updated." });
-    } catch (err) { res.status(500).json({ error: "Failed to update pricing." }); }
+        const companyId = req.managedCompanyId;
+        const productId = integer(req.body?.item_id, { field: 'Product ID', min: 1n, max: 9223372036854775807n }).toString();
+        const price = integer(req.body?.product_price, { field: 'Product price', min: 0n, max: 1000000000000n });
+        const changed = await pool.query(
+            'UPDATE company_inventory SET price_per_unit = $1::numeric WHERE company_id = $2 AND product_id = $3 RETURNING product_id',
+            [price.toString(), companyId, productId]
+        );
+        if (!changed.rowCount) throw new ActionError(404, 'Product not in company inventory.');
+        await pool.query(
+            "INSERT INTO company_logs (company_id, log_type, log_text) VALUES ($1, 'MAIN', $2)",
+            [companyId, 'Director set product ' + productId + ' price to ' + price.toString() + '.']
+        );
+        return res.json({ success: true, message: 'Pricing updated.' });
+    } catch (err) { return sendActionError(res, err, 'Company pricing error:'); }
 });
 
-// --- 7. ORDER STOCK ---
+// --- 7. ORDER STOCK: only blueprint products, server price, owner funds.
 router.post('/order-stock', async (req, res) => {
-    const { company_id, user_id, item_id, order_quantity } = req.body;
-    const client = await pool.connect();
+    let client, transaction = false;
     try {
+        const actor = actorId(req);
+        const companyId = req.managedCompanyId;
+        const productId = integer(req.body?.item_id, { field: 'Product ID', min: 1n, max: 9223372036854775807n }).toString();
+        const quantity = integer(req.body?.order_quantity, { field: 'Order quantity', min: 1n, max: 100000n });
+
+        client = await pool.connect();
         await client.query('BEGIN');
-        const prodRes = await client.query("SELECT base_cost FROM company_products_master WHERE product_id = $1", [item_id]);
-        const systemPrice = Math.floor(parseInt(prodRes.rows[0].base_cost) * 1.20);
-        const totalCost = systemPrice * parseInt(order_quantity);
+        transaction = true;
+        const company = await client.query(
+            'SELECT owner_id, type_id, bank_dirty, is_active FROM player_companies WHERE company_id = $1 FOR UPDATE',
+            [companyId]
+        );
+        if (company.rowCount !== 1 || String(company.rows[0].owner_id) !== actor) {
+            throw new ActionError(403, 'Company ownership changed.');
+        }
+        if (!company.rows[0].is_active) throw new ActionError(409, 'Company is inactive.');
 
-        const compRes = await client.query("SELECT bank_dirty FROM player_companies WHERE company_id=$1 FOR UPDATE", [company_id]);
-        if (compRes.rows[0].bank_dirty < totalCost) throw new Error("Insufficient corporate Dirty Cash.");
+        // These blueprint associations have not been recovered from the old
+        // database. Fail closed until this source is reliably reconstructed.
+        const allowed = await client.query(
+            'SELECT 1 FROM blueprint_products WHERE type_id = $1 AND product_id = $2 AND is_input = true',
+            [company.rows[0].type_id, productId]
+        );
+        if (!allowed.rowCount) throw new ActionError(503, 'Company blueprint inventory is not configured.');
 
-        await client.query("UPDATE player_companies SET bank_dirty = bank_dirty - $1 WHERE company_id = $2", [totalCost, company_id]);
-        await client.query(`INSERT INTO company_shipments (company_id, product_id, quantity, total_cost, arrival_date) VALUES ($1, $2, $3, $4, NOW() + INTERVAL '1 day')`, [company_id, item_id, order_quantity, totalCost]);
+        const product = await client.query(
+            'SELECT base_cost FROM company_products_master WHERE product_id = $1',
+            [productId]
+        );
+        if (!product.rowCount) throw new ActionError(400, 'Product not listed.');
+        const base = dbInteger(product.rows[0].base_cost, { field: 'System product cost' });
+        if (base < 0n) throw new Error('Invalid product catalog price.');
+        const unitCost = base * 120n / 100n; // Existing 20% supplier markup, rounded down.
+        const total = unitCost * quantity;
+        if (total > 999999999999999999999999n) throw new ActionError(400, 'Order exceeds database limit.');
+        if (dbInteger(company.rows[0].bank_dirty) < total) throw new ActionError(409, 'Insufficient company Dirty Cash.');
+
+        const debited = await client.query(
+            'UPDATE player_companies SET bank_dirty = bank_dirty - $1::numeric WHERE company_id = $2 AND bank_dirty >= $1::numeric RETURNING company_id',
+            [total.toString(), companyId]
+        );
+        if (debited.rowCount !== 1) throw new ActionError(409, 'Company funds changed during order.');
+        await client.query(
+            "INSERT INTO company_shipments (company_id, product_id, quantity, total_cost, arrival_date) VALUES ($1, $2, $3::bigint, $4::numeric, NOW() + INTERVAL '1 day')",
+            [companyId, productId, quantity.toString(), total.toString()]
+        );
+        await client.query(
+            "INSERT INTO company_logs (company_id, log_type, log_text) VALUES ($1, 'STOCK', $2)",
+            [companyId, 'Ordered ' + quantity.toString() + ' units of product ' + productId + '.']
+        );
         await client.query('COMMIT');
-        res.json({ success: true, message: `System Order placed.` });
+        transaction = false;
+        return res.json({ success: true, message: 'System order placed.' });
     } catch (err) {
-        await client.query('ROLLBACK');
-        res.status(400).json({ error: err.message });
-    } finally { client.release(); }
+        if (transaction) {
+            try { await client.query('ROLLBACK'); } catch (rollback) { console.error('Stock order rollback:', rollback); }
+        }
+        return sendActionError(res, err, 'Company stock order failed:');
+    } finally { if (client) client.release(); }
 });
 
-// --- 8. UPDATE ADVERTISING ---
+// --- 8. UPDATE ADVERTISING: validate server-side budget limit.
 router.post('/update-advertising', async (req, res) => {
-    const { company_id, user_id, ad_budget } = req.body;
     try {
-        const roleRes = await pool.query("SELECT position_role FROM company_employees WHERE company_id=$1 AND employee_id=$2", [company_id, user_id]);
-        if (roleRes.rows.length === 0 || roleRes.rows[0].position_role !== 'Director') return res.status(403).json({ error: "Unauthorized." });
-        const budget = parseInt(ad_budget) || 0;
-        await pool.query("UPDATE player_companies SET advertising_budget = $1 WHERE company_id = $2", [budget, company_id]);
-        await pool.query(`INSERT INTO company_logs (company_id, log_type, log_text) VALUES ($1, 'FUNDS', 'Daily advertising budget set to $${budget.toLocaleString()}.')`, [company_id]);
-        res.json({ success: true, message: "Advertising budget updated." });
-    } catch (err) { res.status(500).json({ error: "Failed to update budget." }); }
+        const companyId = req.managedCompanyId;
+        const budget = integer(req.body?.ad_budget, { field: 'Advertising budget', min: 0n, max: 1000000000000n });
+        const updated = await pool.query(
+            'UPDATE player_companies SET advertising_budget = $1::numeric WHERE company_id = $2 RETURNING company_id',
+            [budget.toString(), companyId]
+        );
+        if (!updated.rowCount) throw new ActionError(404, 'Company no longer exists.');
+        await pool.query(
+            "INSERT INTO company_logs (company_id, log_type, log_text) VALUES ($1, 'FUNDS', $2)",
+            [companyId, 'Daily advertising budget set to ' + budget.toString() + '.']
+        );
+        return res.json({ success: true, message: 'Advertising budget updated.' });
+    } catch (err) { return sendActionError(res, err, 'Company advertising error:'); }
 });
 
 // --- 9. BUY UPGRADE ---
