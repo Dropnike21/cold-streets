@@ -1,4 +1,5 @@
 const express = require('express');
+const { createHash } = require('node:crypto');
 const router = express.Router();
 // Reject URLs referencing any player other than the verified session owner.
 const { requireOwnedPlayerParam } = require('../middleware/playerIdentity');
@@ -14,6 +15,88 @@ const { requireIdempotencyKey, beginIdempotent, completeIdempotent } = require('
 // mapping is reconstructed. City Hospital revive is implemented separately
 // from its recovered mastery definition.
 const JOB_SPECIALS = {};
+
+// Only source/catalog tuples that completed this reconciliation pass may run.
+// The hashes bind the private recovered rule values to the catalog metadata
+// without copying the recovered payloads into the public repository.
+const RECONCILED_MASTERY_ACTIVE = new Map([
+    ['7', {
+        kind: 'heat_half',
+        fingerprint: '9304208fe524581fe4e4d369db73c0b6adc2aa3a3e1432e24c5a2596939bb5f7'
+    }],
+    ['9', {
+        kind: 'item',
+        fingerprint: 'af56a29c2a694eccae4803c3303648fc174aa366ce5c153b9b79e29c28e2dea3'
+    }]
+]);
+
+function sha256(value) {
+    return createHash('sha256').update(value).digest('hex');
+}
+
+function catalogInteger(value, field, { min = 1n, max = 9223372036854775807n } = {}) {
+    try {
+        return integer(value, { field, min, max });
+    } catch (_err) {
+        return null;
+    }
+}
+
+function parseMasteryActiveRule(raw) {
+    if (typeof raw !== 'string' || raw.length < 1 || raw.length > 4096) return null;
+
+    try {
+        const parsed = JSON.parse(raw);
+        const active = parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+            ? parsed.active : null;
+        if (!active || typeof active !== 'object' || Array.isArray(active) ||
+            active.cost_type !== 'incentives') {
+            return null;
+        }
+        const cost = catalogInteger(active.cost_val, 'Mastery active cost', { max: 1000000n });
+        if (cost === null) return null;
+
+        const activeKeys = Object.keys(active).sort();
+        if (activeKeys.join(',') === 'cost_type,cost_val,qty,reward_id') {
+            const itemId = catalogInteger(active.reward_id, 'Mastery item ID');
+            const qty = catalogInteger(active.qty, 'Mastery item quantity', { max: 1000000n });
+            if (itemId === null || qty === null) return null;
+            return { kind: 'item', cost, itemId, qty };
+        }
+        if (activeKeys.join(',') === 'cost_type,cost_val,mult,reward_effect' &&
+            active.reward_effect === 'heat_wipe' && active.mult === 0.5) {
+            return { kind: 'heat_half', cost, effect: 'heat_wipe', mult: '0.5' };
+        }
+        return null;
+    } catch (_err) {
+        // Reconstructed jobs_master currently stores legacy pseudo-JSON text.
+        // Parse only the narrow active shapes we understand; never eval it.
+    }
+
+    const compact = raw.replace(/\s+/g, ' ').trim();
+    if ((compact.match(/\bactive\s*:/g) || []).length !== 1) return null;
+
+    const item = compact.match(
+        /active\s*:\s*\{\s*cost_type\s*:\s*incentives\s*,\s*cost_val\s*:\s*([0-9]+)\s*,\s*reward_id\s*:\s*([0-9]+)\s*,\s*qty\s*:\s*([0-9]+)\s*\}/
+    );
+    if (item) {
+        const cost = catalogInteger(item[1], 'Mastery active cost', { max: 1000000n });
+        const itemId = catalogInteger(item[2], 'Mastery item ID');
+        const qty = catalogInteger(item[3], 'Mastery item quantity', { max: 1000000n });
+        if (cost === null || itemId === null || qty === null) return null;
+        return { kind: 'item', cost, itemId, qty };
+    }
+
+    const heat = compact.match(
+        /active\s*:\s*\{\s*cost_type\s*:\s*incentives\s*,\s*cost_val\s*:\s*([0-9]+)\s*,\s*reward_effect\s*:\s*heat_wipe\s*,\s*mult\s*:\s*(0?\.50*)\s*\}/
+    );
+    if (heat) {
+        const cost = catalogInteger(heat[1], 'Mastery active cost', { max: 1000000n });
+        if (cost === null || Number(heat[2]) !== 0.5) return null;
+        return { kind: 'heat_half', cost, effect: 'heat_wipe', mult: '0.5' };
+    }
+    return null;
+}
 
 // --- 1. GET JOB DASHBOARD (UNIFIED EMPLOYMENT STATUS & DYNAMIC KIOSK DATA) ---
 router.get('/:user_id', async (req, res) => {
@@ -615,7 +698,224 @@ router.post('/quit', async (req, res) => {
     } finally { if (client) client.release(); }
 });
 
-// --- 6. JOB SPECIALS EXCHANGE ---
+// --- 6. CAREER MASTERY ACTIVE ---
+router.post('/mastery/activate', async (req, res) => {
+    let client, transaction = false;
+    try {
+        const userId = actorId(req);
+        const idempotencyKey = requireIdempotencyKey(req);
+
+        if (!req.body || typeof req.body !== 'object' || Array.isArray(req.body)) {
+            throw new ActionError(400, 'A job_id is required.');
+        }
+        const bodyKeys = Object.keys(req.body);
+        if (bodyKeys.some(key => key !== 'job_id')) {
+            throw new ActionError(400, 'Mastery activation accepts only job_id.');
+        }
+        const jobId = integer(req.body.job_id, {
+            field: 'Job ID', min: 1n, max: 9223372036854775807n
+        }).toString();
+
+        const reconciliation = RECONCILED_MASTERY_ACTIVE.get(jobId);
+        if (!reconciliation) {
+            throw new ActionError(
+                503,
+                'This mastery active is paused pending canonical reward reconciliation.'
+            );
+        }
+
+        client = await pool.connect();
+        await client.query('BEGIN');
+        transaction = true;
+
+        // Global economic lock order: authenticated player -> idempotency ->
+        // job balance -> catalog/reward row.
+        const player = await client.query(
+            'SELECT current_job_id FROM users WHERE user_id = $1 FOR UPDATE',
+            [userId]
+        );
+        if (player.rowCount !== 1) throw new ActionError(404, 'Player not found.');
+
+        const idem = await beginIdempotent(
+            client,
+            userId,
+            'jobs.mastery_active',
+            idempotencyKey,
+            { jobId }
+        );
+        if (idem.replay) {
+            await client.query('COMMIT');
+            transaction = false;
+            return res.status(idem.status).json(idem.response);
+        }
+
+        const currentJobId = player.rows[0].current_job_id;
+        if (currentJobId === null || String(currentJobId) !== jobId) {
+            throw new ActionError(
+                409,
+                'Rejoin this City Job before spending its frozen Job Incentives.'
+            );
+        }
+
+        const jobDataRes = await client.query(
+            `SELECT current_rank, incentive_balance, is_mastered
+               FROM user_job_data
+              WHERE user_id = $1 AND job_id = $2
+              FOR UPDATE`,
+            [userId, jobId]
+        );
+        if (jobDataRes.rowCount !== 1 ||
+            jobDataRes.rows[0].is_mastered !== true ||
+            Number(jobDataRes.rows[0].current_rank) !== 5) {
+            throw new ActionError(409, 'Career Mastery has not been earned for this job.');
+        }
+
+        const masterRes = await client.query(
+            `SELECT mastery_logic_json, mastery_active_desc
+               FROM jobs_master
+              WHERE job_id = $1
+              FOR SHARE`,
+            [jobId]
+        );
+        if (masterRes.rowCount !== 1) {
+            throw new ActionError(503, 'Mastery rule catalog is unavailable.');
+        }
+
+        const active = parseMasteryActiveRule(masterRes.rows[0].mastery_logic_json);
+        if (!active || active.kind !== reconciliation.kind) {
+            throw new ActionError(503, 'Mastery rule no longer matches its reconciled shape.');
+        }
+
+        let fingerprint;
+        if (active.kind === 'item') {
+            const itemRes = await client.query(
+                `SELECT item_id, name, category, sub_category
+                   FROM items_master
+                  WHERE item_id = $1
+                  FOR SHARE`,
+                [active.itemId.toString()]
+            );
+            if (itemRes.rowCount !== 1) {
+                throw new ActionError(503, 'Mastery item is missing from the canonical catalog.');
+            }
+            const item = itemRes.rows[0];
+            fingerprint = sha256(
+                'job=' + jobId +
+                '|logic=' + String(masterRes.rows[0].mastery_logic_json) +
+                '|desc=' + String(masterRes.rows[0].mastery_active_desc) +
+                '|kind=item' +
+                '|cost=' + active.cost.toString() +
+                '|item=' + String(item.item_id) +
+                '|qty=' + active.qty.toString() +
+                '|name=' + String(item.name) +
+                '|category=' + String(item.category) +
+                '|sub=' + String(item.sub_category)
+            );
+        } else {
+            fingerprint = sha256(
+                'job=' + jobId +
+                '|logic=' + String(masterRes.rows[0].mastery_logic_json) +
+                '|desc=' + String(masterRes.rows[0].mastery_active_desc) +
+                '|kind=heat_half' +
+                '|cost=' + active.cost.toString() +
+                '|effect=' + active.effect +
+                '|mult=' + active.mult
+            );
+        }
+
+        if (fingerprint !== reconciliation.fingerprint) {
+            throw new ActionError(
+                503,
+                'Mastery reward source/catalog data changed and requires re-reconciliation.'
+            );
+        }
+
+        const balance = dbInteger(jobDataRes.rows[0].incentive_balance, {
+            field: 'Job Incentive balance'
+        });
+        if (balance < active.cost) {
+            throw new ActionError(409, 'Not enough Job Incentives for this mastery active.');
+        }
+
+        const spent = await client.query(
+            `UPDATE user_job_data
+                SET incentive_balance = incentive_balance - $1::bigint
+              WHERE user_id = $2 AND job_id = $3
+                AND current_rank = 5
+                AND is_mastered = true
+                AND incentive_balance >= $1::bigint
+              RETURNING incentive_balance`,
+            [active.cost.toString(), userId, jobId]
+        );
+        if (spent.rowCount !== 1) {
+            throw new ActionError(409, 'Mastery balance changed before settlement.');
+        }
+
+        let response;
+        if (active.kind === 'item') {
+            const inventory = await client.query(
+                `INSERT INTO user_inventory (user_id, item_id, quantity)
+                 VALUES ($1, $2, $3::bigint)
+                 ON CONFLICT (user_id, item_id)
+                 DO UPDATE SET quantity = user_inventory.quantity + EXCLUDED.quantity
+                 RETURNING quantity`,
+                [userId, active.itemId.toString(), active.qty.toString()]
+            );
+            if (inventory.rowCount !== 1) throw new Error('Mastery inventory settlement failed.');
+
+            response = {
+                success: true,
+                reward_type: 'item',
+                item_id: exactJsonAmount(active.itemId),
+                quantity_granted: exactJsonAmount(active.qty),
+                inventory_quantity: exactJsonAmount(dbInteger(
+                    inventory.rows[0].quantity,
+                    { field: 'Inventory quantity' }
+                )),
+                incentive_cost: exactJsonAmount(active.cost),
+                incentive_balance: exactJsonAmount(dbInteger(
+                    spent.rows[0].incentive_balance,
+                    { field: 'Job Incentive balance' }
+                ))
+            };
+        } else {
+            const heat = await client.query(
+                `UPDATE users
+                    SET heat = heat / 2
+                  WHERE user_id = $1
+                  RETURNING heat`,
+                [userId]
+            );
+            if (heat.rowCount !== 1) throw new Error('Mastery Heat settlement failed.');
+
+            response = {
+                success: true,
+                reward_type: 'heat_reduction',
+                heat: heat.rows[0].heat,
+                incentive_cost: exactJsonAmount(active.cost),
+                incentive_balance: exactJsonAmount(dbInteger(
+                    spent.rows[0].incentive_balance,
+                    { field: 'Job Incentive balance' }
+                ))
+            };
+        }
+
+        await completeIdempotent(client, idem, 200, response);
+        await client.query('COMMIT');
+        transaction = false;
+        return res.json(response);
+    } catch (err) {
+        if (transaction) {
+            try { await client.query('ROLLBACK'); }
+            catch (rollback) { console.error('Mastery activation rollback:', rollback); }
+        }
+        return sendActionError(res, err, 'Career Mastery activation failed:');
+    } finally {
+        if (client) client.release();
+    }
+});
+
+// --- 7. JOB SPECIALS EXCHANGE ---
 
 router.post('/exchange', (_req, res) => {
     // Legacy rank specials referenced the wrong job and item IDs. Re-enable
