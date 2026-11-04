@@ -222,8 +222,8 @@ class _BankViewState extends State<BankView> {
         final updatedCash = data['updatedCash'];
 
         setState(() {
-          dirtyCash = updatedCash['dirty_cash'];
-          cleanCash = updatedCash['clean_cash'];
+          dirtyCash = _parseSafeInt(updatedCash['dirty_cash']);
+          cleanCash = _parseSafeInt(updatedCash['clean_cash']);
           totalCash = dirtyCash + cleanCash;
 
           widget.userData['dirty_cash'] = dirtyCash;
@@ -326,7 +326,7 @@ class _BankViewState extends State<BankView> {
         double amount = _parseDouble(check['amount']);
 
         setState(() {
-          cleanCash = data['updatedCash']['clean_cash'];
+          cleanCash = _parseSafeInt(data['updatedCash']['clean_cash']);
           totalCash = dirtyCash + cleanCash;
           widget.userData['clean_cash'] = cleanCash;
 

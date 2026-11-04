@@ -1,165 +1,237 @@
 const express = require('express');
 const router = express.Router();
-const db = require('../db'); // Adjust this path to wherever your database connection file is
+const db = require('../db');
 
-// The exact same rates we used in the app to ensure server/client match
-const baseRates = [0.005, 0.011, 0.025, 0.09, 0.22];
-const bankCap = 2000000000; // 2 Billion
+// Existing game rates, represented as integer basis points to avoid JS float rounding.
+const INTEREST_BASIS_POINTS = [50n, 110n, 250n, 900n, 2200n];
+const TERM_DAYS = [7, 14, 30, 90, 180];
+const BANK_CAP = 2000000000n;
 
+class BankRequestError extends Error {
+    constructor(status, message) {
+        super(message);
+        this.status = status;
+    }
+}
+
+// Reject non-canonical IDs and amounts: no parseInt truncation, NaN, floats or negatives.
+function positiveInteger(value) {
+    if (typeof value === 'number') {
+        if (!Number.isSafeInteger(value) || value <= 0) return null;
+        return BigInt(value);
+    }
+    if (typeof value === 'string' && /^[1-9][0-9]*$/.test(value)) {
+        return BigInt(value);
+    }
+    return null;
+}
+
+// node-postgres commonly returns NUMERIC as a string, sometimes with ".00".
+function databaseMoney(value) {
+    const text = String(value);
+    if (!/^[0-9]+(?:\.0+)?$/.test(text)) {
+        throw new Error('Unsupported non-integer money balance in database.');
+    }
+    return BigInt(text.split('.')[0]);
+}
+
+function clientMoney(value) {
+    // Keep existing JSON numeric API for ordinary balances, but never silently
+    // round balances that exceed the JS safe-integer boundary.
+    return value <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(value) : value.toString();
+}
+
+function requireUserId(value) {
+    const id = positiveInteger(value);
+    if (id === null || id > BigInt(Number.MAX_SAFE_INTEGER)) {
+        throw new BankRequestError(400, 'Invalid user ID.');
+    }
+    return id.toString();
+}
+
+function sendError(res, err, label) {
+    if (err instanceof BankRequestError) {
+        return res.status(err.status).json({ error: err.message });
+    }
+    console.error(label, err);
+    return res.status(500).json({ error: 'Internal server error.' });
+}
+
+// IMPORTANT: These routes still require verified authentication and account
+// ownership middleware before deployment to an untrusted/public environment.
 router.post('/deposit', async (req, res) => {
-    const { userId, depositAmount, durationIndex } = req.body;
-
-    // 1. Basic Validation
-    if (depositAmount <= 0 || depositAmount > bankCap) {
-        return res.status(400).json({ error: "Invalid deposit amount." });
-    }
-    if (durationIndex < 0 || durationIndex > 4) {
-        return res.status(400).json({ error: "Invalid duration." });
-    }
-
+    let client;
     try {
-        // --- START DATABASE TRANSACTION ---
-
-        // 2. Fetch User Data (PostgreSQL uses $1 and returns data in .rows)
-        const userResult = await db.query(
-            "SELECT dirty_cash, clean_cash, bank_trust_level FROM users WHERE user_id = $1",
-            [userId]
-        );
-
-        if (userResult.rows.length === 0) return res.status(404).json({ error: "User not found." });
-        const user = userResult.rows[0]; // Extract the actual user object
-
-        // Check sequential unlock (Trust Level)
-        if (durationIndex > user.bank_trust_level) {
-            return res.status(403).json({ error: "You do not have the required trust level for this duration." });
+        const { userId, depositAmount, durationIndex } = req.body || {};
+        const id = requireUserId(userId);
+        const amount = positiveInteger(depositAmount);
+        if (amount === null || amount > BANK_CAP) {
+            throw new BankRequestError(400, 'Invalid deposit amount.');
+        }
+        if (!Number.isInteger(durationIndex) || durationIndex < 0 || durationIndex >= TERM_DAYS.length) {
+            throw new BankRequestError(400, 'Invalid duration.');
         }
 
-        const totalCash = user.dirty_cash + user.clean_cash;
-        if (depositAmount > totalCash) {
-            return res.status(400).json({ error: "Insufficient funds." });
+        client = await db.connect();
+        await client.query('BEGIN');
+
+        // The user lock serializes this user's deposits, withdrawals and claims
+        // that consistently use the same lock order.
+        const account = await client.query(
+            'SELECT dirty_cash, clean_cash, bank_trust_level FROM users WHERE user_id = $1 FOR UPDATE',
+            [id]
+        );
+        if (account.rowCount === 0) throw new BankRequestError(404, 'User not found.');
+        const user = account.rows[0];
+
+        if (durationIndex > Number(user.bank_trust_level)) {
+            throw new BankRequestError(403, 'You do not have the required trust level for this duration.');
         }
 
-        // 3. Priority Drain Math
-        const dirtyToTake = Math.min(depositAmount, user.dirty_cash);
-        const cleanToTake = depositAmount - dirtyToTake;
+        // The client prevents multiple active deposits. Enforce it on the server too.
+        const existing = await client.query(
+            "SELECT 1 FROM time_deposits WHERE user_id = $1 AND status = 'active' LIMIT 1",
+            [id]
+        );
+        if (existing.rowCount > 0) {
+            throw new BankRequestError(409, 'You already have an active time deposit.');
+        }
 
-        // 4. Calculate Payout & Unlock Time
-        const interestRate = baseRates[durationIndex];
-        const interestEarned = Math.floor(depositAmount * interestRate);
-        const totalPayout = depositAmount + interestEarned;
+        const dirtyCash = databaseMoney(user.dirty_cash);
+        const cleanCash = databaseMoney(user.clean_cash);
+        if (amount > dirtyCash + cleanCash) {
+            throw new BankRequestError(400, 'Insufficient funds.');
+        }
 
-        // Calculate when the money unlocks based on the index
-        let daysToLock = 0;
-        if (durationIndex === 0) daysToLock = 7;
-        else if (durationIndex === 1) daysToLock = 14;
-        else if (durationIndex === 2) daysToLock = 30;
-        else if (durationIndex === 3) daysToLock = 90;
-        else if (durationIndex === 4) daysToLock = 180;
+        const dirtyToTake = amount < dirtyCash ? amount : dirtyCash;
+        const cleanToTake = amount - dirtyToTake;
+        const interestEarned = (amount * INTEREST_BASIS_POINTS[durationIndex]) / 10000n;
+        const payout = amount + interestEarned;
 
-        const unlockDate = new Date();
-        unlockDate.setDate(unlockDate.getDate() + daysToLock);
+        const wallet = await client.query(
+            `UPDATE users
+             SET dirty_cash = dirty_cash - $1::numeric,
+                 clean_cash = clean_cash - $2::numeric
+             WHERE user_id = $3 AND dirty_cash >= $1::numeric AND clean_cash >= $2::numeric
+             RETURNING dirty_cash, clean_cash`,
+            [dirtyToTake.toString(), cleanToTake.toString(), id]
+        );
+        if (wallet.rowCount !== 1) {
+            throw new BankRequestError(409, 'Funds changed; retry the deposit.');
+        }
 
-        // 5. Update Database (PostgreSQL uses $1, $2, $3)
-        await db.query(
-            "UPDATE users SET dirty_cash = dirty_cash - $1, clean_cash = clean_cash - $2 WHERE user_id = $3",
-            [dirtyToTake, cleanToTake, userId]
+        await client.query(
+            `INSERT INTO time_deposits
+               (user_id, dirty_deposited, clean_deposited, total_payout, duration_index, unlocks_at, status)
+             VALUES ($1, $2, $3, $4, $5, NOW() + $6::integer * INTERVAL '1 day', 'active')`,
+            [id, dirtyToTake.toString(), cleanToTake.toString(), payout.toString(),
+                durationIndex, TERM_DAYS[durationIndex]]
         );
 
-        await db.query(
-            "INSERT INTO time_deposits (user_id, dirty_deposited, clean_deposited, total_payout, duration_index, unlocks_at) VALUES ($1, $2, $3, $4, $5, $6)",
-            [userId, dirtyToTake, cleanToTake, totalPayout, durationIndex, unlockDate]
-        );
-
-        // --- COMMIT DATABASE TRANSACTION ---
-
-        // 6. Return success and the updated balances to the app
-        res.status(200).json({
-            message: "Deposit successful",
+        await client.query('COMMIT');
+        return res.status(200).json({
+            message: 'Deposit successful',
             updatedCash: {
-                dirty_cash: user.dirty_cash - dirtyToTake,
-                clean_cash: user.clean_cash - cleanToTake
+                dirty_cash: clientMoney(databaseMoney(wallet.rows[0].dirty_cash)),
+                clean_cash: clientMoney(databaseMoney(wallet.rows[0].clean_cash))
             }
         });
-
-    } catch (error) {
-        console.error("Bank Error:", error);
-        res.status(500).json({ error: "Internal server error." });
+    } catch (err) {
+        if (client) {
+            try { await client.query('ROLLBACK'); } catch (rollbackError) {
+                console.error('Bank deposit rollback failed:', rollbackError);
+            }
+        }
+        return sendError(res, err, 'Bank deposit error:');
+    } finally {
+        if (client) client.release();
     }
 });
 
 router.post('/claim-check', async (req, res) => {
-    const { userId, checkId } = req.body;
-
+    let client;
     try {
-        // --- START TRANSACTION ---
-
-        // 1. Find the specific check
-        const checkResult = await db.query(
-            "SELECT amount, expires_at, status FROM pending_checks WHERE id = $1 AND user_id = $2",
-            [checkId, userId]
-        );
-
-        if (checkResult.rows.length === 0) return res.status(404).json({ error: "Check not found." });
-        const check = checkResult.rows[0];
-
-        if (check.status !== 'pending') return res.status(400).json({ error: "Check already processed." });
-
-        // 2. Check if it's expired (The 24hr rule)
-        const now = new Date();
-        if (new Date(check.expires_at) < now) {
-            return res.status(400).json({ error: "This check has expired and is awaiting auto-liquidation." });
+        const { userId, checkId } = req.body || {};
+        const id = requireUserId(userId);
+        const parsedCheckId = positiveInteger(checkId);
+        if (parsedCheckId === null || parsedCheckId > BigInt(Number.MAX_SAFE_INTEGER)) {
+            throw new BankRequestError(400, 'Invalid check ID.');
         }
 
-        // 3. Mark check as claimed and add money to Clean Cash
-        await db.query("UPDATE pending_checks SET status = 'claimed' WHERE id = $1", [checkId]);
+        client = await db.connect();
+        await client.query('BEGIN');
 
-        await db.query(
-            "UPDATE users SET clean_cash = clean_cash + $1 WHERE user_id = $2",
-            [check.amount, userId]
+        const account = await client.query(
+            'SELECT user_id FROM users WHERE user_id = $1 FOR UPDATE',
+            [id]
         );
+        if (account.rowCount === 0) throw new BankRequestError(404, 'User not found.');
 
-        // --- COMMIT TRANSACTION ---
+        const checkResult = await client.query(
+            'SELECT amount, expires_at, status FROM pending_checks WHERE id = $1 AND user_id = $2 FOR UPDATE',
+            [parsedCheckId.toString(), id]
+        );
+        if (checkResult.rowCount === 0) throw new BankRequestError(404, 'Check not found.');
 
-        // 4. Fetch the fresh wallet balance to send back to the app
-        const userResult = await db.query("SELECT clean_cash FROM users WHERE user_id = $1", [userId]);
+        const check = checkResult.rows[0];
+        if (check.status !== 'pending') throw new BankRequestError(400, 'Check already processed.');
+        if (new Date(check.expires_at).getTime() <= Date.now()) {
+            throw new BankRequestError(400, 'This check has expired and is awaiting auto-liquidation.');
+        }
 
-        res.status(200).json({
-            message: "Check claimed successfully",
-            updatedCash: {
-                clean_cash: userResult.rows[0].clean_cash
-            }
+        const amount = databaseMoney(check.amount);
+        if (amount <= 0n) throw new Error('Pending check contains an invalid payout.');
+
+        // Atomic conditional state transition blocks duplicate claims.
+        const claim = await client.query(
+            `UPDATE pending_checks SET status = 'claimed'
+             WHERE id = $1 AND user_id = $2 AND status = 'pending' AND expires_at > NOW()
+             RETURNING id`,
+            [parsedCheckId.toString(), id]
+        );
+        if (claim.rowCount !== 1) throw new BankRequestError(409, 'Check could not be claimed.');
+
+        const wallet = await client.query(
+            'UPDATE users SET clean_cash = clean_cash + $1::numeric WHERE user_id = $2 RETURNING clean_cash',
+            [amount.toString(), id]
+        );
+        if (wallet.rowCount !== 1) throw new Error('Account not found during check claim.');
+
+        await client.query('COMMIT');
+        return res.status(200).json({
+            message: 'Check claimed successfully',
+            updatedCash: { clean_cash: clientMoney(databaseMoney(wallet.rows[0].clean_cash)) }
         });
-
-    } catch (error) {
-        console.error("Claim Error:", error);
-        res.status(500).json({ error: "Internal server error." });
+    } catch (err) {
+        if (client) {
+            try { await client.query('ROLLBACK'); } catch (rollbackError) {
+                console.error('Bank check rollback failed:', rollbackError);
+            }
+        }
+        return sendError(res, err, 'Bank claim error:');
+    } finally {
+        if (client) client.release();
     }
 });
+
 router.get('/status/:userId', async (req, res) => {
     try {
-        const { userId } = req.params;
-
-        // 1. Fetch any active time deposit for this user
+        const id = requireUserId(req.params.userId);
         const depositResult = await db.query(
             "SELECT dirty_deposited, clean_deposited, duration_index, unlocks_at FROM time_deposits WHERE user_id = $1 AND status = 'active' LIMIT 1",
-            [userId]
+            [id]
         );
-
-        // 2. Fetch any pending checks for this user
         const checksResult = await db.query(
             "SELECT id, source, amount, expires_at FROM pending_checks WHERE user_id = $1 AND status = 'pending'",
-            [userId]
+            [id]
         );
-
-        // 3. Send them back to the app
-        res.status(200).json({
-            active_time_deposit: depositResult.rows.length > 0 ? depositResult.rows[0] : null,
+        return res.status(200).json({
+            active_time_deposit: depositResult.rows[0] || null,
             pending_checks: checksResult.rows
         });
-
-    } catch (error) {
-        console.error("Bank Fetch Error:", error);
-        res.status(500).json({ error: "Internal server error." });
+    } catch (err) {
+        return sendError(res, err, 'Bank fetch error:');
     }
 });
+
 module.exports = router;
