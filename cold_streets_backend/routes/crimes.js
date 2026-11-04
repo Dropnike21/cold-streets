@@ -3,6 +3,7 @@ const express = require('express');
 const pool = require('../db');
 const router = express.Router();
 const { actorId, integer } = require('../utils/economyValidation');
+const { requireIdempotencyKey, beginIdempotent } = require('../utils/idempotency');
 
 // --- IMPORT YOUR SPECIFIC CRIME MODULES HERE ---
 const searchingEngine = require('./crimes/searching_engine');
@@ -38,9 +39,13 @@ router.post('/execute', async (req, res) => {
 
     try {
         const userId = actorId(req);
+        const idempotencyKey = requireIdempotencyKey(req);
         const crimeId = integer(req.body?.crime_id, {
             field: 'Crime ID', min: 1n, max: 9223372036854775807n
         }).toString();
+        const activityName = typeof req.body?.activity_name === 'string'
+            ? req.body.activity_name
+            : null;
 
         await client.query('BEGIN');
 
@@ -51,6 +56,18 @@ router.post('/execute', async (req, res) => {
             return res.status(404).json({ error: "Ghost account." });
         }
         const user = userCheck.rows[0];
+        const idem = await beginIdempotent(
+            client,
+            userId,
+            'crimes.execute',
+            idempotencyKey,
+            { crimeId, activityName }
+        );
+        if (idem.replay) {
+            await client.query('COMMIT');
+            return res.status(idem.status).json(idem.response);
+        }
+        req.crimeIdempotency = idem;
         const now = new Date();
 
         if (user.jail_expires_at && new Date(user.jail_expires_at) > now) {
