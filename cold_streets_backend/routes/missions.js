@@ -1,5 +1,7 @@
 const express = require('express');
 const pool = require('../db');
+const { randomInt } = require('node:crypto');
+const { ActionError, integer, actorId, sendActionError } = require('../utils/economyValidation');
 const router = express.Router();
 // Reject URLs referencing any player other than the verified session owner.
 const { requireOwnedPlayerParam } = require('../middleware/playerIdentity');
@@ -52,125 +54,83 @@ router.get('/details/:user_id/:contact', async (req, res) => {
 // 2. MISSION ACTION ENGINE (Verify, Abort, Request)
 // ==========================================
 router.post('/action', async (req, res) => {
-    const client = await pool.connect();
-
+    let client, transaction = false;
     try {
-        const { user_id, contact, action_type } = req.body;
+        const userId = actorId(req);
+        const { contact, action_type: actionType } = req.body || {};
+
+        // The recovered tutorial catalog has empty reqs_json for every step,
+        // and no route currently records authoritative completion evidence.
+        // Awarding rewards from an unaudited client "VERIFY" would be a
+        // repeatable reward exploit. Do not invent objectives as a workaround.
+        if (contact === 'anonymous' && actionType === 'VERIFY') {
+            throw new ActionError(503, 'Tutorial completion verification is temporarily disabled pending server-side progress tracking.');
+        }
+        // Kevin's stored contract progress is not updated by the existing
+        // gym/crime routes. Until that evidence is authoritative, these
+        // settlement requests cannot safely credit money or reputation.
+        if (contact === 'kevin' && ['TURN_IN', 'PARTIAL'].includes(actionType)) {
+            throw new ActionError(503, 'Contract settlement is unavailable until objective progress is verified by the server.');
+        }
+        if (contact !== 'kevin' || !['REQUEST', 'ABORT'].includes(actionType)) {
+            throw new ActionError(400, 'Unsupported mission action.');
+        }
+
+        client = await pool.connect();
         await client.query('BEGIN');
+        transaction = true;
+        const player = await client.query(
+            'SELECT level, contact_exp, active_contract FROM users WHERE user_id = $1 FOR UPDATE',
+            [userId]
+        );
+        if (player.rowCount !== 1) throw new ActionError(404, 'Player not found.');
+        const user = player.rows[0];
 
-        const userRes = await client.query("SELECT * FROM users WHERE user_id = $1 FOR UPDATE", [user_id]);
-        if (userRes.rows.length === 0) throw new Error("Ghost account.");
-
-        let user = userRes.rows[0];
-        let expMap = user.contact_exp || { anonymous: 1, kevin: 0, uncle_john: 0 };
-
-        // ----------------------------------------
-                // ANONYMOUS: VERIFY TUTORIAL COMPLETION
-                // ----------------------------------------
-                if (contact === 'anonymous' && action_type === 'VERIFY') {
-                    let currentRep = parseInt(expMap.anonymous) || 1;
-
-                    const missionRes = await client.query("SELECT * FROM missions_master WHERE contact_name = 'anonymous' AND rep_req = $1", [currentRep]);
-                    if (missionRes.rows.length === 0) {
-                        await client.query('ROLLBACK');
-                        return res.status(400).json({ error: "No active mission found to verify." });
-                    }
-
-                    const mission = missionRes.rows[0];
-                    const rewards = mission.rewards_json || {};
-
-                    // 🚨 ADDED PARSING FOR ALL REWARD TYPES
-                    let addDirty = parseInt(rewards.dirty_cash) || 0;
-                    let addCrimeExp = parseInt(rewards.crime_exp) || 0;
-                    let addNerve = parseInt(rewards.nerve) || 0;
-                    let addEnergy = parseInt(rewards.energy) || 0;
-
-                    // Advance the Story (+1 Rep)
-                    expMap.anonymous = currentRep + 1;
-
-                    const updatedUser = await client.query(
-                        `UPDATE users
-                         SET dirty_cash = dirty_cash + $1,
-                             crime_exp = crime_exp + $2,
-                             nerve = nerve + $3,
-                             energy = energy + $4,
-                             contact_exp = $5
-                         WHERE user_id = $6 RETURNING *`,
-                        [addDirty, addCrimeExp, addNerve, addEnergy, expMap, user_id]
-                    );
-
-                    await client.query('COMMIT');
-                    return res.json({ message: "Payment transferred. Rep increased.", user: updatedUser.rows[0] });
-                }
-
-        // ----------------------------------------
-        // KEVIN: PROCEDURALLY GENERATE CONTRACT
-        // ----------------------------------------
-        if (contact === 'kevin' && action_type === 'REQUEST') {
-            // Generate a random dynamic hustle based on their level
-            let reqCrimes = Math.floor(Math.random() * 5) + 3;
-            let payout = (Math.floor(Math.random() * 500) + 500) * user.level;
-
-            const newContract = {
-                fixer: "kevin",
+        if (actionType === 'REQUEST') {
+            if (user.active_contract !== null) {
+                throw new ActionError(409, 'An active contract must be completed or aborted before requesting another.');
+            }
+            const level = integer(user.level, { field: 'Player level', min: 1n, max: 1000000n });
+            const reqCrimes = randomInt(3, 8);
+            const reward = BigInt(randomInt(500, 1000)) * level;
+            const contract = {
+                fixer: 'kevin',
                 reqs: { crimes: reqCrimes, gym: 10 },
                 progress: { crimes: 0, gym: 0 },
-                reward_cash: payout
+                reward_cash: reward.toString()
             };
-
-            const updatedUser = await client.query(
-                "UPDATE users SET active_contract = $1 WHERE user_id = $2 RETURNING *",
-                [newContract, user_id]
+            const updated = await client.query(
+                'UPDATE users SET active_contract = $1::jsonb WHERE user_id = $2 RETURNING *',
+                [JSON.stringify(contract), userId]
             );
-
             await client.query('COMMIT');
-            return res.json({ message: "Contract downloaded.", user: updatedUser.rows[0] });
+            transaction = false;
+            return res.json({ message: 'Contract downloaded.', user: updated.rows[0] });
         }
 
-        // ----------------------------------------
-        // KEVIN: CONTRACT TURN-INS AND ABORTS
-        // ----------------------------------------
-        if (contact === 'kevin' && (action_type === 'TURN_IN' || action_type === 'PARTIAL' || action_type === 'ABORT')) {
-            let activeContract = user.active_contract;
-            if (!activeContract || activeContract.fixer !== 'kevin') {
-                await client.query('ROLLBACK');
-                return res.status(400).json({ error: "You don't have an active contract." });
-            }
-
-            let currentRep = parseInt(expMap.kevin) || 0;
-            let cashReward = 0;
-
-            if (action_type === 'TURN_IN') {
-                expMap.kevin = currentRep + 2;
-                cashReward = parseInt(activeContract.reward_cash) || 0;
-            } else if (action_type === 'PARTIAL') {
-                expMap.kevin = Math.max(0, currentRep - 1); // -1 Penalty, floor at 0
-                cashReward = Math.floor((parseInt(activeContract.reward_cash) || 0) * 0.25); // 25% payout
-            } else if (action_type === 'ABORT') {
-                expMap.kevin = Math.max(0, currentRep - 2); // -2 Penalty
-                cashReward = 0;
-            }
-
-            const updatedUser = await client.query(
-                `UPDATE users
-                 SET dirty_cash = dirty_cash + $1, contact_exp = $2, active_contract = NULL
-                 WHERE user_id = $3 RETURNING *`,
-                [cashReward, expMap, user_id]
-            );
-
-            await client.query('COMMIT');
-            return res.json({ message: "Contract cleared.", user: updatedUser.rows[0] });
+        const current = user.active_contract;
+        if (!current || current.fixer !== 'kevin') {
+            throw new ActionError(409, 'No active Kevin contract.');
         }
-
-        await client.query('ROLLBACK');
-        return res.status(400).json({ error: "Invalid action." });
-
-    } catch (err) {
-        await client.query('ROLLBACK');
-        console.error("Mission Action Error:", err.message);
-        res.status(500).json({ error: "Server malfunction." });
+        const contactExp = user.contact_exp && typeof user.contact_exp === 'object'
+            ? { ...user.contact_exp }
+            : { anonymous: 1, kevin: 0, uncle_john: 0 };
+        const existingRep = Number(contactExp.kevin) || 0;
+        contactExp.kevin = Math.max(0, existingRep - 2);
+        const updated = await client.query(
+            'UPDATE users SET contact_exp = $1::jsonb, active_contract = NULL WHERE user_id = $2 RETURNING *',
+            [JSON.stringify(contactExp), userId]
+        );
+        await client.query('COMMIT');
+        transaction = false;
+        return res.json({ message: 'Contract aborted. Reputation penalty applied.', user: updated.rows[0] });
+    } catch (error) {
+        if (transaction) {
+            try { await client.query('ROLLBACK'); } catch (rollback) { console.error('Mission rollback failed:', rollback); }
+        }
+        return sendActionError(res, error, 'Mission action failure:');
     } finally {
-        client.release();
+        if (client) client.release();
     }
 });
 
