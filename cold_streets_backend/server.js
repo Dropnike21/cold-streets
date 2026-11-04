@@ -20,13 +20,35 @@ app.use(cors({
 }));
 app.use(express.json({ limit: '64kb' }));
 
-// Check Database Connection
-pool.connect()
-  .then(client => {
-      client.release();
-      console.log("🟢 SYSTEM ONLINE: Connected to Cold Streets Database.");
-  })
-  .catch(err => console.error("🔴 CRITICAL ERROR: Database connection failed.", err.message));
+// All application routes, including profile provisioning, remain closed
+// unless the operator explicitly enables the staging API after security review.
+// /healthz is liveness-only and does not expose secrets or database state.
+const gameplayEnabled = process.env.ENABLE_GAMEPLAY_API === 'true';
+app.get('/healthz', (_req, res) => res.status(200).json({ status: 'ok' }));
+app.use((_req, res, next) => {
+    if (!gameplayEnabled) {
+        return res.status(503).json({ error: 'Cold Streets API is disabled pending security review.' });
+    }
+    return next();
+});
+
+if (gameplayEnabled) {
+    const required = ['SUPABASE_URL', 'SUPABASE_PUBLISHABLE_KEY',
+        'DB_HOST', 'DB_USER', 'DB_PASSWORD', 'DB_NAME'];
+    const missing = required.filter(name => !process.env[name]);
+    if (missing.length) {
+        throw new Error('Cannot enable game API: missing server configuration ' + missing.join(', '));
+    }
+    if (process.env.NODE_ENV === 'production' && process.env.DB_SSL === 'false') {
+        throw new Error('Remote staging requires encrypted database connections.');
+    }
+    pool.connect()
+      .then(client => {
+          client.release();
+          console.log('Cold Streets staging database connection established.');
+      })
+      .catch(err => console.error('Staging database connection failed:', err.message));
+}
 
 // --- MODULAR ROUTERS ---
 const checkPlayerState = require('./utils/stateGatekeeper');
@@ -70,6 +92,13 @@ app.use('/casino', require('./routes/casino')); // This loads the hub!
 
 
 
+// Unsafe single-process development timers are DISABLED by default and
+// cannot run when NODE_ENV=production. These scripts change player vitals
+// and catalog stock, and are not safe on multiple Node replicas.
+// Replace with an idempotent scheduled worker before any public launch.
+if (gameplayEnabled &&
+    process.env.NODE_ENV !== 'production' &&
+    process.env.ENABLE_UNSAFE_LEGACY_TIMERS === 'true') {
 // Runs every 30 seconds for testing (Change to 5 minutes for production: 5 * 60 * 1000)
 setInterval(async () => {
     try {
@@ -145,8 +174,10 @@ setInterval(async () => {
 }, 60 * 1000); // <-- 60,000 ms = 1 minute
 
 
+}
+
 // Start Server
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, '0.0.0.0', () => { // 👈 ADD '0.0.0.0' RIGHT HERE
-    console.log(`🔌 Node API running on http://localhost:${PORT} (0.0.0.0 enabled)`);
+app.listen(PORT, '0.0.0.0', () => {
+    console.log(`Cold Streets Node listener started on port ${PORT}; gameplay routes ${gameplayEnabled ? 'enabled' : 'disabled'}.`);
 });
