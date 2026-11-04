@@ -22,11 +22,11 @@ const JOB_SPECIALS = {};
 const RECONCILED_MASTERY_ACTIVE = new Map([
     ['7', {
         kind: 'heat_half',
-        fingerprint: '0d04f6c235ed6e55e2bcacc1c26d5054f333479f1f2b981f7676137d4174ef61'
+        fingerprint: '9304208fe524581fe4e4d369db73c0b6adc2aa3a3e1432e24c5a2596939bb5f7'
     }],
     ['9', {
         kind: 'item',
-        fingerprint: 'f8c95cbd71a520754394da479ef86f287cd025c7b8bff70904756724ab17a4b9'
+        fingerprint: 'af56a29c2a694eccae4803c3303648fc174aa366ce5c153b9b79e29c28e2dea3'
     }]
 ]);
 
@@ -56,13 +56,15 @@ function parseMasteryActiveRule(raw) {
         const cost = catalogInteger(active.cost_val, 'Mastery active cost', { max: 1000000n });
         if (cost === null) return null;
 
-        if (Object.prototype.hasOwnProperty.call(active, 'reward_id')) {
+        const activeKeys = Object.keys(active).sort();
+        if (activeKeys.join(',') === 'cost_type,cost_val,qty,reward_id') {
             const itemId = catalogInteger(active.reward_id, 'Mastery item ID');
             const qty = catalogInteger(active.qty, 'Mastery item quantity', { max: 1000000n });
             if (itemId === null || qty === null) return null;
             return { kind: 'item', cost, itemId, qty };
         }
-        if (active.reward_effect === 'heat_wipe' && active.mult === 0.5) {
+        if (activeKeys.join(',') === 'cost_type,cost_val,mult,reward_effect' &&
+            active.reward_effect === 'heat_wipe' && active.mult === 0.5) {
             return { kind: 'heat_half', cost, effect: 'heat_wipe', mult: '0.5' };
         }
         return null;
@@ -756,18 +758,20 @@ router.post('/mastery/activate', async (req, res) => {
         }
 
         const jobDataRes = await client.query(
-            `SELECT incentive_balance, is_mastered
+            `SELECT current_rank, incentive_balance, is_mastered
                FROM user_job_data
               WHERE user_id = $1 AND job_id = $2
               FOR UPDATE`,
             [userId, jobId]
         );
-        if (jobDataRes.rowCount !== 1 || jobDataRes.rows[0].is_mastered !== true) {
+        if (jobDataRes.rowCount !== 1 ||
+            jobDataRes.rows[0].is_mastered !== true ||
+            Number(jobDataRes.rows[0].current_rank) !== 5) {
             throw new ActionError(409, 'Career Mastery has not been earned for this job.');
         }
 
         const masterRes = await client.query(
-            `SELECT mastery_logic_json
+            `SELECT mastery_logic_json, mastery_active_desc
                FROM jobs_master
               WHERE job_id = $1
               FOR SHARE`,
@@ -797,6 +801,8 @@ router.post('/mastery/activate', async (req, res) => {
             const item = itemRes.rows[0];
             fingerprint = sha256(
                 'job=' + jobId +
+                '|logic=' + String(masterRes.rows[0].mastery_logic_json) +
+                '|desc=' + String(masterRes.rows[0].mastery_active_desc) +
                 '|kind=item' +
                 '|cost=' + active.cost.toString() +
                 '|item=' + String(item.item_id) +
@@ -808,6 +814,8 @@ router.post('/mastery/activate', async (req, res) => {
         } else {
             fingerprint = sha256(
                 'job=' + jobId +
+                '|logic=' + String(masterRes.rows[0].mastery_logic_json) +
+                '|desc=' + String(masterRes.rows[0].mastery_active_desc) +
                 '|kind=heat_half' +
                 '|cost=' + active.cost.toString() +
                 '|effect=' + active.effect +
@@ -833,6 +841,7 @@ router.post('/mastery/activate', async (req, res) => {
             `UPDATE user_job_data
                 SET incentive_balance = incentive_balance - $1::bigint
               WHERE user_id = $2 AND job_id = $3
+                AND current_rank = 5
                 AND is_mastered = true
                 AND incentive_balance >= $1::bigint
               RETURNING incentive_balance`,
