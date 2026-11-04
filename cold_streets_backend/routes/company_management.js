@@ -6,6 +6,7 @@ router.param('user_id', requireOwnedPlayerParam);
 
 const pool = require('../db');
 const { ActionError, integer, dbInteger, actorId, sendActionError } = require('../utils/economyValidation');
+const { requireIdempotencyKey, beginIdempotent, completeIdempotent } = require('../utils/idempotency');
 
 // Central actor/company ownership check. The original route checks allowed
 // some company_id operations with no director authorization at all.
@@ -47,6 +48,7 @@ router.post('/funds', async (req, res) => {
     let client, transaction = false;
     try {
         const actor = actorId(req);
+        const idempotencyKey = requireIdempotencyKey(req);
         const companyId = req.managedCompanyId;
         const { action_type: action, currency_type: currency } = req.body || {};
         if (!['deposit', 'withdraw'].includes(action) || !['clean', 'dirty'].includes(currency)) {
@@ -64,6 +66,15 @@ router.post('/funds', async (req, res) => {
             'SELECT clean_cash, dirty_cash FROM users WHERE user_id = $1 FOR UPDATE', [actor]
         );
         if (user.rowCount !== 1) throw new ActionError(404, 'Player not found.');
+        const idem = await beginIdempotent(
+            client, actor, 'company.vault_transfer', idempotencyKey,
+            { companyId, action, currency, amount: amount.toString() }
+        );
+        if (idem.replay) {
+            await client.query('COMMIT');
+            transaction = false;
+            return res.status(idem.status).json(idem.response);
+        }
         const company = await client.query(
             'SELECT owner_id, bank_clean, bank_dirty FROM player_companies WHERE company_id = $1 FOR UPDATE',
             [companyId]
@@ -107,9 +118,11 @@ router.post('/funds', async (req, res) => {
             [companyId, 'Director ' + (action === 'deposit' ? 'deposited ' : 'withdrew ') +
                 amount.toString() + ' ' + currency + ' cash.']
         );
+        const response = { success: true, message: 'Vault transfer successful.' };
+        await completeIdempotent(client, idem, 200, response);
         await client.query('COMMIT');
         transaction = false;
-        return res.json({ success: true, message: 'Vault transfer successful.' });
+        return res.json(response);
     } catch (err) {
         if (transaction) {
             try { await client.query('ROLLBACK'); } catch (rollback) { console.error('Company vault rollback:', rollback); }
@@ -247,6 +260,7 @@ router.post('/order-stock', async (req, res) => {
     let client, transaction = false;
     try {
         const actor = actorId(req);
+        const idempotencyKey = requireIdempotencyKey(req);
         const companyId = req.managedCompanyId;
         const productId = integer(req.body?.item_id, { field: 'Product ID', min: 1n, max: 9223372036854775807n }).toString();
         const quantity = integer(req.body?.order_quantity, { field: 'Order quantity', min: 1n, max: 100000n });
@@ -254,6 +268,19 @@ router.post('/order-stock', async (req, res) => {
         client = await pool.connect();
         await client.query('BEGIN');
         transaction = true;
+        const player = await client.query(
+            'SELECT user_id FROM users WHERE user_id = $1 FOR UPDATE', [actor]
+        );
+        if (player.rowCount !== 1) throw new ActionError(404, 'Player not found.');
+        const idem = await beginIdempotent(
+            client, actor, 'company.order_stock', idempotencyKey,
+            { companyId, productId, quantity: quantity.toString() }
+        );
+        if (idem.replay) {
+            await client.query('COMMIT');
+            transaction = false;
+            return res.status(idem.status).json(idem.response);
+        }
         const company = await client.query(
             'SELECT owner_id, type_id, bank_dirty, is_active FROM player_companies WHERE company_id = $1 FOR UPDATE',
             [companyId]
@@ -296,9 +323,11 @@ router.post('/order-stock', async (req, res) => {
             "INSERT INTO company_logs (company_id, log_type, log_text) VALUES ($1, 'STOCK', $2)",
             [companyId, 'Ordered ' + quantity.toString() + ' units of product ' + productId + '.']
         );
+        const response = { success: true, message: 'System order placed.' };
+        await completeIdempotent(client, idem, 200, response);
         await client.query('COMMIT');
         transaction = false;
-        return res.json({ success: true, message: 'System order placed.' });
+        return res.json(response);
     } catch (err) {
         if (transaction) {
             try { await client.query('ROLLBACK'); } catch (rollback) { console.error('Stock order rollback:', rollback); }
