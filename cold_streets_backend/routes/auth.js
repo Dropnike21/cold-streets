@@ -1,162 +1,156 @@
 const express = require('express');
-const bcrypt = require('bcrypt');
 const pool = require('../db');
+const {
+    requireSupabaseIdentity,
+    requireAuthenticatedPlayer,
+    requireOwnedPlayerParam
+} = require('../middleware/playerIdentity');
+
 const router = express.Router();
 
-// ==========================================
-// REGISTER ROUTE
-// ==========================================
-router.post('/register', async (req, res) => {
-    const client = await pool.connect();
+// The previous password-only routes did not produce a verified session and
+// cannot safely authorize the game. New players register/sign in with Supabase
+// Auth (Flutter SDK), then POST their bearer token to /auth/session.
+function legacyAuthenticationDisabled(req, res) {
+    return res.status(410).json({
+        error: 'Legacy passwords are no longer accepted by the game API. Sign in with Supabase Auth.'
+    });
+}
+router.post('/register', legacyAuthenticationDisabled);
+router.post('/login', legacyAuthenticationDisabled);
+
+const PROFILE_FIELDS = `
+    user_id, username, role, level, exp, crime_exp, contact_exp, active_contract,
+    dirty_cash, clean_cash, casino_tokens, energy, hp, nerve, max_nerve,
+    heat, jail_expires_at, hospital_expires_at, stat_str, stat_def, stat_dex,
+    stat_spd, influence, has_bazaar, cred, stat_acu, stat_ops, stat_pre, stat_res
+`;
+
+// Establishes a new internal integer player record for a *verified* Supabase
+// identity, or returns the existing mapped profile. Email comes ONLY from the
+// Auth server. Client metadata never controls roles, ownership or account IDs.
+router.post('/session', requireSupabaseIdentity, async (req, res) => {
+    const { uid, email, emailConfirmed } = req.authIdentity;
+    const supplied = req.body && req.body.username;
+    const username = typeof supplied === 'string' ? supplied.trim() : '';
+    let client;
+    let inTransaction = false;
 
     try {
-        const { username, password } = req.body;
-        const email = req.body.email.toLowerCase();
+        client = await pool.connect();
+        await client.query('BEGIN');
+        inTransaction = true;
 
-        const userCheck = await client.query(
-            "SELECT * FROM users WHERE email = $1 OR username = $2",
-            [email, username]
+        const prior = await client.query(
+            'SELECT user_id FROM public.users WHERE supabase_auth_uid = $1 FOR UPDATE',
+            [uid]
         );
+        let newPlayer = false;
+        let userId = prior.rows[0]?.user_id;
 
-        if (userCheck.rows.length > 0) {
-            const existingUser = userCheck.rows[0];
-            if (existingUser.email === email) return res.status(400).json({ error: "Email already registered." });
-            if (existingUser.username === username) return res.status(400).json({ error: "That street name is taken." });
+        if (!userId) {
+            if (!emailConfirmed) {
+                throw Object.assign(new Error('Confirm your email before creating a game account.'), { status: 403 });
+            }
+            if (!/^[a-zA-Z0-9_]{3,24}$/.test(username)) {
+                throw Object.assign(new Error('Street name must contain 3-24 letters, numbers or underscores.'), { status: 400 });
+            }
+
+            // Use only a verified subject + email. Do NOT auto-link older
+            // password accounts solely by matching email; that requires
+            // an explicit, verified migration/recovery process.
+            const created = await client.query(
+                `INSERT INTO public.users (supabase_auth_uid, email, username, role)
+                 VALUES ($1, $2, $3, 'player')
+                 ON CONFLICT DO NOTHING
+                 RETURNING user_id`,
+                [uid, email, username]
+            );
+            if (created.rows.length) {
+                newPlayer = true;
+                userId = created.rows[0].user_id;
+
+                await client.query('INSERT INTO user_equipment (user_id) VALUES ($1)', [userId]);
+                await client.query('INSERT INTO user_properties (user_id) VALUES ($1)', [userId]);
+                await client.query('INSERT INTO user_crime_records (user_id) VALUES ($1)', [userId]);
+                await client.query('INSERT INTO user_statistics (user_id) VALUES ($1)', [userId]);
+                await client.query('INSERT INTO user_gym_stats (user_id) VALUES ($1)', [userId]);
+
+                // Gym #1 may not have been imported yet. Do not invent an ID
+                // or disable the FK merely to provide an initial gym.
+                await client.query(
+                    `INSERT INTO user_owned_gyms (user_id, gym_id)
+                     SELECT $1, gym_id FROM gyms_master WHERE gym_id = 1
+                     ON CONFLICT DO NOTHING`,
+                    [userId]
+                );
+                await client.query(
+                    'INSERT INTO user_events (user_id, event_text) VALUES ($1, $2)',
+                    [userId, 'Welcome to Cold Streets. Check your burner phone for instructions.']
+                );
+            } else {
+                const concurrent = await client.query(
+                    'SELECT user_id FROM public.users WHERE supabase_auth_uid = $1',
+                    [uid]
+                );
+                if (!concurrent.rows.length) {
+                    throw Object.assign(new Error('Street name or email is already in use. Legacy account recovery requires manual review.'), { status: 409 });
+                }
+                userId = concurrent.rows[0].user_id;
+            }
         }
 
-        const salt = await bcrypt.genSalt(10);
-        const hashedPassword = await bcrypt.hash(password, salt);
-
-        await client.query('BEGIN');
-
-        // 🚨 ADDED: contact_exp initialized with JSON
-        const newUserQuery = await client.query(
-            `INSERT INTO users (
-                email, username, password_hash, role, crime_exp,
-                contact_exp, active_contract,
-                stat_str, stat_def, stat_dex, stat_spd, stat_acu, stat_ops, stat_pre, stat_res
-            ) VALUES (
-                $1, $2, $3, $4, 0,
-                '{"anonymous": 1, "kevin": 0, "uncle_john": 0}'::jsonb, NULL,
-                10, 10, 10, 10, 10, 10, 10, 10
-            ) RETURNING
-                user_id, username, dirty_cash, clean_cash, level, hp, energy, nerve, max_nerve, crime_exp,
-                contact_exp, active_contract,
-                stat_str, stat_def, stat_dex, stat_spd, stat_acu, stat_ops, stat_pre, stat_res`,
-            [email, username, hashedPassword, 'player']
+        const profile = await client.query(
+            `SELECT ${PROFILE_FIELDS} FROM public.users WHERE user_id = $1`,
+            [userId]
         );
-
-        const newUser = newUserQuery.rows[0];
-        const newUserId = newUser.user_id;
-
-        await client.query("INSERT INTO user_equipment (user_id) VALUES ($1)", [newUserId]);
-        await client.query("INSERT INTO user_properties (user_id) VALUES ($1)", [newUserId]);
-        await client.query("INSERT INTO user_crime_records (user_id, total_crimes, total_successes, total_fails, total_jailed, skill_searching, skill_pickpocketing, skill_shoplifting, skill_mugging, skill_hacking) VALUES ($1, 0, 0, 0, 0, 0, 0, 0, 0, 0)", [newUserId]);
-        await client.query("INSERT INTO user_statistics (user_id, total_energy_spent, total_nerve_spent, total_gym_trains, lifetime_dirty_cash, lifetime_clean_cash, total_items_bought, recruits_hired, recruits_lost) VALUES ($1, 0, 0, 0, 0, 0, 0, 0, 0)", [newUserId]);
-        await client.query("INSERT INTO user_gym_stats (user_id, active_gym_id, gym_exp) VALUES ($1, 1, 0)", [newUserId]);
-        await client.query("INSERT INTO user_owned_gyms (user_id, gym_id) VALUES ($1, 1)", [newUserId]);
-
-        await client.query(
-            "INSERT INTO user_events (user_id, event_text) VALUES ($1, $2)",
-            [newUserId, "Welcome to Cold Streets. Check your burner phone for instructions."]
-        );
+        if (profile.rows.length !== 1) throw new Error('Player profile could not be resolved.');
 
         await client.query('COMMIT');
-
-        res.json({ message: "Welcome to the Syndicate.", user: newUser });
-
-    } catch (err) {
-        await client.query('ROLLBACK');
-        console.error("Registration Fatal Error:", err.message);
-        res.status(500).json({ error: "Server encountered a fatal error during registration." });
-    } finally {
-        client.release();
-    }
-});
-
-// ==========================================
-// 3-WAY LOGIN ROUTE
-// ==========================================
-router.post('/login', async (req, res) => {
-    try {
-        const { login_id, password } = req.body;
-        const searchId = login_id.toLowerCase();
-
-        const userCheck = await pool.query(
-            "SELECT * FROM users WHERE LOWER(email) = $1 OR LOWER(username) = $1 OR user_id::text = $1",
-            [searchId]
-        );
-
-        if (userCheck.rows.length === 0) return res.status(401).json({ error: "Invalid credentials. Ghost account." });
-
-        const user = userCheck.rows[0];
-        const validPassword = await bcrypt.compare(password, user.password_hash);
-
-        if (!validPassword) return res.status(401).json({ error: "Invalid credentials. Wrong password." });
-
-        res.json({
-            message: "Authentication successful.",
-            user: {
-                user_id: user.user_id,
-                username: user.username,
-                role: user.role,
-                level: user.level,
-                crime_exp: user.crime_exp,
-                contact_exp: user.contact_exp,             // 🚨 SYNC FIXER JSON
-                active_contract: user.active_contract, // 🚨 SYNC ACTIVE CONTRACT JSON
-                dirty_cash: user.dirty_cash,
-                clean_cash: user.clean_cash,
-                casino_tokens: user.casino_tokens,
-                energy: user.energy,
-                hp: user.hp,
-                nerve: user.nerve,
-                max_nerve: user.max_nerve,
-                stat_str: user.stat_str,
-                stat_def: user.stat_def,
-                stat_dex: user.stat_dex,
-                stat_spd: user.stat_spd,
-                influence: user.influence,
-                has_bazaar: user.has_bazaar,
-                cred: user.cred,
-                stat_acu: user.stat_acu,
-                stat_ops: user.stat_ops,
-                stat_pre: user.stat_pre,
-                stat_res: user.stat_res
-            }
+        inTransaction = false;
+        return res.json({
+            message: newPlayer ? 'Welcome to the Syndicate.' : 'Authentication successful.',
+            user: profile.rows[0]
         });
     } catch (err) {
-        console.error("Login Error:", err.message);
-        res.status(500).json({ error: "Server encountered a fatal error." });
+        if (client && inTransaction) {
+            try { await client.query('ROLLBACK'); } catch (rollbackError) {
+                console.error('Profile rollback failed:', rollbackError.message);
+            }
+        }
+        if (err.status) return res.status(err.status).json({ error: err.message });
+        console.error('Session profile error:', err.message);
+        return res.status(503).json({ error: 'Unable to initialize player profile.' });
+    } finally {
+        if (client) client.release();
     }
 });
 
-// ==========================================
-// LIVE TELEMETRY SYNC
-// ==========================================
+// All subsequent routes must resolve the trusted player before reading data.
+router.use(requireAuthenticatedPlayer);
+router.param('user_id', requireOwnedPlayerParam);
+
 router.get('/status/:user_id', async (req, res) => {
     try {
         const { user_id } = req.params;
-
-        // 🚨 ADDED JSON SYNC TO LIVE TELEMETRY
         const userQuery = await pool.query(
-            "SELECT dirty_cash, clean_cash, cred, energy, nerve, max_nerve, hp, level, exp, crime_exp, heat, contact_exp, active_contract, jail_expires_at, hospital_expires_at FROM users WHERE user_id = $1",
+            `SELECT dirty_cash, clean_cash, cred, energy, nerve, max_nerve,
+                    hp, level, exp, crime_exp, heat, contact_exp, active_contract,
+                    jail_expires_at, hospital_expires_at
+             FROM public.users WHERE user_id = $1`,
             [user_id]
         );
-        if (userQuery.rows.length === 0) return res.status(404).json({ error: "Ghost account." });
+        if (!userQuery.rows.length) return res.status(404).json({ error: 'Player not found.' });
 
         const cdQuery = await pool.query(
-            "SELECT type, EXTRACT(EPOCH FROM (expires_at - NOW())) AS seconds_left FROM user_cooldowns WHERE user_id = $1 AND expires_at > NOW()",
+            `SELECT type, EXTRACT(EPOCH FROM (expires_at - NOW())) AS seconds_left
+             FROM user_cooldowns WHERE user_id = $1 AND expires_at > NOW()`,
             [user_id]
         );
-
-        res.json({
-            user: userQuery.rows[0],
-            cooldowns: cdQuery.rows
-        });
-
+        return res.json({ user: userQuery.rows[0], cooldowns: cdQuery.rows });
     } catch (err) {
-        console.error("Status Sync Error:", err.message);
-        res.status(500).json({ error: "Sync failed." });
+        console.error('Status sync failed:', err.message);
+        return res.status(503).json({ error: 'Unable to load player status.' });
     }
 });
 
