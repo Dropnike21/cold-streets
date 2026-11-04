@@ -3,6 +3,7 @@ const router = express.Router();
 const db = require('../db');
 const { requireOwnedPlayerParam } = require('../middleware/playerIdentity');
 const { ActionError, integer, dbInteger, exactJsonAmount, actorId, sendActionError } = require('../utils/economyValidation');
+const { requireIdempotencyKey, beginIdempotent, completeIdempotent } = require('../utils/idempotency');
 router.param('userId', requireOwnedPlayerParam);
 
 const INTEREST_BASIS_POINTS = [50n, 110n, 250n, 900n, 2200n];
@@ -13,6 +14,7 @@ router.post('/deposit', async (req, res) => {
     let client, transaction = false;
     try {
         const userId = actorId(req);
+        const idempotencyKey = requireIdempotencyKey(req);
         const amount = integer(req.body?.depositAmount, {
             field: 'Deposit amount', min: 1n, max: BANK_CAP
         });
@@ -31,6 +33,15 @@ router.post('/deposit', async (req, res) => {
         );
         if (account.rowCount !== 1) throw new ActionError(404, 'Player not found.');
         const user = account.rows[0];
+        const idem = await beginIdempotent(
+            client, userId, 'bank.deposit', idempotencyKey,
+            { depositAmount: amount.toString(), durationIndex }
+        );
+        if (idem.replay) {
+            await client.query('COMMIT');
+            transaction = false;
+            return res.status(idem.status).json(idem.response);
+        }
         if (!Number.isInteger(Number(user.bank_trust_level)) ||
             durationIndex > Number(user.bank_trust_level)) {
             throw new ActionError(403, 'Required bank trust level not reached.');
@@ -72,15 +83,17 @@ router.post('/deposit', async (req, res) => {
             [userId, takeDirty.toString(), takeClean.toString(),
              payout.toString(), durationIndex, TERM_DAYS[durationIndex]]
         );
-        await client.query('COMMIT');
-        transaction = false;
-        return res.json({
+        const response = {
             message: 'Deposit successful.',
             updatedCash: {
                 dirty_cash: exactJsonAmount(dbInteger(wallet.rows[0].dirty_cash)),
                 clean_cash: exactJsonAmount(dbInteger(wallet.rows[0].clean_cash))
             }
-        });
+        };
+        await completeIdempotent(client, idem, 200, response);
+        await client.query('COMMIT');
+        transaction = false;
+        return res.json(response);
     } catch (err) {
         if (transaction) {
             try { await client.query('ROLLBACK'); }
@@ -97,6 +110,7 @@ router.post('/claim-deposit', async (req, res) => {
     let client, transaction = false;
     try {
         const userId = actorId(req);
+        const idempotencyKey = requireIdempotencyKey(req);
         client = await db.connect();
         await client.query('BEGIN');
         transaction = true;
@@ -104,6 +118,14 @@ router.post('/claim-deposit', async (req, res) => {
             'SELECT user_id FROM users WHERE user_id = $1 FOR UPDATE', [userId]
         );
         if (player.rowCount !== 1) throw new ActionError(404, 'Player not found.');
+        const idem = await beginIdempotent(
+            client, userId, 'bank.claim_deposit', idempotencyKey, {}
+        );
+        if (idem.replay) {
+            await client.query('COMMIT');
+            transaction = false;
+            return res.status(idem.status).json(idem.response);
+        }
 
         const result = await client.query(
             `SELECT deposit_id, total_payout, unlocks_at
@@ -133,13 +155,15 @@ router.post('/claim-deposit', async (req, res) => {
             [payout.toString(), userId]
         );
         if (wallet.rowCount !== 1) throw new Error('Player disappeared during deposit claim.');
-        await client.query('COMMIT');
-        transaction = false;
-        return res.json({
+        const response = {
             message: 'Matured deposit claimed.',
             payout: exactJsonAmount(payout),
             updatedCash: { clean_cash: exactJsonAmount(dbInteger(wallet.rows[0].clean_cash)) }
-        });
+        };
+        await completeIdempotent(client, idem, 200, response);
+        await client.query('COMMIT');
+        transaction = false;
+        return res.json(response);
     } catch (err) {
         if (transaction) {
             try { await client.query('ROLLBACK'); }
@@ -153,6 +177,7 @@ router.post('/claim-check', async (req, res) => {
     let client, transaction = false;
     try {
         const userId = actorId(req);
+        const idempotencyKey = requireIdempotencyKey(req);
         const checkId = integer(req.body?.checkId, {
             field: 'Check ID', min: 1n, max: 9223372036854775807n
         }).toString();
@@ -164,6 +189,14 @@ router.post('/claim-check', async (req, res) => {
             'SELECT user_id FROM users WHERE user_id = $1 FOR UPDATE', [userId]
         );
         if (account.rowCount !== 1) throw new ActionError(404, 'Player not found.');
+        const idem = await beginIdempotent(
+            client, userId, 'bank.claim_check', idempotencyKey, { checkId }
+        );
+        if (idem.replay) {
+            await client.query('COMMIT');
+            transaction = false;
+            return res.status(idem.status).json(idem.response);
+        }
         const check = await client.query(
             'SELECT amount, expires_at, status FROM pending_checks WHERE id = $1 AND user_id = $2 FOR UPDATE',
             [checkId, userId]
@@ -187,12 +220,14 @@ router.post('/claim-check', async (req, res) => {
             [amount.toString(), userId]
         );
         if (wallet.rowCount !== 1) throw new Error('Player disappeared during check claim.');
-        await client.query('COMMIT');
-        transaction = false;
-        return res.json({
+        const response = {
             message: 'Check claimed successfully.',
             updatedCash: { clean_cash: exactJsonAmount(dbInteger(wallet.rows[0].clean_cash)) }
-        });
+        };
+        await completeIdempotent(client, idem, 200, response);
+        await client.query('COMMIT');
+        transaction = false;
+        return res.json(response);
     } catch (err) {
         if (transaction) {
             try { await client.query('ROLLBACK'); }
