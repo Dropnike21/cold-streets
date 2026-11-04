@@ -9,8 +9,8 @@ const REVIVE_ENERGY_COST = 75;
 const REVIVE_JOB_NAME = 'City Hospital';
 const REVIVE_PASSIVE_DESC =
     'Medical Revive Skill: Unlocks the ability to revive others from the hospital. Cost: 75 Energy.';
-const REVIVE_LOGIC =
-    '{passive: {ability: revive, energy_cost: 75}, active: {cost_type: incentives, cost_val: 150, reward_id: 268, qty: 1}}';
+const REVIVE_PASSIVE_LOGIC =
+    'passive: {ability: revive, energy_cost: 75}';
 
 async function resolveReviveRule(client) {
     const result = await client.query(
@@ -21,7 +21,7 @@ async function resolveReviveRule(client) {
     );
     if (result.rowCount !== 1 ||
         result.rows[0].mastery_passive_desc !== REVIVE_PASSIVE_DESC ||
-        result.rows[0].mastery_logic_json !== REVIVE_LOGIC) {
+        !String(result.rows[0].mastery_logic_json || '').includes(REVIVE_PASSIVE_LOGIC)) {
         throw new ActionError(
             409,
             'Medical Revive is paused because its City Hospital source rule changed.'
