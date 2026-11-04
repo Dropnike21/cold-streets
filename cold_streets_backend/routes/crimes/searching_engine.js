@@ -131,7 +131,6 @@ async function execute(client, user, crime, req, res) {
         const getRandomText = (array) => randomText(array, "The streets are silent.");
 
         // 2. Heat Check
-        let currentHeat = parseFloat(user.heat) || 0.0;
         const heatGained = penaltyRule.heatGen;
 
         if (await reachesFederalHeatThreshold(client, user.heat, heatGained)) {
