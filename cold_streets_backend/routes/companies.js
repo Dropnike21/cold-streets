@@ -227,33 +227,92 @@ router.get('/directory/details/:type_id', async (req, res) => {
 
 // --- 6. SUBMIT JOB APPLICATION ---
 router.post('/apply', async (req, res) => {
-    const { company_id, user_id, pitch_message } = req.body;
+    let client, transaction = false;
     try {
-        // 1. GATEKEEPER: Ensure they don't have a City Job
-        const userCheck = await pool.query('SELECT current_job_id FROM users WHERE user_id = $1', [user_id]);
-        if (userCheck.rows[0].current_job_id !== null) {
-            return res.status(400).json({ error: "You must resign from your City Job before applying to the private sector." });
+        const userId = actorId(req);
+        const idempotencyKey = requireIdempotencyKey(req);
+        const companyId = integer(req.body?.company_id, {
+            field: 'Company ID', min: 1n, max: 9223372036854775807n
+        }).toString();
+        const pitch = typeof req.body?.pitch_message === 'string'
+            ? req.body.pitch_message.trim()
+            : '';
+        if (pitch.length > 2000) {
+            throw new ActionError(400, 'Application message is too long.');
         }
 
-        // 2. GATEKEEPER: Ensure they don't work anywhere else (and aren't a Director)
-        const empCheck = await pool.query('SELECT position_role FROM company_employees WHERE employee_id = $1 AND is_npc = false', [user_id]);
-        if (empCheck.rows.length > 0) {
-            const role = empCheck.rows[0].position_role;
-            if (role === 'Director') {
-                return res.status(400).json({ error: "Directors cannot be employees. You must liquidate your assets or transfer ownership first." });
-            } else {
-                return res.status(400).json({ error: "You are already employed at another company. Resign before applying here." });
-            }
+        client = await pool.connect();
+        await client.query('BEGIN');
+        transaction = true;
+
+        const player = await client.query(
+            'SELECT current_job_id FROM users WHERE user_id = $1 FOR UPDATE',
+            [userId]
+        );
+        if (player.rowCount !== 1) throw new ActionError(404, 'Player not found.');
+        const idem = await beginIdempotent(
+            client, userId, 'company.apply', idempotencyKey,
+            { companyId, pitch }
+        );
+        if (idem.replay) {
+            await client.query('COMMIT');
+            transaction = false;
+            return res.status(idem.status).json(idem.response);
+        }
+        if (player.rows[0].current_job_id !== null) {
+            throw new ActionError(409, 'Resign from your City Job before applying to a company.');
         }
 
-        // 3. Prevent spamming pending applications to the SAME company
-        const appCheck = await pool.query("SELECT * FROM company_applicants WHERE company_id = $1 AND user_id = $2 AND status = 'Pending'", [company_id, user_id]);
-        if (appCheck.rows.length > 0) return res.status(400).json({ error: "Your previous application is still pending review." });
+        const employed = await client.query(
+            `SELECT position_role
+               FROM company_employees
+              WHERE employee_id = $1 AND is_npc = false
+              LIMIT 1`,
+            [userId]
+        );
+        if (employed.rowCount) {
+            throw new ActionError(409, 'You are already employed by a company.');
+        }
 
-        await pool.query(`INSERT INTO company_applicants (company_id, user_id, pitch_message) VALUES ($1, $2, $3)`, [company_id, user_id, pitch_message]);
-        res.json({ success: true, message: "Application submitted to the Director." });
+        const company = await client.query(
+            'SELECT company_id FROM player_companies WHERE company_id = $1 AND is_active = true',
+            [companyId]
+        );
+        if (company.rowCount !== 1) throw new ActionError(404, 'Company is unavailable.');
+
+        const pending = await client.query(
+            `SELECT 1 FROM company_applicants
+              WHERE company_id = $1 AND user_id = $2 AND status = 'Pending'
+              LIMIT 1`,
+            [companyId, userId]
+        );
+        if (pending.rowCount) {
+            throw new ActionError(409, 'Your previous application is still pending.');
+        }
+
+        const inserted = await client.query(
+            `INSERT INTO company_applicants (company_id, user_id, pitch_message)
+             VALUES ($1, $2, $3)
+             RETURNING application_id`,
+            [companyId, userId, pitch]
+        );
+        const response = {
+            success: true,
+            message: 'Application submitted to the Director.',
+            application_id: inserted.rows[0].application_id
+        };
+        await completeIdempotent(client, idem, 200, response);
+        await client.query('COMMIT');
+        transaction = false;
+        return res.json(response);
     } catch (err) {
-        res.status(500).json({ error: "Failed to submit application." });
+        if (transaction) {
+            try { await client.query('ROLLBACK'); }
+            catch (rollback) { console.error('Company application rollback:', rollback); }
+        }
+        return sendActionError(res, err, 'Company application failed:');
+    } finally {
+        if (client) client.release();
     }
 });
 

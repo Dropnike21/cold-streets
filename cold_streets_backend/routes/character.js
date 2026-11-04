@@ -1,69 +1,99 @@
-// routes/character.js
 const express = require('express');
 const pool = require('../db');
 const router = express.Router();
+const {
+    ActionError, dbInteger, actorId, sendActionError
+} = require('../utils/economyValidation');
+const {
+    requireIdempotencyKey, beginIdempotent, completeIdempotent
+} = require('../utils/idempotency');
 
-// The 5-Year Exponent Formula
 const BASE_EXP = 25;
 const EXPONENT = 1.7;
 
 function getExpRequirement(level) {
-    return Math.floor(BASE_EXP * Math.pow(level, EXPONENT));
+    if (!Number.isSafeInteger(level) || level < 1 || level > 1000000) {
+        throw new Error('Player level is outside supported progression range.');
+    }
+    const requirement = Math.floor(BASE_EXP * Math.pow(level, EXPONENT));
+    if (!Number.isSafeInteger(requirement) || requirement < 1) {
+        throw new Error('EXP requirement is outside exact integer range.');
+    }
+    return BigInt(requirement);
 }
 
 router.post('/level-up', async (req, res) => {
-    const client = await pool.connect();
+    let client, transaction = false;
     try {
-        const { user_id, action } = req.body; // action will be 'UPGRADE' or 'HOLD'
+        const userId = actorId(req);
+        const idempotencyKey = requireIdempotencyKey(req);
+        const action = req.body?.action;
+        if (!['UPGRADE', 'HOLD'].includes(action)) {
+            throw new ActionError(400, 'Invalid level action.');
+        }
 
+        client = await pool.connect();
         await client.query('BEGIN');
-
-        const userRes = await client.query("SELECT exp, level, max_hp FROM users WHERE user_id = $1 FOR UPDATE", [user_id]);
-        if (userRes.rows.length === 0) throw new Error("User not found.");
-
+        transaction = true;
+        const userRes = await client.query(
+            'SELECT exp, level FROM users WHERE user_id = $1 FOR UPDATE',
+            [userId]
+        );
+        if (userRes.rowCount !== 1) throw new ActionError(404, 'Player not found.');
         const user = userRes.rows[0];
-        const cost = getExpRequirement(user.level);
 
-        // ACTION: HOLD
+        const idem = await beginIdempotent(
+            client, userId, 'character.level_up', idempotencyKey, { action }
+        );
+        if (idem.replay) {
+            await client.query('COMMIT');
+            transaction = false;
+            return res.status(idem.status).json(idem.response);
+        }
+
+        let response;
         if (action === 'HOLD') {
-            const updatedUser = await client.query(
-                "UPDATE users SET level_holding = TRUE WHERE user_id = $1 RETURNING *",
-                [user_id]
+            const updated = await client.query(
+                `UPDATE users SET level_holding = true
+                  WHERE user_id = $1
+                  RETURNING *`,
+                [userId]
             );
-            await client.query('COMMIT');
-            return res.json({ status: "held", user: updatedUser.rows[0] });
-        }
-
-        // ACTION: UPGRADE
-        if (action === 'UPGRADE') {
-            if (user.exp < cost) {
-                await client.query('ROLLBACK');
-                return res.status(400).json({ error: "Not enough EXP to level up." });
+            response = { status: 'held', user: updated.rows[0] };
+        } else {
+            const cost = getExpRequirement(Number(user.level));
+            if (dbInteger(user.exp, { field: 'Player EXP' }) < cost) {
+                throw new ActionError(409, 'Not enough EXP to level up.');
             }
-
-            // Level Up Rewards: Deduct EXP, +1 Level, +50 Max HP, Full HP Heal, un-hold.
-            const updatedUser = await client.query(
+            const updated = await client.query(
                 `UPDATE users
-                 SET exp = exp - $1,
-                     level = level + 1,
-                     max_hp = max_hp + 50,
-                     hp = max_hp + 50,
-                     level_holding = FALSE
-                 WHERE user_id = $2
-                 RETURNING *`,
-                [cost, user_id]
+                    SET exp = exp - $1::numeric,
+                        level = level + 1,
+                        max_hp = max_hp + 50,
+                        hp = max_hp + 50,
+                        level_holding = false
+                  WHERE user_id = $2 AND exp >= $1::numeric
+                  RETURNING *`,
+                [cost.toString(), userId]
             );
-
-            await client.query('COMMIT');
-            return res.json({ status: "leveled_up", user: updatedUser.rows[0] });
+            if (updated.rowCount !== 1) {
+                throw new ActionError(409, 'EXP changed before level-up.');
+            }
+            response = { status: 'leveled_up', user: updated.rows[0] };
         }
 
+        await completeIdempotent(client, idem, 200, response);
+        await client.query('COMMIT');
+        transaction = false;
+        return res.json(response);
     } catch (err) {
-        await client.query('ROLLBACK');
-        console.error("Leveling Error:", err.message);
-        res.status(500).json({ error: "Progression system error." });
+        if (transaction) {
+            try { await client.query('ROLLBACK'); }
+            catch (rollback) { console.error('Level-up rollback:', rollback); }
+        }
+        return sendActionError(res, err, 'Character progression failed:');
     } finally {
-        client.release();
+        if (client) client.release();
     }
 });
 
