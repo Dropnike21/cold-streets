@@ -4,6 +4,7 @@ const router = express.Router();
 const db = require('../../db');
 const { actorId, dbInteger, exactJsonAmount, sendActionError } = require('../../utils/economyValidation');
 const { chargeWager } = require('../../utils/casinoEconomy');
+const { requireIdempotencyKey, beginIdempotent, completeIdempotent } = require('../../utils/idempotency');
 
 const REEL_SYMBOLS = [
     'CHERRY', 'CHERRY', 'CHERRY', 'CHERRY',
@@ -27,10 +28,23 @@ router.post('/spin', async (req, res) => {
     let client, transaction = false;
     try {
         const userId = actorId(req);
+        const idempotencyKey = requireIdempotencyKey(req);
         client = await db.connect();
         await client.query('BEGIN');
         transaction = true;
-        const { bet } = await chargeWager(client, userId, req.body?.betAmount);
+        const wager = await chargeWager(
+            client, userId, req.body?.betAmount,
+            async ({ bet }) => beginIdempotent(
+                client, userId, 'casino.slots_spin', idempotencyKey,
+                { betAmount: bet.toString() }
+            )
+        );
+        if (wager.replay) {
+            await client.query('COMMIT');
+            transaction = false;
+            return res.status(wager.replay.status).json(wager.replay.response);
+        }
+        const bet = wager.bet;
 
         // Lock the progressive jackpot before resolving any spin. Two wins
         // cannot both collect the old jackpot.
@@ -82,15 +96,17 @@ router.post('/spin', async (req, res) => {
             "INSERT INTO casino_audit (user_id, game_name, bet_amount, payout) VALUES ($1, 'Slots', $2::numeric, $3::numeric)",
             [userId, bet.toString(), payout.toString()]
         );
-        await client.query('COMMIT');
-        transaction = false;
-        return res.json({
+        const response = {
             reels,
             payout: exactJsonAmount(payout),
             isJackpot,
             currentJackpot: exactJsonAmount(newJackpot),
             updatedBalances: wallet.rows[0]
-        });
+        };
+        await completeIdempotent(client, wager.idempotency, 200, response);
+        await client.query('COMMIT');
+        transaction = false;
+        return res.json(response);
     } catch (err) {
         if (transaction) {
             try { await client.query('ROLLBACK'); } catch (rollback) { console.error('Slots rollback failed:', rollback); }
