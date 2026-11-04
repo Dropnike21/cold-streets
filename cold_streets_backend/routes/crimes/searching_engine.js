@@ -1,4 +1,5 @@
 const { trackAndCheckAchievement } = require('../../utils/achievement_engine');
+const { incrementKevinProgress } = require('../../utils/missionProgress');
 
 // --- 🚨 ADDED: MATH & ENVIRONMENT HELPERS ---
 function getCrowdDensity(now) {
@@ -165,6 +166,7 @@ async function execute(client, user, crime, req, res) {
             );
 
             await client.query("UPDATE user_crime_records SET total_crimes = total_crimes + 1, total_successes = total_successes + 1 WHERE user_id = $1", [user.user_id]);
+            await incrementKevinProgress(client, user.user_id, 'crimes', 1);
             await client.query('COMMIT');
 
             trackAndCheckAchievement(user.user_id, 'total_successes', 1, 'user_crime_records');
