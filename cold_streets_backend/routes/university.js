@@ -8,6 +8,7 @@ const {
 const {
     requireIdempotencyKey, beginIdempotent, completeIdempotent
 } = require('../utils/idempotency');
+const { listEducationEntitlements } = require('../utils/educationEntitlements');
 
 router.param('user_id', requireOwnedPlayerParam);
 
@@ -56,7 +57,7 @@ router.get('/:user_id', async (req, res) => {
         );
         if (userRes.rowCount !== 1) throw new ActionError(404, 'Player not found.');
 
-        const [completedRes, tracksRes, coursesRes] = await Promise.all([
+        const [completedRes, tracksRes, coursesRes, entitlements] = await Promise.all([
             pool.query(
                 'SELECT course_id FROM user_completed_courses WHERE user_id = $1 ORDER BY course_id',
                 [userId]
@@ -68,7 +69,8 @@ router.get('/:user_id', async (req, res) => {
                         rewards_json, rewards_jsonb
                    FROM education_courses_master
                   ORDER BY track_id ASC, course_id ASC`
-            )
+            ),
+            listEducationEntitlements(pool, userId)
         ]);
 
         return res.json({
@@ -77,6 +79,7 @@ router.get('/:user_id', async (req, res) => {
             active_course_id: userRes.rows[0].active_course_id,
             course_expires_at: userRes.rows[0].course_expires_at,
             completed_courses: completedRes.rows.map(row => row.course_id),
+            entitlements,
             tracks: tracksRes.rows,
             courses: coursesRes.rows
         });
