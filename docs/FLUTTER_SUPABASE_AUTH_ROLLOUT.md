@@ -13,7 +13,7 @@ This branch **stacks on** security PR #4 (\`security/supabase-auth-ownership-202
 - Replaced \`lib/views/auth_view.dart\`: Supabase Auth email/password signup and sign-in, email confirmation handling, \`street_name\` signup metadata used only as a *suggestion*, and player profile bootstrap.
 - Updated **28 existing gameplay/management view modules** to call the shared authenticated HTTP layer instead of \`package:http\` directly.
 - Updated \`MainHubLogic.logout()\` to call Supabase sign-out and clear the navigation stack; exiting the server session now returns the player to the login screen.
-- Added HTTPS runtime API endpoint configuration; fallback host addresses remain for local emulators only.
+- Added HTTPS runtime API endpoint configuration; fallback host addresses remain for local emulators only. Four previously hardcoded emulator-only view URLs were removed (company dashboard, company management, jobs, syndicate). Company-management action and recruit endpoints now use the correct `/company-management` prefix.
 
 ## Build environment
 
