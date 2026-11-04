@@ -238,42 +238,121 @@ router.get('/:company_id/available-crew/:user_id', async (req, res) => {
 
 // --- 11. ASSIGN NPC ---
 router.post('/assign-crew', async (req, res) => {
-    const { company_id, user_id, crew_id } = req.body;
+    const { company_id, crew_id } = req.body || {};
+    const actingUserId = req.player.userId; // verified Supabase identity
     const client = await pool.connect();
     try {
         await client.query('BEGIN');
-        const compRes = await client.query("SELECT max_employees FROM player_companies c JOIN company_types_master t ON c.type_id = t.type_id WHERE company_id=$1", [company_id]);
-        const currentEmps = await client.query("SELECT count(*) as total FROM company_employees WHERE company_id=$1", [company_id]);
-        if (parseInt(currentEmps.rows[0].total) >= compRes.rows[0].max_employees) throw new Error("Company is at maximum capacity.");
+        const director = await client.query(
+            `SELECT 1 FROM company_employees
+             WHERE company_id = $1 AND employee_id = $2
+               AND is_npc = false AND position_role = 'Director'`,
+            [company_id, actingUserId]
+        );
+        if (director.rowCount !== 1) throw new Error('Only the company director can assign recruits.');
 
-        await client.query(`UPDATE user_crew SET assignment = $1 WHERE crew_id = $2 AND user_id = $3`, [`Company: ${company_id}`, crew_id, user_id]);
-        await client.query(`INSERT INTO company_employees (company_id, employee_id, is_npc, position_role, daily_salary, effectiveness_score) VALUES ($1, $2, true, 'Unassigned', 0, 100)`, [company_id, crew_id]);
-        await client.query(`INSERT INTO company_logs (company_id, log_type, log_text) VALUES ($1, 'STAFF', 'Assigned an NPC recruit to the company.')`, [company_id]);
+        const company = await client.query(
+            `SELECT t.max_employees
+             FROM player_companies c
+             JOIN company_types_master t ON c.type_id = t.type_id
+             WHERE c.company_id = $1 FOR UPDATE OF c`,
+            [company_id]
+        );
+        if (company.rowCount !== 1) throw new Error('Company not found.');
 
+        const staff = await client.query(
+            'SELECT count(*) AS total FROM company_employees WHERE company_id = $1',
+            [company_id]
+        );
+        if (Number(staff.rows[0].total) >= Number(company.rows[0].max_employees)) {
+            throw new Error('Company is at maximum capacity.');
+        }
+
+        // Recruit ownership and assignment state are checked under a row lock.
+        // Never trust a client-supplied user_id for this operation.
+        const crew = await client.query(
+            'SELECT crew_id, assignment FROM user_crew WHERE crew_id = $1 AND user_id = $2 FOR UPDATE',
+            [crew_id, actingUserId]
+        );
+        if (crew.rowCount !== 1) throw new Error('Recruit not found or not yours.');
+        if (!['Idle', 'UNASSIGNED', 'Unassigned'].includes(crew.rows[0].assignment)) {
+            throw new Error('Recruit is already assigned.');
+        }
+
+        await client.query(
+            'UPDATE user_crew SET assignment = $1 WHERE crew_id = $2 AND user_id = $3',
+            [`Company: ${company_id}`, crew_id, actingUserId]
+        );
+        await client.query(
+            `INSERT INTO company_employees
+             (company_id, employee_id, is_npc, position_role, daily_salary, effectiveness_score)
+             VALUES ($1, $2, true, 'Unassigned', 0, 100)`,
+            [company_id, crew_id]
+        );
+        await client.query(
+            `INSERT INTO company_logs (company_id, log_type, log_text)
+             VALUES ($1, 'STAFF', 'Assigned an NPC recruit to the company.')`,
+            [company_id]
+        );
         await client.query('COMMIT');
-        res.json({ success: true, message: "NPC Assigned." });
+        return res.json({ success: true, message: 'NPC assigned.' });
     } catch (err) {
         await client.query('ROLLBACK');
-        res.status(400).json({ error: err.message });
-    } finally { client.release(); }
+        return res.status(400).json({ error: err.message || 'Recruit assignment failed.' });
+    } finally {
+        client.release();
+    }
 });
 
 // --- 12. RECALL NPC ---
+// Only the director can recall a recruit *owned by that director*, and only
+// from the specified company. Do not update unrelated players' recruits.
 router.post('/recall-crew', async (req, res) => {
-    const { company_id, crew_id } = req.body;
+    const { company_id, crew_id } = req.body || {};
+    const actingUserId = req.player.userId;
     const client = await pool.connect();
     try {
         await client.query('BEGIN');
-        await client.query(`DELETE FROM company_employees WHERE company_id = $1 AND employee_id = $2 AND is_npc = true`, [company_id, crew_id]);
-        await client.query(`UPDATE user_crew SET assignment = 'Idle' WHERE crew_id = $1`, [crew_id]);
-        await client.query(`INSERT INTO company_logs (company_id, log_type, log_text) VALUES ($1, 'STAFF', 'Recalled an NPC recruit from the company.')`, [company_id]);
+        const director = await client.query(
+            `SELECT 1 FROM company_employees
+             WHERE company_id = $1 AND employee_id = $2
+               AND is_npc = false AND position_role = 'Director'`,
+            [company_id, actingUserId]
+        );
+        if (director.rowCount !== 1) throw new Error('Only the company director can recall recruits.');
 
+        const ownedCrew = await client.query(
+            'SELECT crew_id FROM user_crew WHERE crew_id = $1 AND user_id = $2 FOR UPDATE',
+            [crew_id, actingUserId]
+        );
+        if (ownedCrew.rowCount !== 1) throw new Error('Recruit not found or not yours.');
+
+        const removed = await client.query(
+            `DELETE FROM company_employees
+             WHERE company_id = $1 AND employee_id = $2 AND is_npc = true
+             RETURNING employee_id`,
+            [company_id, crew_id]
+        );
+        if (removed.rowCount !== 1) throw new Error('Recruit is not assigned to that company.');
+
+        await client.query(
+            `UPDATE user_crew SET assignment = 'Idle'
+             WHERE crew_id = $1 AND user_id = $2`,
+            [crew_id, actingUserId]
+        );
+        await client.query(
+            `INSERT INTO company_logs (company_id, log_type, log_text)
+             VALUES ($1, 'STAFF', 'Recalled an NPC recruit from the company.')`,
+            [company_id]
+        );
         await client.query('COMMIT');
-        res.json({ success: true, message: "NPC Recalled." });
+        return res.json({ success: true, message: 'NPC recalled.' });
     } catch (err) {
         await client.query('ROLLBACK');
-        res.status(400).json({ error: err.message });
-    } finally { client.release(); }
+        return res.status(400).json({ error: err.message || 'Recruit recall failed.' });
+    } finally {
+        client.release();
+    }
 });
 
 // --- 13. MANAGE APPLICANT ---
