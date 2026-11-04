@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import '../api_config.dart';
 import '../services/game_http.dart' as http;
 import 'dart:convert';
 import 'dart:async';
@@ -23,7 +24,7 @@ class JobsView extends StatefulWidget {
 }
 
 class _JobsViewState extends State<JobsView> {
-  final String apiUrl = "http://10.0.2.2:3000/jobs";
+  String get apiUrl => '\${ApiConfig.baseUrl}/jobs';
 
   bool _isLoading = true;
   bool _isProcessing = false;
