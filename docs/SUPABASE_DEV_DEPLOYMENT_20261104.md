@@ -60,8 +60,8 @@ The Node.js game API **is not yet authenticated** and should not be placed on a 
 
 ## Next priority
 
-1. Complete safe catalog restoration in a trusted client session.
-2. Map remaining backend SQL columns against actual reconstructed catalog schemas; resolve job and university data conflicts and missing company seed tables.
+1. **Catalog restoration completed on 2026-11-05**; preserve and re-verify source checksums when rebuilding a new development project.
+2. Map backend SQL columns against the reconstructed catalogs; resolve job and university rule conflicts and the still-missing company position/product-relationship seed tables.
 3. Implement Supabase Auth token verification and account ownership at the Node boundary before any public route.
 4. Finish transactional, idempotent handling of economy and reward routes (banking stabilization is in a separate draft PR).
 5. Run migrations and gameplay integration tests in a later phase when testing is authorized.
@@ -75,3 +75,37 @@ Supabase project console: https://supabase.com/dashboard/project/qbrntyrlzxhilwr
 - Synchronized generated-ID sequences for `gyms_master.gym_id` (80), `achievements_master.achievement_id` (400), `credit_upgrades_master.upgrade_id` (18) and `education_tracks_master.track_id` (18).
 - The new-player starter-gym presence check in security PR #4 now has its catalog prerequisite. **This does not mean player login or gameplay was tested**; there are no player rows, the Node server has not been deployed, and other catalogs are incomplete.
 - No additional player data, credentials or schema migrations were applied in this addendum.
+
+## Full catalog import checkpoint — 2026-11-05 (Asia/Manila)
+
+The original private `cold_streets_game_data.sql` source (SHA-256 `55724be1c01fa2048bf264e6da7a318aaec7ca079719ee206ddd550cc4cdaf10`) was used to fill the **remaining 1,576 catalog rows** via conflict-safe `INSERT ... ON CONFLICT DO NOTHING` statements. The raw file was not committed or placed in public GitHub. SQL statement text was sent directly to the connected, isolated Supabase development project.
+
+**Readback verified all 2,093 source rows across the 18 tables:**
+
+| Table | Expected and observed rows |
+| --- | ---: |
+| achievements_master | 400 |
+| casino_jackpots | 1 |
+| city_grants | 0 |
+| city_policies | 0 |
+| company_products_master | 20 |
+| company_types_master | 120 |
+| credit_upgrades_master | 18 |
+| crimes_master | 273 |
+| education_tracks_master | 18 |
+| education_courses_master | 220 |
+| gyms_master | 80 |
+| items_master | 711 |
+| jobs_master | 10 |
+| job_interviews | 140 |
+| job_ranks | 50 |
+| map_tiles | 0 |
+| missions_master | 7 |
+| properties_master | 25 |
+| **Total** | **2,093** |
+
+Every imported non-empty catalog with an explicit identity primary key had its PostgreSQL generated-ID sequence advanced to the actual maximum ID. Example: `items_master` ends at ID **731** despite containing **711** rows; `missions_master` ends at ID **11** despite containing **7** rows. The source IDs were preserved; no artificial renumbering was done.
+
+**Schema integrity check:** no unvalidated public foreign-key constraints. Supabase security advisor still reports only the intended 53 `rls_enabled_no_policy` informational notices (client roles deliberately denied, no public access policies yet). Table-count equivalence is not a full byte-for-byte restore proof; data semantics and backend compatibility must be tested later. No player accounts, deposits, private credentials, live API service, or gameplay data were altered. This finishes the **data-only catalog restoration**, not the complete original PostgreSQL schema recovery.
+
+Remaining: reconcile reconstructed state schema and 3 absent company-related seed sets; staging backend, login integration, end-to-end tests when authorized.
