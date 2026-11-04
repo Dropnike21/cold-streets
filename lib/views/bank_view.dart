@@ -38,6 +38,11 @@ class _BankViewState extends State<BankView> {
   double activeDirtyUsed = 0;
   double activeCleanUsed = 0;
 
+  bool get _isDepositMatured =>
+      hasActiveDeposit &&
+      activeDepositUnlockTime != null &&
+      !activeDepositUnlockTime!.isAfter(DateTime.now());
+
   // --- Pending Checks State ---
   List<Map<String, dynamic>> pendingChecks = [];
 
@@ -222,8 +227,8 @@ class _BankViewState extends State<BankView> {
         final updatedCash = data['updatedCash'];
 
         setState(() {
-          dirtyCash = updatedCash['dirty_cash'];
-          cleanCash = updatedCash['clean_cash'];
+          dirtyCash = _parseSafeInt(updatedCash['dirty_cash']);
+          cleanCash = _parseSafeInt(updatedCash['clean_cash']);
           totalCash = dirtyCash + cleanCash;
 
           widget.userData['dirty_cash'] = dirtyCash;
@@ -260,6 +265,77 @@ class _BankViewState extends State<BankView> {
     } catch (e) {
       if (mounted) Navigator.pop(context);
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("Network Error: $e"), backgroundColor: Colors.redAccent));
+    }
+  }
+
+  Future<void> _claimMaturedDeposit() async {
+    if (!_isDepositMatured) return;
+
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => const Center(
+        child: CircularProgressIndicator(color: Color(0xFF39FF14)),
+      ),
+    );
+
+    try {
+      final response = await http.post(
+        Uri.parse('${ApiConfig.baseUrl}/bank/claim-deposit'),
+        headers: const {'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'userId': widget.userData['user_id'].toString(),
+        }),
+      );
+
+      if (mounted) Navigator.pop(context);
+
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        final payout = _parseDouble(data['payout']);
+
+        if (!mounted) return;
+        setState(() {
+          cleanCash = _parseSafeInt(data['updatedCash']['clean_cash']);
+          totalCash = dirtyCash + cleanCash;
+          hasActiveDeposit = false;
+          activeDepositUnlockTime = null;
+          activeDirtyUsed = 0;
+          activeCleanUsed = 0;
+          _depositAmount = 0;
+          _amountController.clear();
+          _selectedDurationIndex = min(2, bankTrustLevel);
+
+          widget.userData['clean_cash'] = cleanCash;
+          widget.userData.remove('active_time_deposit');
+          widget.onStateChange(widget.userData);
+        });
+
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Deposit matured. Received ${_formatCash(payout)} clean cash.'),
+            backgroundColor: const Color(0xFF39FF14),
+          ),
+        );
+      } else {
+        final data = jsonDecode(response.body);
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Error: ${data['error'] ?? 'Deposit claim failed.'}'),
+            backgroundColor: Colors.redAccent,
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) Navigator.pop(context);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Network Error: $e'),
+          backgroundColor: Colors.redAccent,
+        ),
+      );
     }
   }
 
@@ -326,7 +402,7 @@ class _BankViewState extends State<BankView> {
         double amount = _parseDouble(check['amount']);
 
         setState(() {
-          cleanCash = data['updatedCash']['clean_cash'];
+          cleanCash = _parseSafeInt(data['updatedCash']['clean_cash']);
           totalCash = dirtyCash + cleanCash;
           widget.userData['clean_cash'] = cleanCash;
 
@@ -526,18 +602,49 @@ class _BankViewState extends State<BankView> {
                     width: double.infinity,
                     height: 50,
                     child: hasActiveDeposit
-                        ? Container(
-                      decoration: BoxDecoration(color: const Color(0xFF1E1E1E), border: Border.all(color: Colors.white24), borderRadius: BorderRadius.circular(6)),
-                      alignment: Alignment.center,
-                      child: Row(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          const Icon(Icons.timer, color: Colors.white54, size: 18),
-                          const SizedBox(width: 8),
-                          Text("UNLOCKS IN: ${_getTimeLeft(activeDepositUnlockTime)}", style: const TextStyle(color: Colors.white70, fontSize: 14, fontWeight: FontWeight.bold, letterSpacing: 1)),
-                        ],
-                      ),
-                    )
+                        ? (_isDepositMatured
+                            ? ElevatedButton(
+                                style: ElevatedButton.styleFrom(
+                                  backgroundColor: const Color(0xFF39FF14),
+                                  foregroundColor: Colors.black,
+                                  shape: RoundedRectangleBorder(
+                                    borderRadius: BorderRadius.circular(6),
+                                  ),
+                                ),
+                                onPressed: _claimMaturedDeposit,
+                                child: const Text(
+                                  "CLAIM MATURED DEPOSIT",
+                                  style: TextStyle(
+                                    fontSize: 14,
+                                    fontWeight: FontWeight.w900,
+                                    letterSpacing: 1,
+                                  ),
+                                ),
+                              )
+                            : Container(
+                                decoration: BoxDecoration(
+                                  color: const Color(0xFF1E1E1E),
+                                  border: Border.all(color: Colors.white24),
+                                  borderRadius: BorderRadius.circular(6),
+                                ),
+                                alignment: Alignment.center,
+                                child: Row(
+                                  mainAxisAlignment: MainAxisAlignment.center,
+                                  children: [
+                                    const Icon(Icons.timer, color: Colors.white54, size: 18),
+                                    const SizedBox(width: 8),
+                                    Text(
+                                      "UNLOCKS IN: ${_getTimeLeft(activeDepositUnlockTime)}",
+                                      style: const TextStyle(
+                                        color: Colors.white70,
+                                        fontSize: 14,
+                                        fontWeight: FontWeight.bold,
+                                        letterSpacing: 1,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ))
                         : ElevatedButton(
                       style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF39FF14), foregroundColor: Colors.black, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(6))),
                       onPressed: _depositAmount > 0 ? () => _showConfirmationDialog(_depositAmount, _durations[_selectedDurationIndex], interestEarned, totalPayout) : null,
