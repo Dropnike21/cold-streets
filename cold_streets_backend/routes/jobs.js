@@ -774,7 +774,6 @@ router.post('/mastery/activate', async (req, res) => {
             throw new ActionError(503, 'Mastery rule no longer matches its reconciled shape.');
         }
 
-        let rewardContext = null;
         let fingerprint;
         if (active.kind === 'item') {
             const itemRes = await client.query(
@@ -798,7 +797,6 @@ router.post('/mastery/activate', async (req, res) => {
                 '|category=' + String(item.category) +
                 '|sub=' + String(item.sub_category)
             );
-            rewardContext = item;
         } else {
             fingerprint = sha256(
                 'job=' + jobId +
