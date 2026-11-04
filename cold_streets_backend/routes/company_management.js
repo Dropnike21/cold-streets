@@ -133,16 +133,75 @@ router.post('/funds', async (req, res) => {
 
 // --- 2. EDIT COMPANY PROFILE ---
 router.post('/update-profile', async (req, res) => {
-    const { company_id, user_id, company_name, logo_url } = req.body;
+    let client, transaction = false;
     try {
-        const roleRes = await pool.query("SELECT position_role FROM company_employees WHERE company_id=$1 AND employee_id=$2", [company_id, user_id]);
-        if (roleRes.rows.length === 0 || roleRes.rows[0].position_role !== 'Director') return res.status(403).json({ error: "Only the Director can do this." });
-        if (!company_name || company_name.trim().length < 3) return res.status(400).json({ error: "Invalid company name." });
+        const actor = actorId(req);
+        const companyId = req.managedCompanyId;
+        const idempotencyKey = requireIdempotencyKey(req);
+        const companyName = typeof req.body?.company_name === 'string'
+            ? req.body.company_name.trim()
+            : '';
+        const logoUrl = req.body?.logo_url == null
+            ? null
+            : String(req.body.logo_url).trim();
 
-        await pool.query(`UPDATE player_companies SET company_name = $1, logo_url = $2 WHERE company_id = $3`, [company_name.trim(), logo_url, company_id]);
-        await pool.query(`INSERT INTO company_logs (company_id, log_type, log_text) VALUES ($1, 'MAIN', 'Company profile updated.')`, [company_id]);
-        res.json({ success: true, message: "Profile updated successfully." });
-    } catch (err) { res.status(500).json({ error: "Server error updating profile." }); }
+        if (companyName.length < 3 || companyName.length > 80) {
+            throw new ActionError(400, 'Company name must contain 3–80 characters.');
+        }
+        if (logoUrl !== null && logoUrl.length > 1000) {
+            throw new ActionError(400, 'Company logo URL is too long.');
+        }
+
+        client = await pool.connect();
+        await client.query('BEGIN');
+        transaction = true;
+        const player = await client.query(
+            'SELECT user_id FROM users WHERE user_id = $1 FOR UPDATE', [actor]
+        );
+        if (player.rowCount !== 1) throw new ActionError(404, 'Player not found.');
+        const idem = await beginIdempotent(
+            client, actor, 'company.update_profile', idempotencyKey,
+            { companyId, companyName, logoUrl }
+        );
+        if (idem.replay) {
+            await client.query('COMMIT');
+            transaction = false;
+            return res.status(idem.status).json(idem.response);
+        }
+
+        const updated = await client.query(
+            `UPDATE player_companies
+                SET company_name = $1, logo_url = $2
+              WHERE company_id = $3 AND owner_id = $4
+              RETURNING company_id, company_name, logo_url`,
+            [companyName, logoUrl, companyId, actor]
+        );
+        if (updated.rowCount !== 1) {
+            throw new ActionError(403, 'Company ownership changed.');
+        }
+        await client.query(
+            "INSERT INTO company_logs (company_id, log_type, log_text) VALUES ($1, 'MAIN', 'Company profile updated.')",
+            [companyId]
+        );
+
+        const response = {
+            success: true,
+            message: 'Profile updated successfully.',
+            company: updated.rows[0]
+        };
+        await completeIdempotent(client, idem, 200, response);
+        await client.query('COMMIT');
+        transaction = false;
+        return res.json(response);
+    } catch (err) {
+        if (transaction) {
+            try { await client.query('ROLLBACK'); }
+            catch (rollback) { console.error('Company profile rollback:', rollback); }
+        }
+        return sendActionError(res, err, 'Company profile update failed:');
+    } finally {
+        if (client) client.release();
+    }
 });
 
 // --- 3. MANAGE EMPLOYEES (UPDATE, FIRE, TRAIN) ---
