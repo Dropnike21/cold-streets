@@ -2,6 +2,7 @@
 const express = require('express');
 const pool = require('../db');
 const router = express.Router();
+const { actorId, integer } = require('../utils/economyValidation');
 
 // --- IMPORT YOUR SPECIFIC CRIME MODULES HERE ---
 const searchingEngine = require('./crimes/searching_engine');
@@ -36,12 +37,15 @@ router.post('/execute', async (req, res) => {
     const client = await pool.connect();
 
     try {
-        const { user_id, crime_id } = req.body;
+        const userId = actorId(req);
+        const crimeId = integer(req.body?.crime_id, {
+            field: 'Crime ID', min: 1n, max: 9223372036854775807n
+        }).toString();
 
         await client.query('BEGIN');
 
         // 1. Universal Checks (Valid User, Jail, Hospital, HP)
-        const userCheck = await client.query("SELECT * FROM users WHERE user_id = $1 FOR UPDATE", [user_id]);
+        const userCheck = await client.query("SELECT * FROM users WHERE user_id = $1 FOR UPDATE", [userId]);
         if (userCheck.rows.length === 0) {
             await client.query('ROLLBACK');
             return res.status(404).json({ error: "Ghost account." });
@@ -63,7 +67,7 @@ router.post('/execute', async (req, res) => {
         }
 
         // 2. Fetch the Crime
-        const crimeCheck = await client.query("SELECT * FROM crimes_master WHERE id = $1", [crime_id]);
+        const crimeCheck = await client.query("SELECT * FROM crimes_master WHERE id = $1", [crimeId]);
         if (crimeCheck.rows.length === 0) {
             await client.query('ROLLBACK');
             return res.status(404).json({ error: "Crime not found." });
