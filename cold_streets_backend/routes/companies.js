@@ -19,94 +19,14 @@ router.get('/blueprints', async (req, res) => {
     }
 });
 
-// --- 2. INCORPORATE: lock wallet; require a fully seeded blueprint.
-router.post('/incorporate', async (req, res) => {
-    let client, transaction = false;
-    try {
-        const actor = actorId(req);
-        const idempotencyKey = requireIdempotencyKey(req);
-        const typeId = integer(req.body?.type_id, { field: 'Company blueprint ID', min: 1n, max: 9223372036854775807n }).toString();
-        const name = typeof req.body?.company_name === 'string' ? req.body.company_name.trim() : '';
-        if (name.length < 3 || name.length > 80) throw new ActionError(400, 'Company name must contain 3–80 characters.');
-
-        client = await pool.connect();
-        await client.query('BEGIN');
-        transaction = true;
-
-        const user = await client.query(
-            'SELECT dirty_cash, current_job_id FROM users WHERE user_id = $1 FOR UPDATE', [actor]
-        );
-        if (user.rowCount !== 1) throw new ActionError(404, 'Player not found.');
-        const idem = await beginIdempotent(
-            client, actor, 'company.incorporate', idempotencyKey,
-            { typeId, companyName: name }
-        );
-        if (idem.replay) {
-            await client.query('COMMIT');
-            transaction = false;
-            return res.status(idem.status).json(idem.response);
-        }
-        if (user.rows[0].current_job_id !== null) {
-            throw new ActionError(409, 'Resign from your City Job before incorporating.');
-        }
-        const employed = await client.query(
-            "SELECT 1 FROM company_employees WHERE employee_id = $1 AND is_npc = false AND position_role <> 'Director' LIMIT 1",
-            [actor]
-        );
-        if (employed.rowCount) throw new ActionError(409, 'You are employed at another company.');
-
-        const blueprint = await client.query(
-            'SELECT setup_cost FROM company_types_master WHERE type_id = $1', [typeId]
-        );
-        if (blueprint.rowCount !== 1) throw new ActionError(400, 'Invalid company blueprint.');
-        const cost = dbInteger(blueprint.rows[0].setup_cost, { field: 'Company setup cost' });
-        if (cost < 0n) throw new Error('Invalid company catalog price.');
-
-        // This relationship data was NOT in the recovered 18-table dump.
-        // Never charge setup fees for a company with zero known products.
-        const products = await client.query(
-            'SELECT 1 FROM blueprint_products WHERE type_id = $1 LIMIT 1', [typeId]
-        );
-        if (!products.rowCount) throw new ActionError(503, 'Company product blueprint is not yet restored.');
-
-        if (dbInteger(user.rows[0].dirty_cash) < cost) {
-            throw new ActionError(409, 'Insufficient Dirty Cash.');
-        }
-        const debit = await client.query(
-            'UPDATE users SET dirty_cash = dirty_cash - $1::numeric WHERE user_id = $2 AND dirty_cash >= $1::numeric RETURNING user_id',
-            [cost.toString(), actor]
-        );
-        if (debit.rowCount !== 1) throw new ActionError(409, 'Wallet changed before incorporation.');
-
-        const company = await client.query(
-            'INSERT INTO player_companies (owner_id, type_id, company_name) VALUES ($1, $2, $3) RETURNING company_id',
-            [actor, typeId, name]
-        );
-        const companyId = company.rows[0].company_id;
-        await client.query(
-            "INSERT INTO company_employees (company_id, employee_id, is_npc, position_role, daily_salary) VALUES ($1, $2, false, 'Director', 0)",
-            [companyId, actor]
-        );
-        await client.query(
-            `INSERT INTO company_inventory (company_id, product_id, is_input, quantity, price_per_unit, daily_volume)
-             SELECT $1, product_id, is_input, 0, 0, 0 FROM blueprint_products WHERE type_id = $2`,
-            [companyId, typeId]
-        );
-        const response = {
-            success: true,
-            message: name + ' incorporated.',
-            company_id: companyId
-        };
-        await completeIdempotent(client, idem, 200, response);
-        await client.query('COMMIT');
-        transaction = false;
-        return res.json(response);
-    } catch (err) {
-        if (transaction) {
-            try { await client.query('ROLLBACK'); } catch (rollback) { console.error('Incorporation rollback:', rollback); }
-        }
-        return sendActionError(res, err, 'Company incorporation failed:');
-    } finally { if (client) client.release(); }
+// --- 2. INCORPORATE ---
+// The recovered company type catalog exists, but blueprint_products is empty
+// and the legacy products_json text belongs to a different/incomplete generation.
+// Do not charge setup cost or create a partially configured company.
+router.post('/incorporate', (_req, res) => {
+    return res.status(503).json({
+        error: 'Company incorporation is paused pending canonical product blueprint recovery.'
+    });
 });
 
 // --- 3. GET PLAYER'S OWNED COMPANIES ---
@@ -293,9 +213,15 @@ router.post('/apply', async (req, res) => {
         const inserted = await client.query(
             `INSERT INTO company_applicants (company_id, user_id, pitch_message)
              VALUES ($1, $2, $3)
+             ON CONFLICT (company_id, user_id)
+                 WHERE status = 'Pending'
+             DO NOTHING
              RETURNING application_id`,
             [companyId, userId, pitch]
         );
+        if (inserted.rowCount !== 1) {
+            throw new ActionError(409, 'Your previous application is still pending.');
+        }
         const response = {
             success: true,
             message: 'Application submitted to the Director.',

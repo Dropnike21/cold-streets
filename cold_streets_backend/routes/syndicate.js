@@ -407,7 +407,7 @@ router.post('/unassign_job', async (req, res) => {
         await client.query(
             `UPDATE user_crew
                 SET assignment = 'UNASSIGNED',
-                    current_domain = 'IDLE'
+                    current_domain = 'CRIMES'
               WHERE user_id = $1 AND crew_id = $2`,
             [userId, crewId]
         );
