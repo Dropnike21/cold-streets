@@ -83,3 +83,15 @@ The Flutter branch now also contains client adaptations for stacked backend PR #
 - These screens rely on backend PR #10 and its parent chain (#9 → #8 → #7 → #6 → #4).
 
 Do not merge these client changes to main independently. No Flutter analyze/build/gameplay test was run during this source pass.
+
+## Crime / daily City Job / University entitlement companion — 2026-11-05
+
+The Flutter branch now also contains client adaptation for stacked backend PR #11:
+
+- City Jobs exposes **CLAIM DAILY PAY** when `daily_job_claimed_at` is absent or at least 24 hours old.
+- A successful claim synchronizes returned Clean Cash and refreshes Job Points plus the payout timestamp.
+- Crime POSTs already receive automatic UUIDv4 `Idempotency-Key` headers through `game_http.dart`; PR #11 now persists/replays those randomized outcomes on the backend.
+- Medical Revive may now be authorized by the source-backed University `revive_ally` unlock as well as City Hospital mastery; the mobile request shape is unchanged.
+- University perks/unlocks remain source data unless a backend consumer explicitly implements their semantics.
+
+These changes depend on backend PR #11 and its full parent chain. Do not merge this Flutter branch independently. No Flutter build/analyze/gameplay test was run.
