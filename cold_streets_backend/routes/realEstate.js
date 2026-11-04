@@ -6,6 +6,7 @@ router.param('userId', requireOwnedPlayerParam);
 
 const db = require('../db');
 const { ActionError, integer, dbInteger, actorId, sendActionError } = require('../utils/economyValidation');
+const { requireIdempotencyKey, beginIdempotent, completeIdempotent } = require('../utils/idempotency');
 
 // Legacy catalog stores upgrades as restricted object-like TEXT, not JSON.
 // Extract only a whitelisted upgrade key's server-defined integer cost.
@@ -75,6 +76,7 @@ router.post('/buy-agency', async (req, res) => {
     let client, transaction = false;
     try {
         const userId = actorId(req);
+        const idempotencyKey = requireIdempotencyKey(req);
         const propertyTypeId = integer(req.body?.propertyTypeId, { field: 'Property ID', min: 1n, max: 9223372036854775807n }).toString();
         if (typeof req.body?.autoMoveIn !== 'boolean') {
             throw new ActionError(400, 'autoMoveIn must be a boolean.');
@@ -87,6 +89,15 @@ router.post('/buy-agency', async (req, res) => {
             'SELECT clean_cash FROM users WHERE user_id = $1 FOR UPDATE', [userId]
         );
         if (user.rowCount !== 1) throw new ActionError(404, 'Player not found.');
+        const idem = await beginIdempotent(
+            client, userId, 'property.buy_agency', idempotencyKey,
+            { propertyTypeId, autoMoveIn: req.body.autoMoveIn }
+        );
+        if (idem.replay) {
+            await client.query('COMMIT');
+            transaction = false;
+            return res.status(idem.status).json(idem.response);
+        }
 
         const item = await client.query('SELECT cost FROM properties_master WHERE id = $1', [propertyTypeId]);
         if (item.rowCount !== 1) throw new ActionError(400, 'Property not listed by agency.');
@@ -119,9 +130,15 @@ router.post('/buy-agency', async (req, res) => {
             "INSERT INTO property_transactions (instance_id, seller_id, buyer_id, transaction_type, amount) VALUES ($1, 0, $2, 'AGENCY_BUY', $3::numeric)",
             [instanceId, userId, cost.toString()]
         );
+        const response = {
+            message: 'Property purchased successfully.',
+            newInstanceId: instanceId,
+            status: finalStatus
+        };
+        await completeIdempotent(client, idem, 200, response);
         await client.query('COMMIT');
         transaction = false;
-        return res.json({ message: 'Property purchased successfully.', newInstanceId: instanceId, status: finalStatus });
+        return res.json(response);
     } catch (error) {
         if (transaction) {
             try { await client.query('ROLLBACK'); } catch (rollback) { console.error('Agency rollback failed:', rollback); }
@@ -137,6 +154,7 @@ router.post('/upgrade', async (req, res) => {
     let client, transaction = false;
     try {
         const userId = actorId(req);
+        const idempotencyKey = requireIdempotencyKey(req);
         const instanceId = integer(req.body?.instanceId, { field: 'Property instance ID', min: 1n, max: 9223372036854775807n }).toString();
         const upgradeId = req.body?.upgradeId;
 
@@ -145,6 +163,15 @@ router.post('/upgrade', async (req, res) => {
         transaction = true;
         const user = await client.query('SELECT clean_cash FROM users WHERE user_id = $1 FOR UPDATE', [userId]);
         if (user.rowCount !== 1) throw new ActionError(404, 'Player not found.');
+        const idem = await beginIdempotent(
+            client, userId, 'property.upgrade', idempotencyKey,
+            { instanceId, upgradeId }
+        );
+        if (idem.replay) {
+            await client.query('COMMIT');
+            transaction = false;
+            return res.status(idem.status).json(idem.response);
+        }
 
         const property = await client.query(
             `SELECT op.upgrades, pm.available_upgrades_json
@@ -172,9 +199,14 @@ router.post('/upgrade', async (req, res) => {
             'UPDATE owned_properties SET upgrades = upgrades || jsonb_build_object($1::text, true) WHERE id = $2 AND user_id = $3',
             [upgradeId, instanceId, userId]
         );
+        const response = {
+            message: 'Upgrade installed successfully.',
+            charged: cost.toString()
+        };
+        await completeIdempotent(client, idem, 200, response);
         await client.query('COMMIT');
         transaction = false;
-        return res.json({ message: 'Upgrade installed successfully.', charged: cost.toString() });
+        return res.json(response);
     } catch (error) {
         if (transaction) {
             try { await client.query('ROLLBACK'); } catch (rollback) { console.error('Upgrade rollback failed:', rollback); }
@@ -211,12 +243,21 @@ router.post('/move-in', async (req, res) => {
     let client, transaction = false;
     try {
         const userId = actorId(req);
+        const idempotencyKey = requireIdempotencyKey(req);
         const instanceId = integer(req.body?.instanceId, { field: 'Property instance ID', min: 1n, max: 9223372036854775807n }).toString();
         client = await db.connect();
         await client.query('BEGIN');
         transaction = true;
         const user = await client.query('SELECT user_id FROM users WHERE user_id = $1 FOR UPDATE', [userId]);
         if (user.rowCount !== 1) throw new ActionError(404, 'Player not found.');
+        const idem = await beginIdempotent(
+            client, userId, 'property.move_in', idempotencyKey, { instanceId }
+        );
+        if (idem.replay) {
+            await client.query('COMMIT');
+            transaction = false;
+            return res.status(idem.status).json(idem.response);
+        }
         const property = await client.query(
             'SELECT id FROM owned_properties WHERE id = $1 AND user_id = $2 FOR UPDATE',
             [instanceId, userId]
@@ -231,9 +272,11 @@ router.post('/move-in', async (req, res) => {
             [instanceId, userId]
         );
         if (moved.rowCount !== 1) throw new Error('Property could not be activated.');
+        const response = { message: 'Moved into new residence.' };
+        await completeIdempotent(client, idem, 200, response);
         await client.query('COMMIT');
         transaction = false;
-        return res.json({ message: 'Moved into new residence.' });
+        return res.json(response);
     } catch (error) {
         if (transaction) {
             try { await client.query('ROLLBACK'); } catch (rollback) { console.error('Move-in rollback failed:', rollback); }
