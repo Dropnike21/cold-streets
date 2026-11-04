@@ -45,7 +45,7 @@ The current Node backend is not deployed; **\`API_BASE_URL\` must point to an ac
 ## Hard blockers before merge or test
 
 1. **Regenerate and commit \`pubspec.lock\`** with the new direct dependency. The old lockfile remains stale; do not claim the Flutter build is reproducible until resolved.
-2. Starter gym #1 has now been restored along with all 80 gyms. Complete recovery of the remaining **1,576 unimported catalog rows**. Backend PR #4 still fails closed if starter gym #1 is missing; the catalog check itself is now satisfiable.
+2. **All 2,093 source catalog records have now been imported** into Supabase. The backend PR #4 still checks for starter gym #1 (present, verified). The remaining database gap is the **unrecovered original DDL and missing normalized company seed/relationship tables**. This is not the same as complete game schema compatibility.
 3. Configure and securely deploy the Node backend for staging and give Flutter its HTTPS \`API_BASE_URL\`.
 4. Finalize the Supabase Auth provider's email confirmation and redirect URLs for iOS, Android, Windows and web. Deep-link callback settings and platform URI registration are **not** implemented here.
 5. Audit all remaining resource permission boundaries, client-controlled economy amounts, and idempotency. A signed token is not authorization to mutate arbitrary companies, properties, inventories or users.
