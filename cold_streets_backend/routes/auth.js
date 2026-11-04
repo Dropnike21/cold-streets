@@ -56,6 +56,13 @@ router.post('/session', requireSupabaseIdentity, async (req, res) => {
                 throw Object.assign(new Error('Street name must contain 3-24 letters, numbers or underscores.'), { status: 400 });
             }
 
+            // Prevent partially configured players from being created while
+            // the recovered starter catalog is still missing from Supabase.
+            const starterGym = await client.query('SELECT 1 FROM gyms_master WHERE gym_id = 1');
+            if (starterGym.rowCount !== 1) {
+                throw Object.assign(new Error('Game catalogs are still being restored; new player creation is unavailable.'), { status: 503 });
+            }
+
             // Use only a verified subject + email. Do NOT auto-link older
             // password accounts solely by matching email; that requires
             // an explicit, verified migration/recovery process.
@@ -74,14 +81,12 @@ router.post('/session', requireSupabaseIdentity, async (req, res) => {
                 await client.query('INSERT INTO user_properties (user_id) VALUES ($1)', [userId]);
                 await client.query('INSERT INTO user_crime_records (user_id) VALUES ($1)', [userId]);
                 await client.query('INSERT INTO user_statistics (user_id) VALUES ($1)', [userId]);
-                await client.query('INSERT INTO user_gym_stats (user_id) VALUES ($1)', [userId]);
-
-                // Gym #1 may not have been imported yet. Do not invent an ID
-                // or disable the FK merely to provide an initial gym.
                 await client.query(
-                    `INSERT INTO user_owned_gyms (user_id, gym_id)
-                     SELECT $1, gym_id FROM gyms_master WHERE gym_id = 1
-                     ON CONFLICT DO NOTHING`,
+                    'INSERT INTO user_gym_stats (user_id, active_gym_id, gym_exp) VALUES ($1, 1, 0)',
+                    [userId]
+                );
+                await client.query(
+                    'INSERT INTO user_owned_gyms (user_id, gym_id) VALUES ($1, 1)',
                     [userId]
                 );
                 await client.query(
