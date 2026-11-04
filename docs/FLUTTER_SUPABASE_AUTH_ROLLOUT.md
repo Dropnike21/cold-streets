@@ -52,3 +52,10 @@ The current Node backend is not deployed; **\`API_BASE_URL\` must point to an ac
 6. When gameplay testing is authorized, run \`flutter analyze\`, \`flutter test\`, backend security tests, and account-isolation tests, including valid/invalid token, first signup, email confirmation, logout, session expiration, and profile conflicts.
 
 **No Supabase database schema, authentication settings, user accounts, or production API deployments were changed in this branch.**
+
+## Economic request replay safety addendum — 2026-11-05
+
+- `lib/services/game_http.dart` now attaches a cryptographically generated UUIDv4 `Idempotency-Key` to every POST unless the caller supplied one explicitly. This supports the persistent server ledger introduced by the later banking/economy security branch.
+- A future automatic retry must reuse the original key; generating a fresh key represents a new action.
+- `lib/views/bank_view.dart` now exposes **CLAIM MATURED DEPOSIT** after the active deposit unlock timestamp and calls `POST /bank/claim-deposit`. Balance responses are parsed safely whether PostgreSQL numeric values arrive as JSON numbers or strings.
+- These client changes require the backend idempotency/banking follow-up branch (planned stacked PR after #7). PR #5 alone does not provide the new bank endpoint or replay ledger.
