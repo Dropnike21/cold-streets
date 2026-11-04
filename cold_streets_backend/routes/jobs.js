@@ -529,14 +529,6 @@ router.post('/promote', async (req, res) => {
             return res.status(idem.status).json(idem.response);
         }
 
-        const currentJobId = player.rows[0].current_job_id;
-        if (currentJobId === null || String(currentJobId) !== jobId) {
-            throw new ActionError(
-                409,
-                'Rejoin this City Job before spending its frozen Job Incentives.'
-            );
-        }
-
         const jobDataRes = await client.query(
             `SELECT current_rank, incentive_balance
                FROM user_job_data
@@ -753,6 +745,14 @@ router.post('/mastery/activate', async (req, res) => {
             await client.query('COMMIT');
             transaction = false;
             return res.status(idem.status).json(idem.response);
+        }
+
+        const currentJobId = player.rows[0].current_job_id;
+        if (currentJobId === null || String(currentJobId) !== jobId) {
+            throw new ActionError(
+                409,
+                'Rejoin this City Job before spending its frozen Job Incentives.'
+            );
         }
 
         const jobDataRes = await client.query(
