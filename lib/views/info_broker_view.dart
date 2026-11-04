@@ -149,7 +149,14 @@ class _InfoBrokerViewState extends State<InfoBrokerView> {
                                 body: jsonEncode({"user_id": widget.userData['user_id'], "ad_text": adController.text}));
                             final data = jsonDecode(res.body);
                             _showSnackbar(data['message'] ?? data['error'], isError: res.statusCode != 200);
-                            if (res.statusCode == 200) await _fetchAllData();
+                            if (res.statusCode == 200) {
+                              if (data['clean_cash'] != null) {
+                                final updated = Map<String, dynamic>.from(widget.userData);
+                                updated['clean_cash'] = data['clean_cash'];
+                                widget.onStateChange(updated);
+                              }
+                              await _fetchAllData();
+                            }
                           } catch (e) { _showSnackbar("Network Error", isError: true); }
                           finally { setState(() => _isProcessing = false); }
                         }
@@ -222,7 +229,14 @@ class _InfoBrokerViewState extends State<InfoBrokerView> {
                               body: jsonEncode({"user_id": widget.userData['user_id'], "target_username": targetController.text, "reward_cash": rewardController.text, "is_anonymous": isAnonymous}));
                           final data = jsonDecode(res.body);
                           _showSnackbar(data['message'] ?? data['error'], isError: res.statusCode != 200);
-                          if (res.statusCode == 200) await _fetchAllData();
+                          if (res.statusCode == 200) {
+                            if (data['dirty_cash'] != null) {
+                              final updated = Map<String, dynamic>.from(widget.userData);
+                              updated['dirty_cash'] = data['dirty_cash'];
+                              widget.onStateChange(updated);
+                            }
+                            await _fetchAllData();
+                          }
                         } catch (e) { _showSnackbar("Network Error", isError: true); }
                         finally { setState(() => _isProcessing = false); }
                       },
