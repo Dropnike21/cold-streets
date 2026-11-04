@@ -122,9 +122,14 @@ class _UniversityViewState extends State<UniversityView> {
       if (res.statusCode == 200) {
         _showSnackbar(data['message']);
 
-        // Sync stats instantly to HUD if graduation provided the updated user object
-        if (endpoint == 'graduate' && data['user'] != null && widget.onStateChange != null) {
-          widget.onStateChange!(data['user']);
+        if (widget.onStateChange != null) {
+          if (data['user'] != null) {
+            widget.onStateChange!(Map<String, dynamic>.from(data['user']));
+          } else if (data['dirty_cash'] != null) {
+            final updated = Map<String, dynamic>.from(widget.userData);
+            updated['dirty_cash'] = data['dirty_cash'];
+            widget.onStateChange!(updated);
+          }
         }
       } else {
         _showSnackbar(data['error'] ?? "Action failed.", isError: true);
