@@ -71,3 +71,15 @@ The Flutter branch now also contains client adaptations for stacked backend PR #
 - The existing POST adapter supplies `Idempotency-Key`; these screens depend on backend PR #9 plus its parent #8.
 
 Do not merge these client changes to main without reconciling the backend stack. No Flutter build/analyze/gameplay test was run during this source pass.
+
+## Jail / University / Info Broker companion — 2026-11-05
+
+The Flutter branch now also contains client adaptations for stacked backend PR #10:
+
+- Jail uses the server-returned Clean Cash, Influence, Nerve, Heat and jail timer values after bail/breakout.
+- University updates the HUD with server-returned tuition/graduation state.
+- University course cards render normalized `rewards_jsonb.stats` and show the source-defined perk/unlock counts rather than the nonexistent legacy `reward_stat_1/reward_amount_1` fields.
+- Info Broker updates the HUD with the authoritative Clean Cash after a classified purchase and Dirty Cash after bounty placement.
+- These screens rely on backend PR #10 and its parent chain (#9 → #8 → #7 → #6 → #4).
+
+Do not merge these client changes to main independently. No Flutter analyze/build/gameplay test was run during this source pass.
