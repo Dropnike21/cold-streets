@@ -529,6 +529,14 @@ router.post('/promote', async (req, res) => {
             return res.status(idem.status).json(idem.response);
         }
 
+        const currentJobId = player.rows[0].current_job_id;
+        if (currentJobId === null || String(currentJobId) !== jobId) {
+            throw new ActionError(
+                409,
+                'Rejoin this City Job before spending its frozen Job Incentives.'
+            );
+        }
+
         const jobDataRes = await client.query(
             `SELECT current_rank, incentive_balance
                FROM user_job_data
@@ -729,7 +737,7 @@ router.post('/mastery/activate', async (req, res) => {
         // Global economic lock order: authenticated player -> idempotency ->
         // job balance -> catalog/reward row.
         const player = await client.query(
-            'SELECT user_id FROM users WHERE user_id = $1 FOR UPDATE',
+            'SELECT current_job_id FROM users WHERE user_id = $1 FOR UPDATE',
             [userId]
         );
         if (player.rowCount !== 1) throw new ActionError(404, 'Player not found.');
