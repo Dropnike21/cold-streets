@@ -1,45 +1,47 @@
 const express = require('express');
 const pool = require('../db');
 const router = express.Router();
+const { ActionError, integer, actorId, sendActionError } = require('../utils/economyValidation');
+const { requireIdempotencyKey, beginIdempotent, completeIdempotent } = require('../utils/idempotency');
+
+const REVIVE_ENERGY_COST = 75;
 
 // ==========================================
 // 1. GET PATIENT LIST (WITH PAGINATION)
 // ==========================================
 router.get('/patients', async (req, res) => {
     try {
-        const limit = parseInt(req.query.limit) || 20;
-        const page = parseInt(req.query.page) || 1;
-        const offset = (page - 1) * limit;
-
-        // 1. Get the total count for pagination math
-        const countRes = await pool.query('SELECT COUNT(*) FROM users WHERE hospital_expires_at > NOW()');
-        const totalPatients = parseInt(countRes.rows[0].count);
-        const totalPages = Math.ceil(totalPatients / limit);
-
-        // 2. Fetch the actual patients (Sorted by longest time remaining first)
-        const patientsQuery = `
-            SELECT
-                user_id, username, level, hospital_expires_at, last_active_at,
-                state_reason AS reason -- 👉 Pulling the unified reason
-            FROM users
-            WHERE hospital_expires_at > NOW()
-            ORDER BY hospital_expires_at DESC
-            LIMIT $1 OFFSET $2
-        `;
-        const patientsRes = await pool.query(patientsQuery, [limit, offset]);
-
-        res.json({
+        const rawLimit = Number(req.query.limit ?? 20);
+        const rawPage = Number(req.query.page ?? 1);
+        if (!Number.isInteger(rawLimit) || rawLimit < 1 || rawLimit > 100 ||
+            !Number.isInteger(rawPage) || rawPage < 1) {
+            throw new ActionError(400, 'Invalid pagination.');
+        }
+        const offset = (rawPage - 1) * rawLimit;
+        const countRes = await pool.query(
+            'SELECT COUNT(*) FROM users WHERE hospital_expires_at > NOW()'
+        );
+        const totalPatients = Number(countRes.rows[0].count);
+        const patientsRes = await pool.query(
+            `SELECT user_id, username, level, hospital_expires_at,
+                    last_active_at, state_reason AS reason
+               FROM users
+              WHERE hospital_expires_at > NOW()
+              ORDER BY hospital_expires_at DESC
+              LIMIT $1 OFFSET $2`,
+            [rawLimit, offset]
+        );
+        return res.json({
             success: true,
             patients: patientsRes.rows,
             pagination: {
-                current_page: page,
-                total_pages: totalPages == 0 ? 1 : totalPages,
+                current_page: rawPage,
+                total_pages: Math.max(1, Math.ceil(totalPatients / rawLimit)),
                 total_patients: totalPatients
             }
         });
     } catch (err) {
-        console.error("Fetch Patients Error:", err.message);
-        res.status(500).json({ error: "Failed to load hospital manifest." });
+        return sendActionError(res, err, 'Hospital patient list failed:');
     }
 });
 
@@ -47,48 +49,102 @@ router.get('/patients', async (req, res) => {
 // 2. USE REVIVE SKILL (PLACEHOLDER)
 // ==========================================
 router.post('/revive', async (req, res) => {
-    const client = await pool.connect();
-
+    let client, transaction = false;
     try {
-        const { user_id, target_id } = req.body;
+        const actor = actorId(req);
+        const idempotencyKey = requireIdempotencyKey(req);
+        const target = integer(req.body?.target_id, {
+            field: 'Target player ID', min: 1n, max: 9223372036854775807n
+        }).toString();
+        if (target === actor) {
+            throw new ActionError(400, 'Medical Revive can only be used on another player.');
+        }
+
+        client = await pool.connect();
         await client.query('BEGIN');
+        transaction = true;
 
-        // 1. GATEKEEPER: Check if actor actually has the Medical Mastery (Job Rank 5)
-        const jobRes = await client.query(`
-            SELECT is_mastered FROM user_job_data
-            WHERE user_id = $1 AND job_id = 1
-        `, [user_id]);
+        // Cross-player actions lock all affected users in deterministic ID order
+        // before the idempotency row to avoid A->B / B->A deadlocks.
+        const users = await client.query(
+            `SELECT user_id, username, energy, hospital_expires_at
+               FROM users
+              WHERE user_id = ANY($1::bigint[])
+              ORDER BY user_id
+              FOR UPDATE`,
+            [[actor, target]]
+        );
+        if (users.rowCount !== 2) throw new ActionError(404, 'Player or patient not found.');
+        const actorRow = users.rows.find(row => String(row.user_id) === actor);
+        const targetRow = users.rows.find(row => String(row.user_id) === target);
+        if (!actorRow || !targetRow) throw new Error('Hospital lock set is incomplete.');
 
-        if (jobRes.rows.length === 0 || !jobRes.rows[0].is_mastered) {
-            throw new Error("You do not have the necessary medical licenses to perform a revival.");
+        const idem = await beginIdempotent(
+            client, actor, 'hospital.revive', idempotencyKey, { target }
+        );
+        if (idem.replay) {
+            await client.query('COMMIT');
+            transaction = false;
+            return res.status(idem.status).json(idem.response);
         }
 
-        // 2. Verify Target is actually in the hospital
-        const targetRes = await client.query("SELECT username, hospital_expires_at FROM users WHERE user_id = $1 FOR UPDATE", [target_id]);
-        if (targetRes.rows.length === 0) throw new Error("Patient not found.");
-        const target = targetRes.rows[0];
-
-        if (!target.hospital_expires_at || new Date(target.hospital_expires_at) <= new Date()) {
-            throw new Error("This patient has already been discharged.");
+        const mastery = await client.query(
+            `SELECT 1
+               FROM user_job_data ujd
+               JOIN jobs_master jm ON jm.job_id = ujd.job_id
+              WHERE ujd.user_id = $1
+                AND jm.job_name = 'City Hospital'
+                AND ujd.is_mastered = true
+              LIMIT 1`,
+            [actor]
+        );
+        if (!mastery.rowCount) {
+            throw new ActionError(403, 'City Hospital mastery is required to perform Medical Revive.');
+        }
+        if (!targetRow.hospital_expires_at ||
+            new Date(targetRow.hospital_expires_at).getTime() <= Date.now()) {
+            throw new ActionError(409, 'This patient has already been discharged.');
         }
 
-        // 3. EXECUTE REVIVAL (Clear timer, grant 20 HP)
-        await client.query(`
-            UPDATE users
-            SET hospital_expires_at = NULL, hp = GREATEST(hp, 20), state_reason = NULL
-            WHERE user_id = $1
-        `, [target_id]);
+        const energy = await client.query(
+            `UPDATE users
+                SET energy = energy - $1
+              WHERE user_id = $2 AND energy >= $1
+              RETURNING energy`,
+            [REVIVE_ENERGY_COST, actor]
+        );
+        if (energy.rowCount !== 1) {
+            throw new ActionError(409, 'Medical Revive requires 75 Energy.');
+        }
+        const revived = await client.query(
+            `UPDATE users
+                SET hospital_expires_at = NULL,
+                    hp = GREATEST(hp, 20),
+                    state_reason = NULL
+              WHERE user_id = $1
+                AND hospital_expires_at > NOW()
+              RETURNING username, hp`,
+            [target]
+        );
+        if (revived.rowCount !== 1) {
+            throw new ActionError(409, 'Patient state changed before revival.');
+        }
 
+        const response = {
+            success: true,
+            message: 'Successfully revived ' + revived.rows[0].username + '.',
+            energy: energy.rows[0].energy
+        };
+        await completeIdempotent(client, idem, 200, response);
         await client.query('COMMIT');
-
-        res.json({ success: true, message: `You successfully revived ${target.username}. They have been discharged.` });
-
+        transaction = false;
+        return res.json(response);
     } catch (err) {
-        await client.query('ROLLBACK');
-        res.status(400).json({ error: err.message || "Revival procedure failed." });
-    } finally {
-        client.release();
-    }
+        if (transaction) {
+            try { await client.query('ROLLBACK'); } catch (rollback) { console.error('Hospital revive rollback:', rollback); }
+        }
+        return sendActionError(res, err, 'Hospital revive failed:');
+    } finally { if (client) client.release(); }
 });
 
 module.exports = router;
