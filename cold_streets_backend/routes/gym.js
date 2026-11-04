@@ -114,15 +114,24 @@ router.post('/purchase', async (req, res) => {
 
 // --- 3. ACTIVATE AN OWNED GYM ---
 router.post('/activate', async (req, res) => {
-    const { user_id, gym_id } = req.body;
     try {
-        const ownedCheck = await pool.query('SELECT 1 FROM user_owned_gyms WHERE user_id = $1 AND gym_id = $2', [user_id, gym_id]);
-        if (ownedCheck.rows.length === 0) return res.status(403).json({ error: "You do not own this gym." });
-
-        await pool.query('UPDATE user_gym_stats SET active_gym_id = $1 WHERE user_id = $2', [gym_id, user_id]);
-        res.json({ success: true, message: "Active gym switched." });
+        const userId = actorId(req);
+        const gymId = integer(req.body?.gym_id, {
+            field: 'Gym ID', min: 1n, max: 9223372036854775807n
+        }).toString();
+        const owned = await pool.query(
+            'SELECT 1 FROM user_owned_gyms WHERE user_id = $1 AND gym_id = $2',
+            [userId, gymId]
+        );
+        if (!owned.rowCount) throw new ActionError(403, 'You do not own this gym.');
+        const updated = await pool.query(
+            'UPDATE user_gym_stats SET active_gym_id = $1 WHERE user_id = $2 RETURNING active_gym_id',
+            [gymId, userId]
+        );
+        if (updated.rowCount !== 1) throw new Error('Gym statistics row missing.');
+        return res.json({ success: true, message: 'Active gym switched.', active_gym_id: updated.rows[0].active_gym_id });
     } catch (err) {
-        res.status(500).json({ error: "Server error switching gyms." });
+        return sendActionError(res, err, 'Gym activation failed:');
     }
 });
 
