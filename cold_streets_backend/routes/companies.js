@@ -6,6 +6,7 @@ router.param('user_id', requireOwnedPlayerParam);
 
 const pool = require('../db');
 const { ActionError, integer, dbInteger, actorId, sendActionError } = require('../utils/economyValidation');
+const { requireIdempotencyKey, beginIdempotent, completeIdempotent } = require('../utils/idempotency');
 
 // --- 1. GET ALL COMPANY BLUEPRINTS ---
 router.get('/blueprints', async (req, res) => {
@@ -23,6 +24,7 @@ router.post('/incorporate', async (req, res) => {
     let client, transaction = false;
     try {
         const actor = actorId(req);
+        const idempotencyKey = requireIdempotencyKey(req);
         const typeId = integer(req.body?.type_id, { field: 'Company blueprint ID', min: 1n, max: 9223372036854775807n }).toString();
         const name = typeof req.body?.company_name === 'string' ? req.body.company_name.trim() : '';
         if (name.length < 3 || name.length > 80) throw new ActionError(400, 'Company name must contain 3–80 characters.');
@@ -35,6 +37,15 @@ router.post('/incorporate', async (req, res) => {
             'SELECT dirty_cash, current_job_id FROM users WHERE user_id = $1 FOR UPDATE', [actor]
         );
         if (user.rowCount !== 1) throw new ActionError(404, 'Player not found.');
+        const idem = await beginIdempotent(
+            client, actor, 'company.incorporate', idempotencyKey,
+            { typeId, companyName: name }
+        );
+        if (idem.replay) {
+            await client.query('COMMIT');
+            transaction = false;
+            return res.status(idem.status).json(idem.response);
+        }
         if (user.rows[0].current_job_id !== null) {
             throw new ActionError(409, 'Resign from your City Job before incorporating.');
         }
@@ -81,9 +92,15 @@ router.post('/incorporate', async (req, res) => {
              SELECT $1, product_id, is_input, 0, 0, 0 FROM blueprint_products WHERE type_id = $2`,
             [companyId, typeId]
         );
+        const response = {
+            success: true,
+            message: name + ' incorporated.',
+            company_id: companyId
+        };
+        await completeIdempotent(client, idem, 200, response);
         await client.query('COMMIT');
         transaction = false;
-        return res.json({ success: true, message: name + ' incorporated.', company_id: companyId });
+        return res.json(response);
     } catch (err) {
         if (transaction) {
             try { await client.query('ROLLBACK'); } catch (rollback) { console.error('Incorporation rollback:', rollback); }
