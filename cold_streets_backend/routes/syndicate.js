@@ -5,6 +5,9 @@ const { requireOwnedPlayerParam } = require('../middleware/playerIdentity');
 router.param('user_id', requireOwnedPlayerParam);
 
 const pool = require('../db');
+const { randomInt } = require('node:crypto');
+const { ActionError, integer, dbInteger, actorId, sendActionError } = require('../utils/economyValidation');
+const { requireIdempotencyKey, beginIdempotent, completeIdempotent } = require('../utils/idempotency');
 
 // --- CONSTANTS & POOLS ---
 const firstNames = [
@@ -47,17 +50,31 @@ const TIER_DATA = {
     5: { name: "Lieutenant", minLvl: 50, curRange: [50000, 100000], maxRange: [500000, 1000000], barMax: 1000000 }
 };
 
-const getRnd = (min, max) => Math.floor(Math.random() * (max - min + 1)) + min;
+const getRnd = (min, max) => randomInt(min, max + 1);
 
-async function generateUniqueName(userId) {
-    let isUnique = false;
-    let newName = "";
-    while (!isUnique) {
-        newName = `${firstNames[getRnd(0, firstNames.length - 1)]} ${lastNames[getRnd(0, lastNames.length - 1)]}`;
-        const check = await pool.query('SELECT 1 FROM user_crew WHERE user_id = $1 AND npc_name = $2', [userId, newName]);
-        if (check.rows.length === 0) isUnique = true;
+async function generateUniqueName(client, userId, reserved = new Set()) {
+    for (let attempts = 0; attempts < 100; attempts++) {
+        const name = firstNames[getRnd(0, firstNames.length - 1)] + ' ' +
+            lastNames[getRnd(0, lastNames.length - 1)];
+        if (reserved.has(name)) continue;
+        const check = await client.query(
+            `SELECT 1
+               FROM user_crew
+              WHERE user_id = $1 AND npc_name = $2
+             UNION ALL
+             SELECT 1
+               FROM recruitment_offers
+              WHERE user_id = $1 AND npc_name = $2
+                AND claimed_at IS NULL AND expires_at > NOW()
+             LIMIT 1`,
+            [userId, name]
+        );
+        if (!check.rowCount) {
+            reserved.add(name);
+            return name;
+        }
     }
-    return newName;
+    throw new Error('Could not generate a unique recruit name.');
 }
 
 // --- ROUTES ---
@@ -104,301 +121,341 @@ router.get('/crimes_board/:user_id', async (req, res) => {
     }
 });
 // --- HELPER: CHECK DOMAIN TRANSFER ---
-async function handleDomainTransfer(client, crew_id, new_domain) {
+async function handleDomainTransfer(client, userId, crewId, newDomain) {
     const crewRes = await client.query(
-        "SELECT current_domain, last_transfer_at FROM user_crew WHERE crew_id = $1",
-        [crew_id]
+        `SELECT current_domain, last_transfer_at
+           FROM user_crew
+          WHERE crew_id = $1 AND user_id = $2
+          FOR UPDATE`,
+        [crewId, userId]
     );
+    if (crewRes.rowCount !== 1) throw new ActionError(404, 'Crew member not found.');
     const crew = crewRes.rows[0];
+    const currentDomain = crew.current_domain || 'IDLE';
 
-    // If switching domains (e.g., CRIMES -> COMPANY)
-    if (crew.current_domain !== 'IDLE' && crew.current_domain !== new_domain) {
-        const lastMove = new Date(crew.last_transfer_at);
-        const now = new Date();
-        const diffMinutes = (now - lastMove) / (1000 * 60);
-
+    if (currentDomain !== 'IDLE' && currentDomain !== newDomain &&
+        crew.last_transfer_at) {
+        const diffMinutes = (Date.now() - new Date(crew.last_transfer_at).getTime()) / 60000;
         if (diffMinutes < 5) {
-            throw new Error(`Transfer Cooldown: This recruit needs ${Math.ceil(5 - diffMinutes)} more minutes to prep for a new assignment.`);
+            throw new ActionError(
+                409,
+                'Transfer cooldown active for ' + Math.ceil(5 - diffMinutes) + ' more minute(s).'
+            );
         }
     }
-
-    // Update domain and timestamp only if it's a new domain
-    if (crew.current_domain !== new_domain) {
+    if (currentDomain !== newDomain) {
         await client.query(
-            "UPDATE user_crew SET current_domain = $1, last_transfer_at = NOW() WHERE crew_id = $2",
-            [new_domain, crew_id]
+            'UPDATE user_crew SET current_domain = $1, last_transfer_at = NOW() WHERE crew_id = $2 AND user_id = $3',
+            [newDomain, crewId, userId]
         );
     }
 }
 
-// --- UPDATED ASSIGN JOB (CRIMES) ---
+// --- ASSIGN CREW TO A CRIME ---
 router.post('/assign_job', async (req, res) => {
-    const client = await pool.connect();
+    let client, transaction = false;
     try {
-        const { user_id, crew_id, crime_title } = req.body;
+        const userId = actorId(req);
+        const crewId = integer(req.body?.crew_id, {
+            field: 'Crew ID', min: 1n, max: 9223372036854775807n
+        }).toString();
+        const crimeTitle = typeof req.body?.crime_title === 'string'
+            ? req.body.crime_title.trim()
+            : '';
+        if (!crimeTitle || crimeTitle.length > 200) {
+            throw new ActionError(400, 'Invalid crime assignment.');
+        }
+
+        client = await pool.connect();
         await client.query('BEGIN');
-
-        // Logic check for Domain Transfer
-        await handleDomainTransfer(client, crew_id, 'CRIMES');
-
-        await client.query("UPDATE user_crew SET assignment = 'UNASSIGNED' WHERE user_id = $1 AND assignment = $2", [user_id, crime_title]);
-        await client.query("UPDATE user_crew SET assignment = $1 WHERE user_id = $2 AND crew_id = $3", [crime_title, user_id, crew_id]);
-
-        await client.query('COMMIT');
-        res.json({ success: true, message: `Assigned to ${crime_title}.` });
-    } catch (err) {
-        await client.query('ROLLBACK');
-        res.status(403).json({ error: err.message || "Server error assigning job." });
-    } finally {
-        client.release();
-    }
-});
-
-// --- NEW: ASSIGN TO COMPANY (Call this from companies.js or add here) ---
-router.post('/assign_company', async (req, res) => {
-    const client = await pool.connect();
-    try {
-        const { user_id, crew_id, company_id, position_role } = req.body;
-        await client.query('BEGIN');
-
-        await handleDomainTransfer(client, crew_id, 'COMPANY');
-
-        await client.query(
-            "UPDATE user_crew SET assignment = $1 WHERE user_id = $2 AND crew_id = $3",
-            [`Company: ${company_id} (${position_role})`, user_id, crew_id]
+        transaction = true;
+        const player = await client.query(
+            'SELECT user_id FROM users WHERE user_id = $1 FOR UPDATE', [userId]
         );
+        if (player.rowCount !== 1) throw new ActionError(404, 'Player not found.');
+        const crime = await client.query(
+            'SELECT title FROM crimes_master WHERE title = $1', [crimeTitle]
+        );
+        if (crime.rowCount !== 1) throw new ActionError(400, 'Crime is not in the catalog.');
 
+        await handleDomainTransfer(client, userId, crewId, 'CRIMES');
+        await client.query(
+            "UPDATE user_crew SET assignment = 'UNASSIGNED' WHERE user_id = $1 AND assignment = $2 AND crew_id <> $3",
+            [userId, crimeTitle, crewId]
+        );
+        const assigned = await client.query(
+            'UPDATE user_crew SET assignment = $1 WHERE user_id = $2 AND crew_id = $3 RETURNING crew_id',
+            [crimeTitle, userId, crewId]
+        );
+        if (assigned.rowCount !== 1) throw new ActionError(404, 'Crew member not found.');
         await client.query('COMMIT');
-        res.json({ success: true, message: "NPC assigned to company." });
+        transaction = false;
+        return res.json({ success: true, message: 'Crew assignment updated.' });
     } catch (err) {
-        await client.query('ROLLBACK');
-        res.status(403).json({ error: err.message });
-    } finally {
-        client.release();
-    }
+        if (transaction) {
+            try { await client.query('ROLLBACK'); } catch (rollback) { console.error('Crew assignment rollback:', rollback); }
+        }
+        return sendActionError(res, err, 'Crew assignment failed:');
+    } finally { if (client) client.release(); }
 });
+
+// Company NPC positions cannot be authorized safely until the canonical company
+// position catalog is reconciled. Do not accept a client-supplied position role.
+router.post('/assign_company', (_req, res) =>
+    res.status(503).json({ error: 'Company crew assignment is paused pending company position catalog reconciliation.' })
+);
 
 router.post('/unassign_job', async (req, res) => {
     try {
-        const { user_id, crew_id } = req.body;
-        await pool.query("UPDATE user_crew SET assignment = 'UNASSIGNED' WHERE user_id = $1 AND crew_id = $2", [user_id, crew_id]);
-        res.json({ success: true, message: "Crew member recalled." });
+        const userId = actorId(req);
+        const crewId = integer(req.body?.crew_id, {
+            field: 'Crew ID', min: 1n, max: 9223372036854775807n
+        }).toString();
+        const result = await pool.query(
+            `UPDATE user_crew
+                SET assignment = 'UNASSIGNED', current_domain = 'IDLE'
+              WHERE user_id = $1 AND crew_id = $2
+              RETURNING crew_id`,
+            [userId, crewId]
+        );
+        if (result.rowCount !== 1) throw new ActionError(404, 'Crew member not found.');
+        return res.json({ success: true, message: 'Crew member recalled.' });
     } catch (err) {
-        res.status(500).json({ error: "Server error" });
+        return sendActionError(res, err, 'Crew recall failed:');
     }
 });
 
 router.post('/generate_board', async (req, res) => {
-    const client = await pool.connect();
+    let client, transaction = false;
     try {
-        const { user_id } = req.body;
-
+        const userId = actorId(req);
+        const idempotencyKey = requireIdempotencyKey(req);
+        client = await pool.connect();
         await client.query('BEGIN');
+        transaction = true;
 
-        // V1.2 FIX: Cooldown Check! If active, board refuses to generate.
-        const cdCheck = await client.query("SELECT EXTRACT(EPOCH FROM (expires_at - NOW())) AS seconds_left FROM user_cooldowns WHERE user_id = $1 AND type = 'recruitment' AND expires_at > NOW()", [user_id]);
-        if (cdCheck.rows.length > 0) {
-            await client.query('ROLLBACK');
-            return res.status(403).json({
-                error: "Scouts are on cooldown.",
-                seconds_left: cdCheck.rows[0].seconds_left
+        const userRes = await client.query(
+            'SELECT level, recruit_refreshes FROM users WHERE user_id = $1 FOR UPDATE',
+            [userId]
+        );
+        if (userRes.rowCount !== 1) throw new ActionError(404, 'Player not found.');
+        const idem = await beginIdempotent(
+            client, userId, 'syndicate.generate_board', idempotencyKey, {}
+        );
+        if (idem.replay) {
+            await client.query('COMMIT');
+            transaction = false;
+            return res.status(idem.status).json(idem.response);
+        }
+
+        const cdCheck = await client.query(
+            `SELECT EXTRACT(EPOCH FROM (expires_at - NOW())) AS seconds_left
+               FROM user_cooldowns
+              WHERE user_id = $1 AND type = 'recruitment' AND expires_at > NOW()
+              ORDER BY expires_at DESC LIMIT 1`,
+            [userId]
+        );
+        if (cdCheck.rowCount) {
+            throw new ActionError(409, 'Scouts are on cooldown.');
+        }
+
+        const level = Number(userRes.rows[0].level);
+        const refreshes = Number(userRes.rows[0].recruit_refreshes);
+        if (!Number.isSafeInteger(level) || level < 1) throw new Error('Invalid player level.');
+        if (!Number.isSafeInteger(refreshes) || refreshes <= 0) {
+            throw new ActionError(409, 'No recruitment refreshes remaining.');
+        }
+
+        await client.query(
+            'UPDATE users SET recruit_refreshes = recruit_refreshes - 1 WHERE user_id = $1',
+            [userId]
+        );
+        await client.query(
+            'DELETE FROM recruitment_offers WHERE user_id = $1 AND claimed_at IS NULL',
+            [userId]
+        );
+
+        const reserved = new Set();
+        const board = [];
+        for (let i = 0; i < 5; i++) {
+            let tier = 1;
+            const roll = getRnd(1, 100);
+            if (level >= 50 && roll >= 99) tier = 5;
+            else if (level >= 35 && roll >= 90) tier = 4;
+            else if (level >= 25 && roll >= 70) tier = 3;
+            else if (level >= 15 && roll >= 40) tier = 2;
+
+            const meta = TIER_DATA[tier];
+            const name = await generateUniqueName(client, userId, reserved);
+            const stats = {};
+            for (const stat of ['str','def','dex','spd','acu','ops','pre','res']) {
+                stats[stat] = {
+                    cur: getRnd(meta.curRange[0], meta.curRange[1]),
+                    max: getRnd(meta.maxRange[0], meta.maxRange[1])
+                };
+            }
+            const totalCur = Object.values(stats).reduce((sum, stat) => sum + stat.cur, 0);
+            const price = BigInt(totalCur) * 50n * BigInt(tier);
+
+            const inserted = await client.query(
+                `INSERT INTO recruitment_offers (
+                    user_id, npc_name, tier, price,
+                    cur_str,max_str,cur_def,max_def,cur_dex,max_dex,cur_spd,max_spd,
+                    cur_acu,max_acu,cur_ops,max_ops,cur_pre,max_pre,cur_res,max_res
+                 ) VALUES (
+                    $1,$2,$3,$4::numeric,
+                    $5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20
+                 )
+                 RETURNING offer_id, expires_at`,
+                [
+                    userId,name,tier,price.toString(),
+                    stats.str.cur,stats.str.max,stats.def.cur,stats.def.max,
+                    stats.dex.cur,stats.dex.max,stats.spd.cur,stats.spd.max,
+                    stats.acu.cur,stats.acu.max,stats.ops.cur,stats.ops.max,
+                    stats.pre.cur,stats.pre.max,stats.res.cur,stats.res.max
+                ]
+            );
+            board.push({
+                offer_id: inserted.rows[0].offer_id,
+                expires_at: inserted.rows[0].expires_at,
+                name,
+                tier: meta.name,
+                tier_id: tier,
+                barMax: meta.barMax,
+                stats,
+                price: Number(price)
             });
         }
 
-        const userRes = await client.query('SELECT level, recruit_refreshes FROM users WHERE user_id = $1 FOR UPDATE', [user_id]);
-        if (userRes.rows.length === 0) throw new Error("User not found");
-
-        let { level, recruit_refreshes } = userRes.rows[0];
-
-        if (recruit_refreshes <= 0) {
-            await client.query('ROLLBACK');
-            return res.status(403).json({ error: "No refreshes remaining today." });
-        }
-
-        await client.query('UPDATE users SET recruit_refreshes = recruit_refreshes - 1 WHERE user_id = $1', [user_id]);
-        const refreshesLeft = recruit_refreshes - 1;
-
-        let board = [];
-        for (let i = 0; i < 5; i++) {
-            let selectedTier = 1;
-            const roll = getRnd(1, 100);
-
-            if (level >= 50 && roll >= 99) selectedTier = 5;
-            else if (level >= 35 && roll >= 90) selectedTier = 4;
-            else if (level >= 25 && roll >= 70) selectedTier = 3;
-            else if (level >= 15 && roll >= 40) selectedTier = 2;
-            else selectedTier = 1;
-
-            const tierMeta = TIER_DATA[selectedTier];
-            const name = await generateUniqueName(user_id);
-
-            const stats = {
-                str: { cur: getRnd(tierMeta.curRange[0], tierMeta.curRange[1]), max: getRnd(tierMeta.maxRange[0], tierMeta.maxRange[1]) },
-                def: { cur: getRnd(tierMeta.curRange[0], tierMeta.curRange[1]), max: getRnd(tierMeta.maxRange[0], tierMeta.maxRange[1]) },
-                dex: { cur: getRnd(tierMeta.curRange[0], tierMeta.curRange[1]), max: getRnd(tierMeta.maxRange[0], tierMeta.maxRange[1]) },
-                spd: { cur: getRnd(tierMeta.curRange[0], tierMeta.curRange[1]), max: getRnd(tierMeta.maxRange[0], tierMeta.maxRange[1]) },
-                acu: { cur: getRnd(tierMeta.curRange[0], tierMeta.curRange[1]), max: getRnd(tierMeta.maxRange[0], tierMeta.maxRange[1]) },
-                ops: { cur: getRnd(tierMeta.curRange[0], tierMeta.curRange[1]), max: getRnd(tierMeta.maxRange[0], tierMeta.maxRange[1]) },
-                pre: { cur: getRnd(tierMeta.curRange[0], tierMeta.curRange[1]), max: getRnd(tierMeta.maxRange[0], tierMeta.maxRange[1]) },
-                res: { cur: getRnd(tierMeta.curRange[0], tierMeta.curRange[1]), max: getRnd(tierMeta.maxRange[0], tierMeta.maxRange[1]) }
-            };
-
-            const totalCur = stats.str.cur + stats.def.cur + stats.dex.cur + stats.spd.cur + stats.acu.cur + stats.ops.cur + stats.pre.cur + stats.res.cur;
-
-            // V1.2 FIX: Price Multiplier adjusted to reflect the massive stat boosts
-            const price = (totalCur * 50) * selectedTier;
-
-            board.push({ name, tier: tierMeta.name, barMax: tierMeta.barMax, stats, price });
-        }
-
+        const response = {
+            success: true,
+            board,
+            refreshesLeft: refreshes - 1
+        };
+        await completeIdempotent(client, idem, 200, response);
         await client.query('COMMIT');
-        res.json({ success: true, board, refreshesLeft });
+        transaction = false;
+        return res.json(response);
     } catch (err) {
-        await client.query('ROLLBACK');
-        res.status(500).json({ error: err.message || "Server error" });
-    } finally {
-        client.release();
-    }
+        if (transaction) {
+            try { await client.query('ROLLBACK'); } catch (rollback) { console.error('Recruit board rollback:', rollback); }
+        }
+        return sendActionError(res, err, 'Recruit board generation failed:');
+    } finally { if (client) client.release(); }
 });
 
 router.post('/hire', async (req, res) => {
-    const client = await pool.connect();
+    let client, transaction = false;
     try {
-        const { user_id, recruit } = req.body;
+        const userId = actorId(req);
+        const idempotencyKey = requireIdempotencyKey(req);
+        const offerId = req.body?.offer_id;
+        if (typeof offerId !== 'string' ||
+            !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(offerId)) {
+            throw new ActionError(400, 'Invalid recruitment offer.');
+        }
 
+        client = await pool.connect();
         await client.query('BEGIN');
-
-        // Verify they aren't already on a cooldown
-        const cdCheck = await client.query("SELECT * FROM user_cooldowns WHERE user_id = $1 AND type = 'recruitment' AND expires_at > NOW()", [user_id]);
-        if (cdCheck.rows.length > 0) {
-            throw new Error("Scouts are on cooldown.");
+        transaction = true;
+        const player = await client.query(
+            'SELECT dirty_cash FROM users WHERE user_id = $1 FOR UPDATE', [userId]
+        );
+        if (player.rowCount !== 1) throw new ActionError(404, 'Player not found.');
+        const idem = await beginIdempotent(
+            client, userId, 'syndicate.hire', idempotencyKey, { offerId }
+        );
+        if (idem.replay) {
+            await client.query('COMMIT');
+            transaction = false;
+            return res.status(idem.status).json(idem.response);
         }
 
-        const userCheck = await client.query('SELECT dirty_cash FROM users WHERE user_id = $1 FOR UPDATE', [user_id]);
-        if (userCheck.rows[0].dirty_cash < recruit.price) {
-            throw new Error("Insufficient dirty cash.");
+        const cooldown = await client.query(
+            `SELECT 1 FROM user_cooldowns
+              WHERE user_id = $1 AND type = 'recruitment' AND expires_at > NOW()
+              LIMIT 1`,
+            [userId]
+        );
+        if (cooldown.rowCount) throw new ActionError(409, 'Scouts are on cooldown.');
+
+        const offerRes = await client.query(
+            `SELECT *
+               FROM recruitment_offers
+              WHERE offer_id = $1::uuid AND user_id = $2
+                AND claimed_at IS NULL AND expires_at > NOW()
+              FOR UPDATE`,
+            [offerId, userId]
+        );
+        if (offerRes.rowCount !== 1) {
+            throw new ActionError(409, 'Recruitment offer expired or unavailable.');
         }
+        const offer = offerRes.rows[0];
+        const price = dbInteger(offer.price, { field: 'Recruit price' });
+        if (dbInteger(player.rows[0].dirty_cash) < price) {
+            throw new ActionError(409, 'Insufficient Dirty Cash.');
+        }
+        const debit = await client.query(
+            'UPDATE users SET dirty_cash = dirty_cash - $1::numeric WHERE user_id = $2 AND dirty_cash >= $1::numeric RETURNING dirty_cash',
+            [price.toString(), userId]
+        );
+        if (debit.rowCount !== 1) throw new ActionError(409, 'Wallet changed before recruitment.');
 
-        await client.query('UPDATE users SET dirty_cash = dirty_cash - $1 WHERE user_id = $2', [recruit.price, user_id]);
+        const crew = await client.query(
+            `INSERT INTO user_crew (
+                user_id,npc_name,tier,
+                cur_str,max_str,cur_def,max_def,cur_dex,max_dex,cur_spd,max_spd,
+                cur_acu,max_acu,cur_ops,max_ops,cur_pre,max_pre,cur_res,max_res
+             ) VALUES (
+                $1,$2,$3,
+                $4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19
+             )
+             RETURNING crew_id`,
+            [
+                userId,offer.npc_name,offer.tier,
+                offer.cur_str,offer.max_str,offer.cur_def,offer.max_def,
+                offer.cur_dex,offer.max_dex,offer.cur_spd,offer.max_spd,
+                offer.cur_acu,offer.max_acu,offer.cur_ops,offer.max_ops,
+                offer.cur_pre,offer.max_pre,offer.cur_res,offer.max_res
+            ]
+        );
+        await client.query(
+            'UPDATE recruitment_offers SET claimed_at = NOW() WHERE offer_id = $1::uuid AND user_id = $2',
+            [offerId, userId]
+        );
+        await client.query(
+            `INSERT INTO user_cooldowns (user_id,type,expires_at,reason)
+             VALUES ($1,'recruitment',NOW() + INTERVAL '2 minutes',
+                     'Your scouts are out looking for new prospects.')`,
+            [userId]
+        );
 
-        await client.query(`
-            INSERT INTO user_crew (
-                user_id, npc_name, tier,
-                cur_str, max_str, cur_def, max_def, cur_dex, max_dex, cur_spd, max_spd,
-                cur_acu, max_acu, cur_ops, max_ops, cur_pre, max_pre, cur_res, max_res
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
-        `, [
-            user_id, recruit.name, recruit.tier,
-            recruit.stats.str.cur, recruit.stats.str.max,
-            recruit.stats.def.cur, recruit.stats.def.max,
-            recruit.stats.dex.cur, recruit.stats.dex.max,
-            recruit.stats.spd.cur, recruit.stats.spd.max,
-            recruit.stats.acu.cur, recruit.stats.acu.max,
-            recruit.stats.ops.cur, recruit.stats.ops.max,
-            recruit.stats.pre.cur, recruit.stats.pre.max,
-            recruit.stats.res.cur, recruit.stats.res.max
-        ]);
-
-        // V1.2 FIX: Inject the 2-Minute Cooldown immediately after hiring
-        await client.query("INSERT INTO user_cooldowns (user_id, type, expires_at, reason) VALUES ($1, 'recruitment', NOW() + INTERVAL '2 minutes', 'Your scouts are out looking for new prospects.')", [user_id]);
-
+        const response = {
+            success: true,
+            message: offer.npc_name + ' joined the crew.',
+            crew_id: crew.rows[0].crew_id,
+            dirty_cash: debit.rows[0].dirty_cash
+        };
+        await completeIdempotent(client, idem, 200, response);
         await client.query('COMMIT');
-        res.json({ success: true, message: `${recruit.name} joined the crew.` });
+        transaction = false;
+        return res.json(response);
     } catch (err) {
-        await client.query('ROLLBACK');
-        res.status(400).json({ error: err.message || "Server error" });
-    } finally {
-        client.release();
-    }
+        if (transaction) {
+            try { await client.query('ROLLBACK'); } catch (rollback) { console.error('Recruit hire rollback:', rollback); }
+        }
+        return sendActionError(res, err, 'Recruit hire failed:');
+    } finally { if (client) client.release(); }
 });
 
-router.post('/complete_job', async (req, res) => {
-    const client = await pool.connect();
-    try {
-        const { user_id, crew_id, payout } = req.body;
-
-        await client.query('BEGIN');
-
-        const crewCheck = await client.query('SELECT * FROM user_crew WHERE crew_id = $1 AND user_id = $2 FOR UPDATE', [crew_id, user_id]);
-        if (crewCheck.rows.length === 0) {
-            throw new Error("Crew member not found or recalled.");
-        }
-        const crew = crewCheck.rows[0];
-
-        const crimeData = await client.query('SELECT tool_req FROM crimes_master WHERE title = $1', [crew.assignment]);
-        if (crimeData.rows.length > 0) {
-            const toolReq = crimeData.rows[0].tool_req;
-            if (toolReq && toolReq !== 'NONE') {
-                const invCheck = await client.query(`
-                    SELECT 1 FROM user_inventory ui
-                    JOIN items_master im ON ui.item_id = im.item_id
-                    WHERE ui.user_id = $1 AND UPPER(im.name) = UPPER($2) AND ui.quantity > 0
-                `, [user_id, toolReq]);
-
-                if (invCheck.rows.length === 0) {
-                    throw new Error(`Job Failed. Missing required tool: ${toolReq}`);
-                }
-            }
-        }
-
-        const riskRoll = getRnd(1, 100);
-        if (riskRoll === 1) {
-            const disasterReasons = [
-                "was hospitalized during a brutal ambush and had to leave the life behind.",
-                "got caught by a federal sting. They are locked up for good.",
-                "got spooked by the heat, took their cut, and vanished from the city."
-            ];
-            const reason = disasterReasons[getRnd(0, disasterReasons.length - 1)];
-
-            await client.query('DELETE FROM user_crew WHERE crew_id = $1', [crew_id]);
-            await client.query('COMMIT');
-
-            return res.json({
-                success: true,
-                status: 'lost',
-                message: `${crew.npc_name.toUpperCase()} ${reason}`
-            });
-        }
-
-        await client.query('UPDATE users SET dirty_cash = dirty_cash + $1 WHERE user_id = $2', [payout, user_id]);
-
-        let statGains = { str: 0, def: 0, dex: 0, spd: 0, acu: 0, ops: 0, pre: 0, res: 0 };
-        const allStats = ['str', 'def', 'dex', 'spd', 'acu', 'ops', 'pre', 'res'];
-        const shuffledStats = allStats.sort(() => 0.5 - Math.random());
-
-        statGains[shuffledStats[0]] = 1;
-        statGains[shuffledStats[1]] = 1;
-
-        const updateQuery = `
-            UPDATE user_crew
-            SET cur_str = LEAST(cur_str + $1, max_str), cur_def = LEAST(cur_def + $2, max_def),
-                cur_dex = LEAST(cur_dex + $3, max_dex), cur_spd = LEAST(cur_spd + $4, max_spd),
-                cur_acu = LEAST(cur_acu + $5, max_acu), cur_ops = LEAST(cur_ops + $6, max_ops),
-                cur_pre = LEAST(cur_pre + $7, max_pre), cur_res = LEAST(cur_res + $8, max_res)
-            WHERE crew_id = $9 AND user_id = $10
-            RETURNING cur_str, cur_def, cur_dex, cur_spd, cur_acu, cur_ops, cur_pre, cur_res
-        `;
-        const updatedCrew = await client.query(updateQuery, [
-            statGains.str, statGains.def, statGains.dex, statGains.spd,
-            statGains.acu, statGains.ops, statGains.pre, statGains.res,
-            crew_id, user_id
-        ]);
-
-        await client.query('COMMIT');
-        res.json({
-            success: true,
-            status: 'success',
-            message: `${crew.npc_name} finished the job and returned $${payout}.`,
-            newStats: updatedCrew.rows[0]
-        });
-
-    } catch (err) {
-        await client.query('ROLLBACK');
-        console.error("Job Completion Error:", err);
-        res.status(400).json({ error: err.message || "Failed to process job completion." });
-    } finally {
-        client.release();
-    }
+router.post('/complete_job', (_req, res) => {
+    // The recovered design does not define an authoritative server completion
+    // timer. The former endpoint accepted payout directly from the client,
+    // allowing unlimited currency minting. Leave settlement disabled until a
+    // server-side assignment schedule is specified and persisted.
+    return res.status(503).json({
+        error: 'Crew crime settlement is paused pending server-side completion scheduling.'
+    });
 });
 
 module.exports = router;
