@@ -9,6 +9,7 @@ const {
 const {
     requireIdempotencyKey, beginIdempotent, completeIdempotent
 } = require('../utils/idempotency');
+const { hasEducationUnlock } = require('../utils/educationEntitlements');
 
 const JAIL_FLAT_RATE = '0.01';
 const JAIL_MULTIPLIER = '0.0001';
@@ -186,6 +187,24 @@ router.post('/breakout', async (req, res) => {
         }
 
         const selfEscape = actor === target;
+        if (!selfEscape) {
+            const actorIsJailed = actorRow.jail_expires_at &&
+                new Date(actorRow.jail_expires_at).getTime() > Date.now();
+            if (actorIsJailed) {
+                throw new ActionError(
+                    409,
+                    'Only a free player can attempt to bust another inmate out.'
+                );
+            }
+            const canBustOut = await hasEducationUnlock(client, actor, 'jail_bust_out');
+            if (!canBustOut) {
+                throw new ActionError(
+                    403,
+                    'Juris Doctor education is required to bust another inmate out.'
+                );
+            }
+        }
+
         const success = randomInt(1, 101) <= BREAKOUT_SUCCESS_PERCENT;
         let response;
 
