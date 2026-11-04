@@ -59,3 +59,15 @@ The current Node backend is not deployed; **\`API_BASE_URL\` must point to an ac
 - A future automatic retry must reuse the original key; generating a fresh key represents a new action.
 - `lib/views/bank_view.dart` now exposes **CLAIM MATURED DEPOSIT** after the active deposit unlock timestamp and calls `POST /bank/claim-deposit`. Balance responses are parsed safely whether PostgreSQL numeric values arrive as JSON numbers or strings.
 - These client changes require the backend idempotency/banking follow-up branch (planned stacked PR after #7). PR #5 alone does not provide the new bank endpoint or replay ledger.
+
+## Remaining-economy API companion — 2026-11-05
+
+The Flutter branch now also contains client adaptations for stacked backend PR #9:
+
+- Syndicate recruitment sends only the server-issued `offer_id`; recruit price/stats are no longer echoed back as authority. The UI uses the server-returned Dirty Cash balance after hire.
+- City Job interviews retain the server-issued `interview_id` and submit that UUID with exactly five selected answers.
+- City Job promotion eligibility checks all four recovered requirement fields (`acu`, `ops`, `pre`, `res`) instead of the removed `stat_req_value` assumption.
+- Hospital revive synchronizes the actor's returned Energy after the source-backed 75-Energy Medical Revive.
+- The existing POST adapter supplies `Idempotency-Key`; these screens depend on backend PR #9 plus its parent #8.
+
+Do not merge these client changes to main without reconciling the backend stack. No Flutter build/analyze/gameplay test was run during this source pass.
