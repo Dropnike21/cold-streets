@@ -109,8 +109,61 @@ router.get('/:user_id', async (req, res) => {
                LEFT JOIN crimes_master cm
                  ON cm.id = cca.crime_id
                LEFT JOIN items_master tool
-                 ON tool.item_id = CASE
-                      WHEN cm.requirements_json->>'tool_req' ~ '^[0-9]+
+                 ON tool.item_id::text = cm.requirements_json->>'tool_req'
+              WHERE uc.user_id = $1
+              ORDER BY (
+                uc.max_str + uc.max_def + uc.max_dex + uc.max_spd +
+                uc.max_acu + uc.max_ops + uc.max_pre + uc.max_res
+              ) DESC`,
+            [user_id]
+        );
+        const crewRows = crew.rows.map(row => ({
+            ...row,
+            assignment: row.scheduled_crime_title || 'UNASSIGNED'
+        }));
+
+        const tools = await pool.query(
+            `SELECT UPPER(im.name) AS name
+               FROM user_inventory ui
+               JOIN items_master im ON ui.item_id = im.item_id
+              WHERE ui.user_id = $1 AND ui.quantity > 0`,
+            [user_id]
+        );
+        const ownedTools = tools.rows.map(t => t.name);
+
+        return res.json({
+            success: true,
+            crew: crewRows,
+            refreshesLeft,
+            ownedTools
+        });
+    } catch (err) {
+        return sendActionError(res, err, 'GET crew failed:');
+    }
+});
+
+router.get('/crimes_board/:user_id', async (_req, res) => {
+    try {
+        const rules = await listCrewCrimeRules(pool);
+        const crimes = rules.map(rule => ({
+            id: rule.crimeId,
+            category: rule.category,
+            sub_category: rule.subCategory,
+            title: rule.title,
+            automation_seconds: rule.automationSeconds,
+            min_payout: rule.minCash,
+            max_payout: rule.maxCash,
+            average_payout: rule.averageCash,
+            casualty_ppm: rule.casualtyPpm,
+            tool_item_id: rule.toolItemId,
+            tool_req: rule.toolName
+        }));
+        return res.json({ success: true, crimes });
+    } catch (err) {
+        return sendActionError(res, err, 'Crew crime board failed:');
+    }
+});
+
 // --- HELPER: CHECK DOMAIN TRANSFER ---
 async function handleDomainTransfer(client, userId, crewId, newDomain) {
     const crewRes = await client.query(
