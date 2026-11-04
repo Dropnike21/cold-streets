@@ -102,8 +102,20 @@ class _JailViewState extends State<JailView> {
 
       _showSnackbar(data['message'] ?? data['error'], isError: res.statusCode != 200);
 
-      if (data['user'] != null && widget.onStateChange != null) {
-        widget.onStateChange!(data['user']);
+      if (widget.onStateChange != null) {
+        if (data['user'] != null) {
+          widget.onStateChange!(Map<String, dynamic>.from(data['user']));
+        } else if (res.statusCode == 200) {
+          final updated = Map<String, dynamic>.from(widget.userData);
+          if (data['clean_cash'] != null) updated['clean_cash'] = data['clean_cash'];
+          if (data['influence'] != null) updated['influence'] = data['influence'];
+          if (data['nerve'] != null) updated['nerve'] = data['nerve'];
+          if (data['heat'] != null) updated['heat'] = data['heat'];
+          if (data.containsKey('jail_expires_at')) {
+            updated['jail_expires_at'] = data['jail_expires_at'];
+          }
+          widget.onStateChange!(updated);
+        }
       }
 
       await _fetchInmates();
