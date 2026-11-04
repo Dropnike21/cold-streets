@@ -11,9 +11,10 @@ async function chargeWager(client, userId, value, beforeDebit = null) {
     );
     if (result.rowCount !== 1) throw new ActionError(404, 'Player not found.');
     const user = result.rows[0];
+    let idempotency = null;
     if (beforeDebit) {
-        const gate = await beforeDebit({ bet, user });
-        if (gate?.replay) return { bet, replay: gate };
+        idempotency = await beforeDebit({ bet, user });
+        if (idempotency?.replay) return { bet, replay: idempotency };
     }
     if (dbInteger(user.casino_tokens) < 1n) throw new ActionError(409, 'Out of Casino Tokens.');
     const dirty = dbInteger(user.dirty_cash);
@@ -30,7 +31,7 @@ async function chargeWager(client, userId, value, beforeDebit = null) {
         [takeDirty.toString(), takeClean.toString(), userId]
     );
     if (update.rowCount !== 1) throw new ActionError(409, 'Wallet changed before bet.');
-    return { bet, balances: update.rows[0] };
+    return { bet, balances: update.rows[0], idempotency };
 }
 
 module.exports = { chargeWager };
