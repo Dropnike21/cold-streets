@@ -4,6 +4,7 @@ const { incrementKevinProgress } = require('../../utils/missionProgress');
 const { randomPercent, randomInclusive, randomText, commitCrimeOutcome } = require('../../utils/crimeSettlement');
 const {
     getCrimePenaltyRule,
+    reachesFederalHeatThreshold,
     applyFederalArrest,
     applyCrimeHospitalization,
     applyCrimeJail
@@ -23,7 +24,6 @@ async function listTargets(client, res) {
 async function execute(client, user, crime, req, res) {
     try {
         const rewards = crime.rewards_json || {};
-        const penalties = crime.penalties_json || {};
         const penaltyRule = getCrimePenaltyRule(crime);
         const flavor = crime.flavor_text_json || {};
         const mechanics = crime.mechanics_json || {};
@@ -41,10 +41,11 @@ async function execute(client, user, crime, req, res) {
         let currentHeat = parseFloat(user.heat) || 0.0;
         const heatGained = penaltyRule.heatGen;
 
-        if (currentHeat + Number(heatGained) >= 100.00) {
+        if (await reachesFederalHeatThreshold(client, user.heat, heatGained)) {
             await applyFederalArrest(client, {
                 userId: user.user_id,
-                nerveCost: crime.nerve_cost
+                nerveCost: crime.nerve_cost,
+                currentInfluence: user.influence
             });
             await client.query(
                 "UPDATE user_crime_records SET total_crimes = total_crimes + 1, total_jailed = total_jailed + 1 WHERE user_id = $1",
@@ -171,7 +172,10 @@ async function execute(client, user, crime, req, res) {
     } catch (err) {
         await client.query('ROLLBACK');
         console.error("Pickpocketing Engine Error:", err.message);
-        res.status(500).json({ error: "Hustle engine malfunction." });
+        const status = Number.isInteger(err?.status) ? err.status : 500;
+        res.status(status).json({
+            error: status === 500 ? "Hustle engine malfunction." : err.message
+        });
     }
 }
 
