@@ -110,10 +110,18 @@ async function settleOneDueCrewCrime() {
         }
 
         if (crew.current_domain !== 'CRIMES' || crew.assignment !== rule.title) {
-            await client.query(
-                'DELETE FROM crew_crime_assignments WHERE crew_id = $1',
-                [crew.crew_id]
-            );
+            if (crew.current_domain === 'CRIMES') {
+                await pauseInvalidAssignment(
+                    client,
+                    crew,
+                    'the persisted schedule no longer matches the crew assignment.'
+                );
+            } else {
+                await client.query(
+                    'DELETE FROM crew_crime_assignments WHERE crew_id = $1',
+                    [crew.crew_id]
+                );
+            }
             await client.query('COMMIT');
             transaction = false;
             return true;
