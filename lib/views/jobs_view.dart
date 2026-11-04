@@ -72,6 +72,54 @@ class _JobsViewState extends State<JobsView> {
     }
   }
 
+  bool get _canClaimDailyPay {
+    if (_lastClaimed == null || _lastClaimed!.isEmpty) return true;
+    final parsed = DateTime.tryParse(_lastClaimed!);
+    if (parsed == null) return false;
+    return !DateTime.now().isBefore(parsed.toLocal().add(const Duration(hours: 24)));
+  }
+
+  String get _dailyPayStatus {
+    if (_canClaimDailyPay) return "DAILY PAY READY";
+    final parsed = DateTime.tryParse(_lastClaimed!);
+    if (parsed == null) return "PAY STATUS UNAVAILABLE";
+    final remaining = parsed.toLocal().add(const Duration(hours: 24)).difference(DateTime.now());
+    final hours = remaining.inHours;
+    final minutes = remaining.inMinutes.remainder(60);
+    return "NEXT PAY IN ${hours}h ${minutes}m";
+  }
+
+  Future<void> _claimDailyPay() async {
+    if (!_canClaimDailyPay || _isProcessing) return;
+    setState(() => _isProcessing = true);
+    try {
+      final response = await http.post(
+        Uri.parse('$apiUrl/claim-daily'),
+        headers: const {"Content-Type": "application/json"},
+        body: jsonEncode({"user_id": widget.userData['user_id']}),
+      );
+      final data = jsonDecode(response.body);
+      if (response.statusCode == 200) {
+        final updated = Map<String, dynamic>.from(widget.userData);
+        updated['clean_cash'] = data['clean_cash'];
+        widget.onStateChange(updated);
+        setState(() {
+          _lastClaimed = data['claimed_at']?.toString();
+        });
+        await _fetchJobsDashboard();
+        _showSnackbar(
+          "Collected \${data['daily_pay']} Clean Cash and +${data['incentives_gained']} Job Points.",
+        );
+      } else {
+        _showSnackbar(data['error'] ?? "Daily pay claim failed.", isError: true);
+      }
+    } catch (e) {
+      _showSnackbar("Network error.", isError: true);
+    } finally {
+      if (mounted) setState(() => _isProcessing = false);
+    }
+  }
+
   Future<void> _startInterview(int jobId) async {
     setState(() => _isProcessing = true);
     try {
@@ -548,6 +596,44 @@ class _JobsViewState extends State<JobsView> {
                   children: [
                     Text("Position: ${currentRankDetails['title']}", style: const TextStyle(color: Colors.white70, fontSize: 12)),
                     Text("Job Points: $incentiveBalance", style: const TextStyle(color: Colors.amberAccent, fontSize: 12, fontWeight: FontWeight.bold)),
+                  ],
+                ),
+                const SizedBox(height: 10),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text(
+                      _dailyPayStatus,
+                      style: TextStyle(
+                        color: _canClaimDailyPay ? neonGreen : Colors.white54,
+                        fontSize: 9,
+                        fontWeight: FontWeight.bold,
+                        letterSpacing: 1,
+                      ),
+                    ),
+                    SizedBox(
+                      height: 26,
+                      child: ElevatedButton(
+                        onPressed: _canClaimDailyPay && !_isProcessing
+                            ? _claimDailyPay
+                            : null,
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: neonGreen.withOpacity(0.15),
+                          side: BorderSide(
+                            color: _canClaimDailyPay ? neonGreen : Colors.white24,
+                          ),
+                          padding: const EdgeInsets.symmetric(horizontal: 12),
+                        ),
+                        child: Text(
+                          "CLAIM DAILY PAY",
+                          style: TextStyle(
+                            color: _canClaimDailyPay ? neonGreen : Colors.white24,
+                            fontSize: 9,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ),
+                    ),
                   ],
                 ),
               ],
