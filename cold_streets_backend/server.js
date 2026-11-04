@@ -2,6 +2,7 @@ const express = require('express');
 const cors = require('cors');
 const pool = require('./db');
 const { requireAuthenticatedPlayer } = require('./middleware/playerIdentity');
+const { startCrewCrimeWorker } = require('./workers/crewCrimeWorker');
 
 require('dotenv').config();
 
@@ -46,6 +47,8 @@ if (gameplayEnabled) {
       .then(client => {
           client.release();
           console.log('Cold Streets staging database connection established.');
+          startCrewCrimeWorker();
+          console.log('Crew crime scheduler started.');
       })
       .catch(err => console.error('Staging database connection failed:', err.message));
 }

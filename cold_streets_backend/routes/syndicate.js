@@ -8,6 +8,9 @@ const pool = require('../db');
 const { randomInt } = require('node:crypto');
 const { ActionError, integer, dbInteger, actorId, sendActionError } = require('../utils/economyValidation');
 const { requireIdempotencyKey, beginIdempotent, completeIdempotent } = require('../utils/idempotency');
+const {
+    getCrewCrimeRule, listCrewCrimeRules, ownsRequiredTool
+} = require('../utils/crewCrimeCatalog');
 
 // --- CONSTANTS & POOLS ---
 const firstNames = [
@@ -84,46 +87,93 @@ router.get('/:user_id', async (req, res) => {
     try {
         const { user_id } = req.params;
 
-        const userRes = await pool.query('SELECT recruit_refreshes FROM users WHERE user_id = $1', [user_id]);
-        const refreshesLeft = userRes.rows.length > 0 ? userRes.rows[0].recruit_refreshes : 0;
+        const userRes = await pool.query(
+            'SELECT recruit_refreshes FROM users WHERE user_id = $1',
+            [user_id]
+        );
+        const refreshesLeft = userRes.rows.length > 0
+            ? userRes.rows[0].recruit_refreshes
+            : 0;
 
-        const crewQuery = `
-            SELECT uc.*, cm.tool_req
-            FROM user_crew uc
-            LEFT JOIN crimes_master cm ON uc.assignment = cm.title
-            WHERE uc.user_id = $1
-            ORDER BY (uc.max_str + uc.max_def + uc.max_dex + uc.max_spd + uc.max_acu + uc.max_ops + uc.max_pre + uc.max_res) DESC
-        `;
-        const crew = await pool.query(crewQuery, [user_id]);
+        const crew = await pool.query(
+            `SELECT uc.*,
+                    cca.crime_id,
+                    cca.next_tick_at,
+                    cca.last_tick_at,
+                    cm.title AS scheduled_crime_title,
+                    COALESCE(tool.name, 'NONE') AS tool_req,
+                    tool.item_id AS tool_item_id
+               FROM user_crew uc
+               LEFT JOIN crew_crime_assignments cca
+                 ON cca.crew_id = uc.crew_id
+               LEFT JOIN crimes_master cm
+                 ON cm.id = cca.crime_id
+               LEFT JOIN items_master tool
+                 ON tool.item_id::text = cm.requirements_json->>'tool_req'
+              WHERE uc.user_id = $1
+              ORDER BY (
+                uc.max_str + uc.max_def + uc.max_dex + uc.max_spd +
+                uc.max_acu + uc.max_ops + uc.max_pre + uc.max_res
+              ) DESC`,
+            [user_id]
+        );
+        const crewRows = crew.rows.map(row => ({
+            ...row,
+            assignment: row.scheduled_crime_title || 'UNASSIGNED'
+        }));
 
-        const toolsQuery = `
-            SELECT UPPER(im.name) as name
-            FROM user_inventory ui
-            JOIN items_master im ON ui.item_id = im.item_id
-            WHERE ui.user_id = $1 AND ui.quantity > 0
-        `;
-        const tools = await pool.query(toolsQuery, [user_id]);
+        const tools = await pool.query(
+            `SELECT UPPER(im.name) AS name
+               FROM user_inventory ui
+               JOIN items_master im ON ui.item_id = im.item_id
+              WHERE ui.user_id = $1 AND ui.quantity > 0`,
+            [user_id]
+        );
         const ownedTools = tools.rows.map(t => t.name);
 
-        res.json({ success: true, crew: crew.rows, refreshesLeft, ownedTools });
+        return res.json({
+            success: true,
+            crew: crewRows,
+            refreshesLeft,
+            ownedTools
+        });
     } catch (err) {
-        console.error("GET Crew Error:", err);
-        res.status(500).json({ error: "Server error" });
+        return sendActionError(res, err, 'GET crew failed:');
     }
 });
 
-router.get('/crimes_board/:user_id', async (req, res) => {
+router.get('/crimes_board/:user_id', async (_req, res) => {
     try {
-        const crimes = await pool.query('SELECT * FROM crimes_master ORDER BY category ASC, req_stat_value ASC');
-        res.json({ success: true, crimes: crimes.rows });
+        const rules = await listCrewCrimeRules(pool);
+        const crimes = rules.map(rule => ({
+            id: rule.crimeId,
+            category: rule.category,
+            sub_category: rule.subCategory,
+            title: rule.title,
+            automation_seconds: rule.automationSeconds,
+            min_payout: rule.minCash,
+            max_payout: rule.maxCash,
+            average_payout: rule.averageCash,
+            casualty_ppm: rule.casualtyPpm,
+            tool_item_id: rule.toolItemId,
+            tool_req: rule.toolName
+        }));
+        return res.json({ success: true, crimes });
     } catch (err) {
-        res.status(500).json({ error: "Server error" });
+        return sendActionError(res, err, 'Crew crime board failed:');
     }
 });
+
 // --- HELPER: CHECK DOMAIN TRANSFER ---
 async function handleDomainTransfer(client, userId, crewId, newDomain) {
     const crewRes = await client.query(
-        `SELECT current_domain, last_transfer_at
+        `SELECT current_domain,
+                GREATEST(
+                    0,
+                    CEIL(EXTRACT(EPOCH FROM (
+                        (last_transfer_at + INTERVAL '10 minutes') - NOW()
+                    )))
+                )::bigint AS transfer_seconds_remaining
            FROM user_crew
           WHERE crew_id = $1 AND user_id = $2
           FOR UPDATE`,
@@ -132,16 +182,20 @@ async function handleDomainTransfer(client, userId, crewId, newDomain) {
     if (crewRes.rowCount !== 1) throw new ActionError(404, 'Crew member not found.');
     const crew = crewRes.rows[0];
     const currentDomain = crew.current_domain || 'IDLE';
+    const remainingSeconds = crew.transfer_seconds_remaining == null
+        ? 0
+        : Number(crew.transfer_seconds_remaining);
 
+    if (!Number.isSafeInteger(remainingSeconds) || remainingSeconds < 0) {
+        throw new Error('Invalid crew transfer cooldown state.');
+    }
     if (currentDomain !== 'IDLE' && currentDomain !== newDomain &&
-        crew.last_transfer_at) {
-        const diffMinutes = (Date.now() - new Date(crew.last_transfer_at).getTime()) / 60000;
-        if (diffMinutes < 5) {
-            throw new ActionError(
-                409,
-                'Transfer cooldown active for ' + Math.ceil(5 - diffMinutes) + ' more minute(s).'
-            );
-        }
+        remainingSeconds > 0) {
+        throw new ActionError(
+            409,
+            'Transfer cooldown active for ' +
+                Math.ceil(remainingSeconds / 60) + ' more minute(s).'
+        );
     }
     if (currentDomain !== newDomain) {
         await client.query(
@@ -156,47 +210,139 @@ router.post('/assign_job', async (req, res) => {
     let client, transaction = false;
     try {
         const userId = actorId(req);
+        const idempotencyKey = requireIdempotencyKey(req);
         const crewId = integer(req.body?.crew_id, {
             field: 'Crew ID', min: 1n, max: 9223372036854775807n
         }).toString();
-        const crimeTitle = typeof req.body?.crime_title === 'string'
-            ? req.body.crime_title.trim()
-            : '';
-        if (!crimeTitle || crimeTitle.length > 200) {
-            throw new ActionError(400, 'Invalid crime assignment.');
+
+        let crimeId = null;
+        let crimeTitle = null;
+        if (req.body?.crime_id !== undefined && req.body?.crime_id !== null) {
+            crimeId = integer(req.body.crime_id, {
+                field: 'Crime ID', min: 1n, max: 9223372036854775807n
+            }).toString();
+        } else if (typeof req.body?.crime_title === 'string' &&
+                   req.body.crime_title.trim().length > 0 &&
+                   req.body.crime_title.trim().length <= 200) {
+            crimeTitle = req.body.crime_title.trim();
+        } else {
+            throw new ActionError(400, 'A catalog crime identifier is required.');
         }
 
         client = await pool.connect();
         await client.query('BEGIN');
         transaction = true;
+
+        // Match the worker lock order: schedule -> crew -> user -> inventory.
+        await client.query(
+            `SELECT crew_id
+               FROM crew_crime_assignments
+              WHERE crew_id = $1
+              FOR UPDATE`,
+            [crewId]
+        );
+        const crew = await client.query(
+            `SELECT crew_id, current_domain, last_transfer_at
+               FROM user_crew
+              WHERE crew_id = $1 AND user_id = $2
+              FOR UPDATE`,
+            [crewId, userId]
+        );
+        if (crew.rowCount !== 1) {
+            throw new ActionError(404, 'Crew member not found.');
+        }
         const player = await client.query(
-            'SELECT user_id FROM users WHERE user_id = $1 FOR UPDATE', [userId]
+            'SELECT user_id FROM users WHERE user_id = $1 FOR UPDATE',
+            [userId]
         );
         if (player.rowCount !== 1) throw new ActionError(404, 'Player not found.');
-        const crime = await client.query(
-            'SELECT title FROM crimes_master WHERE title = $1', [crimeTitle]
+
+        const idem = await beginIdempotent(
+            client,
+            userId,
+            'syndicate.assign_crew_crime',
+            idempotencyKey,
+            { crewId, crimeId, crimeTitle }
         );
-        if (crime.rowCount !== 1) throw new ActionError(400, 'Crime is not in the catalog.');
+        if (idem.replay) {
+            await client.query('COMMIT');
+            transaction = false;
+            return res.status(idem.status).json(idem.response);
+        }
+
+        const rule = await getCrewCrimeRule(
+            client,
+            crimeId !== null ? { crimeId } : { crimeTitle }
+        );
+
+        const hasTool = await ownsRequiredTool(
+            client,
+            userId,
+            rule,
+            { lock: true }
+        );
+        if (!hasTool) {
+            throw new ActionError(
+                409,
+                'Required tool is not present in the player inventory.'
+            );
+        }
 
         await handleDomainTransfer(client, userId, crewId, 'CRIMES');
+
+        const scheduled = await client.query(
+            `INSERT INTO crew_crime_assignments (
+                 crew_id, crime_id, assigned_at, next_tick_at, last_tick_at, updated_at
+             )
+             VALUES (
+                 $1, $2::bigint, NOW(),
+                 NOW() + ($3::bigint * INTERVAL '1 second'),
+                 NULL, NOW()
+             )
+             ON CONFLICT (crew_id) DO UPDATE
+                 SET crime_id = EXCLUDED.crime_id,
+                     assigned_at = EXCLUDED.assigned_at,
+                     next_tick_at = EXCLUDED.next_tick_at,
+                     last_tick_at = NULL,
+                     updated_at = NOW()
+             RETURNING next_tick_at`,
+            [crewId, rule.crimeId, rule.automationSeconds]
+        );
+
         await client.query(
-            "UPDATE user_crew SET assignment = 'UNASSIGNED' WHERE user_id = $1 AND assignment = $2 AND crew_id <> $3",
-            [userId, crimeTitle, crewId]
+            `UPDATE user_crew
+                SET assignment = $1,
+                    current_domain = 'CRIMES'
+              WHERE user_id = $2 AND crew_id = $3`,
+            [rule.title, userId, crewId]
         );
-        const assigned = await client.query(
-            'UPDATE user_crew SET assignment = $1 WHERE user_id = $2 AND crew_id = $3 RETURNING crew_id',
-            [crimeTitle, userId, crewId]
-        );
-        if (assigned.rowCount !== 1) throw new ActionError(404, 'Crew member not found.');
+
+        const response = {
+            success: true,
+            message: 'Crew crime automation scheduled.',
+            crew_id: crewId,
+            crime_id: rule.crimeId,
+            crime_title: rule.title,
+            average_payout: rule.averageCash,
+            automation_seconds: rule.automationSeconds,
+            casualty_ppm: rule.casualtyPpm,
+            next_tick_at: scheduled.rows[0].next_tick_at
+        };
+        await completeIdempotent(client, idem, 200, response);
         await client.query('COMMIT');
         transaction = false;
-        return res.json({ success: true, message: 'Crew assignment updated.' });
+        return res.json(response);
     } catch (err) {
         if (transaction) {
-            try { await client.query('ROLLBACK'); } catch (rollback) { console.error('Crew assignment rollback:', rollback); }
+            try { await client.query('ROLLBACK'); }
+            catch (rollback) {
+                console.error('Crew assignment rollback:', rollback);
+            }
         }
         return sendActionError(res, err, 'Crew assignment failed:');
-    } finally { if (client) client.release(); }
+    } finally {
+        if (client) client.release();
+    }
 });
 
 // Company NPC positions cannot be authorized safely until the canonical company
@@ -206,22 +352,85 @@ router.post('/assign_company', (_req, res) =>
 );
 
 router.post('/unassign_job', async (req, res) => {
+    let client, transaction = false;
     try {
         const userId = actorId(req);
+        const idempotencyKey = requireIdempotencyKey(req);
         const crewId = integer(req.body?.crew_id, {
             field: 'Crew ID', min: 1n, max: 9223372036854775807n
         }).toString();
-        const result = await pool.query(
+
+        client = await pool.connect();
+        await client.query('BEGIN');
+        transaction = true;
+
+        await client.query(
+            `SELECT crew_id
+               FROM crew_crime_assignments
+              WHERE crew_id = $1
+              FOR UPDATE`,
+            [crewId]
+        );
+        const crew = await client.query(
+            `SELECT crew_id
+               FROM user_crew
+              WHERE crew_id = $1 AND user_id = $2
+              FOR UPDATE`,
+            [crewId, userId]
+        );
+        if (crew.rowCount !== 1) {
+            throw new ActionError(404, 'Crew member not found.');
+        }
+        const player = await client.query(
+            'SELECT user_id FROM users WHERE user_id = $1 FOR UPDATE',
+            [userId]
+        );
+        if (player.rowCount !== 1) throw new ActionError(404, 'Player not found.');
+
+        const idem = await beginIdempotent(
+            client,
+            userId,
+            'syndicate.unassign_crew_crime',
+            idempotencyKey,
+            { crewId }
+        );
+        if (idem.replay) {
+            await client.query('COMMIT');
+            transaction = false;
+            return res.status(idem.status).json(idem.response);
+        }
+
+        await client.query(
+            'DELETE FROM crew_crime_assignments WHERE crew_id = $1',
+            [crewId]
+        );
+        await client.query(
             `UPDATE user_crew
-                SET assignment = 'UNASSIGNED', current_domain = 'IDLE'
-              WHERE user_id = $1 AND crew_id = $2
-              RETURNING crew_id`,
+                SET assignment = 'UNASSIGNED',
+                    current_domain = 'IDLE'
+              WHERE user_id = $1 AND crew_id = $2`,
             [userId, crewId]
         );
-        if (result.rowCount !== 1) throw new ActionError(404, 'Crew member not found.');
-        return res.json({ success: true, message: 'Crew member recalled.' });
+
+        const response = {
+            success: true,
+            message: 'Crew member recalled.',
+            crew_id: crewId
+        };
+        await completeIdempotent(client, idem, 200, response);
+        await client.query('COMMIT');
+        transaction = false;
+        return res.json(response);
     } catch (err) {
+        if (transaction) {
+            try { await client.query('ROLLBACK'); }
+            catch (rollback) {
+                console.error('Crew recall rollback:', rollback);
+            }
+        }
         return sendActionError(res, err, 'Crew recall failed:');
+    } finally {
+        if (client) client.release();
     }
 });
 
@@ -449,12 +658,10 @@ router.post('/hire', async (req, res) => {
 });
 
 router.post('/complete_job', (_req, res) => {
-    // The recovered design does not define an authoritative server completion
-    // timer. The former endpoint accepted payout directly from the client,
-    // allowing unlimited currency minting. Leave settlement disabled until a
-    // server-side assignment schedule is specified and persisted.
-    return res.status(503).json({
-        error: 'Crew crime settlement is paused pending server-side completion scheduling.'
+    // Crew crime settlement is server-scheduled. A client-triggered completion
+    // endpoint would let callers race or fabricate settlement timing.
+    return res.status(410).json({
+        error: 'Crew crime payouts are settled automatically by the server.'
     });
 });
 
