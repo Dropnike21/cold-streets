@@ -101,6 +101,12 @@ class _HospitalViewState extends State<HospitalView> {
       );
       final data = jsonDecode(res.body);
 
+      if (res.statusCode == 200 && data['energy'] != null) {
+        final updated = Map<String, dynamic>.from(widget.userData);
+        updated['energy'] =
+            int.tryParse(data['energy'].toString()) ?? updated['energy'];
+        widget.onStateChange(updated);
+      }
       _showSnackbar(data['message'] ?? data['error'], isError: res.statusCode != 200);
       await _fetchPatients();
     } catch (e) {
