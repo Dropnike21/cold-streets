@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import '../api_config.dart';
 import '../services/game_http.dart' as http;
 import 'dart:convert';
 
@@ -21,7 +22,7 @@ class CompanyDashboardView extends StatefulWidget {
 }
 
 class _CompanyDashboardViewState extends State<CompanyDashboardView> {
-  final String apiUrl = "http://10.0.2.2:3000/companies";
+  String get apiUrl => '\${ApiConfig.baseUrl}/companies';
   bool _isLoading = true;
 
   // Economic Engine Data[cite: 1]
