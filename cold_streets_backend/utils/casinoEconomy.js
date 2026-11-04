@@ -3,7 +3,7 @@
 const { ActionError, integer, dbInteger } = require('./economyValidation');
 const MAX_BET = 1000000000000n; // Temporary protection against unbounded wagers.
 
-async function chargeWager(client, userId, value) {
+async function chargeWager(client, userId, value, beforeDebit = null) {
     const bet = integer(value, { field: 'Bet', min: 1n, max: MAX_BET });
     const result = await client.query(
         'SELECT dirty_cash, clean_cash, casino_tokens FROM users WHERE user_id = $1 FOR UPDATE',
@@ -11,6 +11,10 @@ async function chargeWager(client, userId, value) {
     );
     if (result.rowCount !== 1) throw new ActionError(404, 'Player not found.');
     const user = result.rows[0];
+    if (beforeDebit) {
+        const gate = await beforeDebit({ bet, user });
+        if (gate?.replay) return { bet, replay: gate };
+    }
     if (dbInteger(user.casino_tokens) < 1n) throw new ActionError(409, 'Out of Casino Tokens.');
     const dirty = dbInteger(user.dirty_cash);
     const clean = dbInteger(user.clean_cash);
