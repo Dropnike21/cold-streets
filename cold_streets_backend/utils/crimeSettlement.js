@@ -26,7 +26,13 @@ async function commitCrimeOutcome(client, req, res, response, afterCommit = null
     }
     await completeIdempotent(client, req.crimeIdempotency, 200, response);
     await client.query('COMMIT');
-    if (typeof afterCommit === 'function') afterCommit();
+    if (typeof afterCommit === 'function') {
+        try {
+            afterCommit();
+        } catch (error) {
+            console.error('Post-commit crime side effect failed:', error);
+        }
+    }
     return res.json(response);
 }
 
