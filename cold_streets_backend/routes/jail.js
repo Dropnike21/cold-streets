@@ -9,6 +9,7 @@ const {
 const {
     requireIdempotencyKey, beginIdempotent, completeIdempotent
 } = require('../utils/idempotency');
+const { hasEducationUnlock } = require('../utils/educationEntitlements');
 
 const JAIL_FLAT_RATE = '0.01';
 const JAIL_MULTIPLIER = '0.0001';
@@ -21,7 +22,7 @@ async function lockPlayers(client, ids) {
     const result = await client.query(
         `SELECT user_id, username, clean_cash, influence, nerve, heat,
                 energy, exp, stat_str, stat_def, stat_dex, stat_spd,
-                jail_expires_at, jail_initial_seconds
+                jail_expires_at, jail_initial_seconds, hospital_expires_at
            FROM users
           WHERE user_id = ANY($1::bigint[])
           ORDER BY user_id
@@ -186,6 +187,27 @@ router.post('/breakout', async (req, res) => {
         }
 
         const selfEscape = actor === target;
+        if (!selfEscape) {
+            const now = Date.now();
+            const actorIsJailed = actorRow.jail_expires_at &&
+                new Date(actorRow.jail_expires_at).getTime() > now;
+            const actorIsHospitalized = actorRow.hospital_expires_at &&
+                new Date(actorRow.hospital_expires_at).getTime() > now;
+            if (actorIsJailed || actorIsHospitalized) {
+                throw new ActionError(
+                    409,
+                    'Only a free player can attempt to bust another inmate out.'
+                );
+            }
+            const canBustOut = await hasEducationUnlock(client, actor, 'jail_bust_out');
+            if (!canBustOut) {
+                throw new ActionError(
+                    403,
+                    'Juris Doctor education is required to bust another inmate out.'
+                );
+            }
+        }
+
         const success = randomInt(1, 101) <= BREAKOUT_SUCCESS_PERCENT;
         let response;
 
