@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import '../api_config.dart';
 import '../services/game_http.dart' as http;
 import 'dart:convert';
 
@@ -15,7 +16,7 @@ class CompanyManagementView extends StatefulWidget {
 }
 
 class _CompanyManagementViewState extends State<CompanyManagementView> {
-  final String apiUrl = "http://10.0.2.2:3000/companies";
+  String get apiUrl => '\${ApiConfig.baseUrl}/companies';
   bool _isLoading = true;
   bool _isProcessing = false;
 
@@ -121,7 +122,7 @@ class _CompanyManagementViewState extends State<CompanyManagementView> {
     setState(() => _isProcessing = true);
     try {
       final response = await http.post(
-          Uri.parse('$apiUrl/$endpoint'),
+          Uri.parse('${ApiConfig.baseUrl}/company-management/$endpoint'),
           headers: {"Content-Type": "application/json"},
           body: jsonEncode({"company_id": widget.companyId, "user_id": widget.userData['user_id'], ...payload})
       );
@@ -196,7 +197,7 @@ class _CompanyManagementViewState extends State<CompanyManagementView> {
     // 1. Fetch available crew first
     List<dynamic> activeCrew = [];
     try {
-      final response = await http.get(Uri.parse('$apiUrl/${widget.companyId}/available-crew/${widget.userData['user_id']}'));
+      final response = await http.get(Uri.parse('${ApiConfig.baseUrl}/company-management/${widget.companyId}/available-crew/${widget.userData['user_id']}'));
       if (response.statusCode == 200) {
         activeCrew = jsonDecode(response.body)['crew'] ?? [];
       }
