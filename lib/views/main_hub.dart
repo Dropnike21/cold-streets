@@ -90,7 +90,7 @@ class _MainHubState extends State<MainHub> with MainHubLogic {
               onMenuPressed: () {
                 scaffoldKey.currentState?.openDrawer();
               },
-              onVitalsTap: () => setState(() => tutState.tut1Vitals = true),
+              onVitalsTap: () => recordTutorialVisit('vitals'),
               onLevelUp: () => setState(() { levelHolding = false; widget.userData['level_holding'] = false; }),
             ),
 
@@ -98,7 +98,7 @@ class _MainHubState extends State<MainHub> with MainHubLogic {
               isMobile: true,
               username: username, dirtyCash: dirtyCash, cleanCash: cleanCash, goldBars: goldBars, creds: creds, influence: influence, unreadEventsCount: unreadEventsCount, hasBazaar: hasBazaar,
               anonExp: anonExp, activeBeacon: activeBeacon,
-              onAssetTap: () { setState(() => tutState.tut1Assets = true); if (!isDesktop) Navigator.pop(context); },
+              onAssetTap: () { recordTutorialVisit('assets'); if (!isDesktop) Navigator.pop(context); },
               onNavigate: navigateTo, onLogout: logout,
             ),
 
@@ -157,7 +157,7 @@ class _MainHubState extends State<MainHub> with MainHubLogic {
                         isMobile: false,
                         username: username, dirtyCash: dirtyCash, cleanCash: cleanCash, goldBars: goldBars, creds: creds, influence: influence, unreadEventsCount: unreadEventsCount, hasBazaar: hasBazaar,
                         anonExp: anonExp, activeBeacon: activeBeacon,
-                        onAssetTap: () => setState(() => tutState.tut1Assets = true),
+                        onAssetTap: () => recordTutorialVisit('assets'),
                         onNavigate: navigateTo, onLogout: logout,
                       ),
                     ),
