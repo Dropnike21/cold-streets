@@ -1,3 +1,4 @@
+const logger = require('../utils/logger');
 const express = require('express');
 const router = express.Router();
 // Route parameters are parsed after app-level middleware; enforce actor ownership here.
@@ -44,7 +45,7 @@ router.get('/blueprints', async (_req, res) => {
             blueprints: result.rows
         });
     } catch (err) {
-        console.error("Error fetching blueprints:", err);
+        logger.error('company_blueprint_fetch_failed', logger.errorFields(err));
         res.status(500).json({ error: "Server error fetching commercial registry." });
     }
 });
@@ -581,7 +582,7 @@ router.post('/employment-offers/respond', async (req, res) => {
         if (transaction) {
             try { await client.query('ROLLBACK'); }
             catch (rollback) {
-                console.error('Employment offer response rollback:', rollback);
+                logger.error('employment_offer_response_rollback_failed', logger.errorFields(rollback));
             }
         }
         return sendActionError(res, err, 'Employment offer response failed:');
@@ -926,7 +927,7 @@ router.post('/apply', async (req, res) => {
     } catch (err) {
         if (transaction) {
             try { await client.query('ROLLBACK'); }
-            catch (rollback) { console.error('Company application rollback:', rollback); }
+            catch (rollback) { logger.error('company_application_rollback_failed', logger.errorFields(rollback)); }
         }
         return sendActionError(res, err, 'Company application failed:');
     } finally {
