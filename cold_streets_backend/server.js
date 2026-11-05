@@ -75,9 +75,20 @@ app.get('/readyz', async (req, res) => {
         ? snapshot.ready && databaseProbeOk === true
         : snapshot.ready;
 
+    const workerReadiness = {};
+    for (const [name, worker] of Object.entries(snapshot.workers || {})) {
+        workerReadiness[name] = {
+            started: worker.started === true,
+            healthy: worker.healthy === true
+        };
+    }
+
     return res.status(ready ? 200 : 503).json({
         status: ready ? 'ready' : 'not_ready',
-        ...snapshot
+        gameplay_enabled: snapshot.gameplay_enabled,
+        shutting_down: snapshot.shutting_down,
+        database_ready: snapshot.database_ready,
+        workers: workerReadiness
     });
 });
 
