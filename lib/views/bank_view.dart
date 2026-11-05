@@ -1,781 +1,560 @@
-import 'package:flutter/material.dart';
-import '../services/game_http.dart' as http;
 import 'dart:convert';
-import 'dart:math';
-import 'dart:async';
+
+import 'package:flutter/material.dart';
 
 import '../api_config.dart';
+import '../services/game_http.dart' as http;
 
 class BankView extends StatefulWidget {
   final Map<String, dynamic> userData;
   final Function(Map<String, dynamic>) onStateChange;
 
-  const BankView({super.key, required this.userData, required this.onStateChange});
+  const BankView({
+    super.key,
+    required this.userData,
+    required this.onStateChange,
+  });
 
   @override
   State<BankView> createState() => _BankViewState();
 }
 
 class _BankViewState extends State<BankView> {
-  late int dirtyCash;
-  late int cleanCash;
-  late int totalCash;
-  late int bankTrustLevel;
+  static const Color cBlack = Color(0xFF121212);
+  static const Color cPanel = Color(0xFF1A1A1A);
+  static const Color cGreen = Color(0xFF39FF14);
 
-  final double currentBankCap = 2000000000; // 2 Billion limit
+  bool _loading = true;
+  String? _error;
 
-  final TextEditingController _amountController = TextEditingController();
-  double _depositAmount = 0;
-  int _selectedDurationIndex = 0;
-  final double _perkBonus = 0.0;
+  String _bankStatus = 'read_only_reconciliation';
+  String _termsStatus = 'historical_code_only';
+  String _conversionStatus = 'unresolved';
+  String _checkProducerStatus = 'unrecovered';
 
-  final List<String> _durations = ['7 Days', '2 Weeks', '1 Month', '3 Months', '6 Months'];
-  final List<double> _baseRates = [0.005, 0.011, 0.025, 0.09, 0.22];
-
-  // --- Active Time Deposit State ---
-  bool hasActiveDeposit = false;
-  DateTime? activeDepositUnlockTime;
-  double activeDirtyUsed = 0;
-  double activeCleanUsed = 0;
-
-  bool get _isDepositMatured =>
-      hasActiveDeposit &&
-      activeDepositUnlockTime != null &&
-      !activeDepositUnlockTime!.isAfter(DateTime.now());
-
-  // --- Pending Checks State ---
-  List<Map<String, dynamic>> pendingChecks = [];
-
-  Timer? _ticker;
+  Map<String, dynamic> _account = {};
+  List<Map<String, dynamic>> _deposits = [];
+  List<Map<String, dynamic>> _checks = [];
+  List<dynamic> _blockers = [];
 
   @override
   void initState() {
     super.initState();
-    _syncState(); // Loads cached data instantly
-    _fetchBankData(); // Fetches live database lock state
-
-    // Timer to update the countdowns every second
-    _ticker = Timer.periodic(const Duration(seconds: 1), (timer) {
-      if (mounted) setState(() {});
-    });
+    _fetchBank();
   }
 
-  // 👇 NEW: Fetches the live database state every time the screen opens
-  Future<void> _fetchBankData() async {
-    try {
-      final String userId = widget.userData['user_id'].toString();
-      final response = await http.get(Uri.parse('${ApiConfig.baseUrl}/bank/status/$userId'));
-
-      if (response.statusCode == 200) {
-        final data = jsonDecode(response.body);
-        if (mounted) {
-          setState(() {
-            // Sync Active Deposit from Server
-            if (data['active_time_deposit'] != null) {
-              var activeData = data['active_time_deposit'];
-              hasActiveDeposit = true;
-              activeDirtyUsed = _parseDouble(activeData['dirty_deposited']);
-              activeCleanUsed = _parseDouble(activeData['clean_deposited']);
-              _depositAmount = activeDirtyUsed + activeCleanUsed;
-              _selectedDurationIndex = _parseSafeInt(activeData['duration_index']);
-
-              if (activeData['unlocks_at'] != null) {
-                activeDepositUnlockTime = DateTime.parse(activeData['unlocks_at']).toLocal();
-              }
-              _amountController.text = _depositAmount.toInt().toString();
-              widget.userData['active_time_deposit'] = activeData; // Cache it locally
-            } else {
-              hasActiveDeposit = false;
-              widget.userData.remove('active_time_deposit');
-              _selectedDurationIndex = min(2, bankTrustLevel);
-            }
-
-            // Sync Pending Checks from Server
-            if (data['pending_checks'] != null) {
-              pendingChecks = List<Map<String, dynamic>>.from(data['pending_checks']);
-              widget.userData['pending_checks'] = pendingChecks;
-            }
-          });
-        }
-      }
-    } catch (e) {
-      debugPrint("Bank fetch error: $e");
+  Future<void> _fetchBank() async {
+    if (mounted) {
+      setState(() {
+        _loading = true;
+        _error = null;
+      });
     }
-  }
-
-  void _syncState() {
-    bankTrustLevel = _parseSafeInt(widget.userData['bank_trust_level']);
-    dirtyCash = _parseSafeInt(widget.userData['dirty_cash']);
-    cleanCash = _parseSafeInt(widget.userData['clean_cash']);
-    totalCash = dirtyCash + cleanCash;
-
-    if (widget.userData['active_time_deposit'] != null) {
-      var activeData = widget.userData['active_time_deposit'];
-      hasActiveDeposit = true;
-      activeDirtyUsed = _parseDouble(activeData['dirty_deposited']);
-      activeCleanUsed = _parseDouble(activeData['clean_deposited']);
-      _depositAmount = activeDirtyUsed + activeCleanUsed;
-      _selectedDurationIndex = _parseSafeInt(activeData['duration_index']);
-
-      if (activeData['unlocks_at'] != null) {
-        activeDepositUnlockTime = DateTime.parse(activeData['unlocks_at']).toLocal();
-      }
-
-      _amountController.text = _depositAmount.toInt().toString();
-    } else {
-      hasActiveDeposit = false;
-      _selectedDurationIndex = min(2, bankTrustLevel);
-    }
-
-    if (widget.userData['pending_checks'] != null) {
-      pendingChecks = List<Map<String, dynamic>>.from(widget.userData['pending_checks']);
-    }
-  }
-
-  int _parseSafeInt(dynamic value) {
-    if (value == null) return 0;
-    if (value is int) return value;
-    if (value is double) return value.toInt();
-    if (value is String) return int.tryParse(value) ?? 0;
-    return 0;
-  }
-
-  double _parseDouble(dynamic value) {
-    if (value == null) return 0.0;
-    if (value is double) return value;
-    if (value is int) return value.toDouble();
-    if (value is String) return double.tryParse(value) ?? 0.0;
-    return 0.0;
-  }
-
-  String _formatCash(double amount) {
-    String formatted = amount.toInt().toString().replaceAllMapped(
-        RegExp(r'(\d{1,3})(?=(\d{3})+(?!\d))'),
-            (Match m) => '${m[1]},'
-    );
-    return '\$$formatted';
-  }
-
-  String _getTimeLeft(DateTime? expiryTime) {
-    if (expiryTime == null) return "--:--:--";
-    final diff = expiryTime.difference(DateTime.now());
-    if (diff.isNegative) return "READY";
-
-    if (diff.inDays > 0) {
-      return "${diff.inDays}d ${diff.inHours % 24}h ${diff.inMinutes % 60}m";
-    }
-    return "${diff.inHours.toString().padLeft(2, '0')}:${(diff.inMinutes % 60).toString().padLeft(2, '0')}:${(diff.inSeconds % 60).toString().padLeft(2, '0')}";
-  }
-
-  void _onAmountChanged(String value) {
-    if (hasActiveDeposit) return;
-
-    String cleanString = value.replaceAll(RegExp(r'[^0-9]'), '');
-    double parsed = double.tryParse(cleanString) ?? 0;
-    double maxAllowed = min(totalCash.toDouble(), currentBankCap);
-
-    if (parsed > maxAllowed) {
-      parsed = maxAllowed;
-      _amountController.text = parsed.toInt().toString();
-      _amountController.selection = TextSelection.fromPosition(TextPosition(offset: _amountController.text.length));
-    }
-
-    setState(() {
-      _depositAmount = parsed;
-    });
-  }
-
-  void _setMax() {
-    if (hasActiveDeposit) return;
-    double maxAllowed = min(totalCash.toDouble(), currentBankCap);
-    setState(() {
-      _depositAmount = maxAllowed;
-      _amountController.text = maxAllowed.toInt().toString();
-    });
-  }
-
-  Future<void> _processDeposit() async {
-    if (_depositAmount <= 0 || _depositAmount > totalCash || _depositAmount > currentBankCap) return;
-
-    showDialog(
-      context: context,
-      barrierDismissible: false,
-      builder: (context) => const Center(child: CircularProgressIndicator(color: Color(0xFF39FF14))),
-    );
 
     try {
-      final String userId = widget.userData['user_id'].toString();
-
-      int amountToProcess = _depositAmount.toInt();
-      int dirtyToTake = min(amountToProcess, dirtyCash);
-      int cleanToTake = amountToProcess - dirtyToTake;
-
-      final response = await http.post(
-        Uri.parse('${ApiConfig.baseUrl}/bank/deposit'),
-        headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({
-          'userId': userId,
-          'depositAmount': amountToProcess,
-          'durationIndex': _selectedDurationIndex,
-        }),
+      final userId = widget.userData['user_id'].toString();
+      final response = await http.get(
+        Uri.parse('${ApiConfig.baseUrl}/bank/status/$userId'),
       );
 
-      if (mounted) Navigator.pop(context);
-
-      if (response.statusCode == 200) {
-        final data = jsonDecode(response.body);
-        final updatedCash = data['updatedCash'];
-
-        setState(() {
-          dirtyCash = _parseSafeInt(updatedCash['dirty_cash']);
-          cleanCash = _parseSafeInt(updatedCash['clean_cash']);
-          totalCash = dirtyCash + cleanCash;
-
-          widget.userData['dirty_cash'] = dirtyCash;
-          widget.userData['clean_cash'] = cleanCash;
-
-          hasActiveDeposit = true;
-          activeDirtyUsed = dirtyToTake.toDouble();
-          activeCleanUsed = cleanToTake.toDouble();
-
-          int days = _selectedDurationIndex == 0 ? 7 : (_selectedDurationIndex == 1 ? 14 : (_selectedDurationIndex == 2 ? 30 : (_selectedDurationIndex == 3 ? 90 : 180)));
-          activeDepositUnlockTime = DateTime.now().add(Duration(days: days));
-
-          // 👇 NEW: Cache the active deposit locally so it doesn't disappear when navigating
-          widget.userData['active_time_deposit'] = {
-            'dirty_deposited': activeDirtyUsed,
-            'clean_deposited': activeCleanUsed,
-            'duration_index': _selectedDurationIndex,
-            'unlocks_at': activeDepositUnlockTime!.toIso8601String(),
-          };
-
-          widget.onStateChange(widget.userData);
-        });
-
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text("Laundered \$${_formatCash(dirtyToTake.toDouble())} dirty & \$${_formatCash(cleanToTake.toDouble())} clean!"),
-            backgroundColor: const Color(0xFF39FF14),
-          ),
-        );
-      } else {
-        final errorData = jsonDecode(response.body);
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("Error: ${errorData['error']}"), backgroundColor: Colors.redAccent));
+      if (response.statusCode != 200) {
+        throw Exception('Bank returned ${response.statusCode}.');
       }
-    } catch (e) {
-      if (mounted) Navigator.pop(context);
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("Network Error: $e"), backgroundColor: Colors.redAccent));
-    }
-  }
 
-  Future<void> _claimMaturedDeposit() async {
-    if (!_isDepositMatured) return;
-
-    showDialog(
-      context: context,
-      barrierDismissible: false,
-      builder: (_) => const Center(
-        child: CircularProgressIndicator(color: Color(0xFF39FF14)),
-      ),
-    );
-
-    try {
-      final response = await http.post(
-        Uri.parse('${ApiConfig.baseUrl}/bank/claim-deposit'),
-        headers: const {'Content-Type': 'application/json'},
-        body: jsonEncode({
-          'userId': widget.userData['user_id'].toString(),
-        }),
-      );
-
-      if (mounted) Navigator.pop(context);
-
-      if (response.statusCode == 200) {
-        final data = jsonDecode(response.body);
-        final payout = _parseDouble(data['payout']);
-
-        if (!mounted) return;
-        setState(() {
-          cleanCash = _parseSafeInt(data['updatedCash']['clean_cash']);
-          totalCash = dirtyCash + cleanCash;
-          hasActiveDeposit = false;
-          activeDepositUnlockTime = null;
-          activeDirtyUsed = 0;
-          activeCleanUsed = 0;
-          _depositAmount = 0;
-          _amountController.clear();
-          _selectedDurationIndex = min(2, bankTrustLevel);
-
-          widget.userData['clean_cash'] = cleanCash;
-          widget.userData.remove('active_time_deposit');
-          widget.onStateChange(widget.userData);
-        });
-
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Deposit matured. Received ${_formatCash(payout)} clean cash.'),
-            backgroundColor: const Color(0xFF39FF14),
-          ),
-        );
-      } else {
-        final data = jsonDecode(response.body);
-        if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Error: ${data['error'] ?? 'Deposit claim failed.'}'),
-            backgroundColor: Colors.redAccent,
-          ),
-        );
+      final decoded = jsonDecode(response.body);
+      if (decoded is! Map<String, dynamic> || decoded['success'] != true) {
+        throw Exception('Invalid Bank response.');
       }
-    } catch (e) {
-      if (mounted) Navigator.pop(context);
+
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Network Error: $e'),
-          backgroundColor: Colors.redAccent,
-        ),
-      );
-    }
-  }
+      setState(() {
+        _bankStatus =
+            decoded['bank_status']?.toString() ?? 'read_only_reconciliation';
+        _termsStatus =
+            decoded['time_deposit_terms_status']?.toString() ??
+                'historical_code_only';
+        _conversionStatus =
+            decoded['dirty_to_clean_conversion_status']?.toString() ??
+                'unresolved';
+        _checkProducerStatus =
+            decoded['pending_check_creation_status']?.toString() ??
+                'unrecovered';
 
-  void _showConfirmationDialog(double deposit, String duration, double interest, double payout) {
-    showDialog(
-      context: context,
-      builder: (BuildContext ctx) {
-        return AlertDialog(
-          backgroundColor: const Color(0xFF1A1A1A),
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8), side: const BorderSide(color: Colors.white24)),
-          title: const Text("CONFIRM TIME DEPOSIT", style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w900, letterSpacing: 1)),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              _buildSummaryRow("Principal Deposit:", _formatCash(deposit), Colors.white),
-              const SizedBox(height: 8),
-              _buildSummaryRow("Duration:", duration, Colors.white70),
-              const SizedBox(height: 8),
-              _buildSummaryRow("Projected Interest:", "+${_formatCash(interest)}", const Color(0xFF39FF14)),
-              const Padding(padding: EdgeInsets.symmetric(vertical: 12), child: Divider(color: Colors.white24, height: 1)),
-              _buildSummaryRow("Total Payout:", _formatCash(payout), Colors.white, isBold: true),
-              const SizedBox(height: 12),
-              const Text("Warning: Funds cannot be withdrawn early under any circumstances.", style: TextStyle(color: Colors.redAccent, fontSize: 11, fontStyle: FontStyle.italic), textAlign: TextAlign.center)
-            ],
-          ),
-          actions: [
-            TextButton(onPressed: () => Navigator.pop(ctx), child: const Text("CANCEL", style: TextStyle(color: Colors.grey, fontWeight: FontWeight.bold))),
-            ElevatedButton(
-              style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF39FF14), foregroundColor: Colors.black, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(4))),
-              onPressed: () {
-                Navigator.pop(ctx);
-                _processDeposit();
-              },
-              child: const Text("CONFIRM", style: TextStyle(fontWeight: FontWeight.bold)),
-            ),
-          ],
-        );
-      },
-    );
-  }
+        _account = decoded['account'] is Map
+            ? Map<String, dynamic>.from(decoded['account'])
+            : <String, dynamic>{};
 
-  Future<void> _claimCheck(int checkIndex) async {
-    var check = pendingChecks[checkIndex];
-    String checkId = check['id'].toString();
-    String userId = widget.userData['user_id'].toString();
+        _deposits = decoded['recorded_time_deposits'] is List
+            ? (decoded['recorded_time_deposits'] as List)
+                .map((e) => Map<String, dynamic>.from(e as Map))
+                .toList()
+            : <Map<String, dynamic>>[];
 
-    showDialog(
-      context: context,
-      barrierDismissible: false,
-      builder: (context) => const Center(child: CircularProgressIndicator(color: Colors.blueAccent)),
-    );
+        _checks = decoded['recorded_pending_checks'] is List
+            ? (decoded['recorded_pending_checks'] as List)
+                .map((e) => Map<String, dynamic>.from(e as Map))
+                .toList()
+            : <Map<String, dynamic>>[];
 
-    try {
-      final response = await http.post(
-        Uri.parse('${ApiConfig.baseUrl}/bank/claim-check'),
-        headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({'userId': userId, 'checkId': checkId}),
-      );
-
-      if (mounted) Navigator.pop(context);
-
-      if (response.statusCode == 200) {
-        final data = jsonDecode(response.body);
-        double amount = _parseDouble(check['amount']);
-
-        setState(() {
-          cleanCash = _parseSafeInt(data['updatedCash']['clean_cash']);
-          totalCash = dirtyCash + cleanCash;
-          widget.userData['clean_cash'] = cleanCash;
-
-          pendingChecks.removeAt(checkIndex);
-          widget.userData['pending_checks'] = pendingChecks;
-          widget.onStateChange(widget.userData);
-        });
-
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("Successfully withdrew \$${_formatCash(amount)} to your clean wallet."), backgroundColor: Colors.blueAccent));
-      } else {
-        final errorData = jsonDecode(response.body);
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("Error: ${errorData['error']}"), backgroundColor: Colors.redAccent));
-      }
+        _blockers = decoded['blockers'] is List
+            ? List<dynamic>.from(decoded['blockers'])
+            : <dynamic>[];
+      });
     } catch (e) {
-      if (mounted) Navigator.pop(context);
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("Network Error: $e"), backgroundColor: Colors.redAccent));
+      if (!mounted) return;
+      setState(() => _error = e.toString());
+    } finally {
+      if (mounted) setState(() => _loading = false);
     }
   }
 
-  @override
-  void dispose() {
-    _ticker?.cancel();
-    _amountController.dispose();
-    super.dispose();
+  String _formatInteger(dynamic value) {
+    final raw = value?.toString() ?? '0';
+    final match = RegExp(r'^(-?)(\d+)$').firstMatch(raw);
+    if (match == null) return raw;
+
+    final sign = match.group(1) ?? '';
+    final digits = match.group(2) ?? '0';
+    final out = StringBuffer();
+
+    for (int i = 0; i < digits.length; i++) {
+      if (i > 0 && (digits.length - i) % 3 == 0) {
+        out.write(',');
+      }
+      out.write(digits[i]);
+    }
+
+    return '$sign$out';
+  }
+
+  String _formatCash(dynamic value) => '\$${_formatInteger(value)}';
+
+  String _formatStatus(dynamic value) =>
+      (value?.toString() ?? 'unknown').replaceAll('_', ' ').toUpperCase();
+
+  String _formatTimestamp(dynamic value) {
+    if (value == null) return 'n/a';
+    final parsed = DateTime.tryParse(value.toString());
+    if (parsed == null) return value.toString();
+    return parsed.toLocal().toString();
   }
 
   @override
   Widget build(BuildContext context) {
-    double currentBaseRate = _baseRates[_selectedDurationIndex];
-    double totalRate = currentBaseRate + _perkBonus;
-
-    double dirtyUsed = hasActiveDeposit ? activeDirtyUsed : min(_depositAmount, dirtyCash.toDouble());
-    double cleanUsed = hasActiveDeposit ? activeCleanUsed : max(0, _depositAmount - dirtyCash.toDouble());
-    double interestEarned = _depositAmount * totalRate;
-    double totalPayout = _depositAmount + interestEarned;
-
     return Scaffold(
-      backgroundColor: const Color(0xFF121212),
-      body: SingleChildScrollView(
-        padding: const EdgeInsets.all(12.0),
+      backgroundColor: cBlack,
+      appBar: AppBar(
+        backgroundColor: Colors.black,
+        title: const Text(
+          'THE BANK',
+          style: TextStyle(
+            color: Colors.white,
+            fontSize: 16,
+            fontWeight: FontWeight.w900,
+            letterSpacing: 1.4,
+          ),
+        ),
+        iconTheme: const IconThemeData(color: cGreen),
+        actions: [
+          IconButton(
+            onPressed: _loading ? null : _fetchBank,
+            icon: const Icon(Icons.refresh),
+            tooltip: 'Refresh',
+          ),
+        ],
+      ),
+      body: _loading
+          ? const Center(child: CircularProgressIndicator(color: cGreen))
+          : _error != null
+              ? _buildError()
+              : RefreshIndicator(
+                  onRefresh: _fetchBank,
+                  color: cGreen,
+                  child: ListView(
+                    padding: const EdgeInsets.all(14),
+                    children: [
+                      _buildStatusBanner(),
+                      const SizedBox(height: 12),
+                      _buildBalances(),
+                      const SizedBox(height: 18),
+                      _sectionTitle('RECORDED TIME DEPOSITS'),
+                      const SizedBox(height: 8),
+                      if (_deposits.isEmpty)
+                        _emptyCard('No recorded time deposits.')
+                      else
+                        ..._deposits.map(_buildDepositCard),
+                      const SizedBox(height: 18),
+                      _sectionTitle('RECORDED PENDING CHECKS'),
+                      const SizedBox(height: 8),
+                      if (_checks.isEmpty)
+                        _emptyCard('No recorded pending checks.')
+                      else
+                        ..._checks.map(_buildCheckCard),
+                    ],
+                  ),
+                ),
+    );
+  }
+
+  Widget _buildError() {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(24),
         child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
           children: [
-
-            // --- SECTION 1: TIME DEPOSIT ---
-            Container(
-              padding: const EdgeInsets.all(12),
-              decoration: BoxDecoration(
-                color: const Color(0xFF1A1A1A),
-                border: Border.all(color: hasActiveDeposit ? const Color(0xFF39FF14).withValues(alpha: 0.5) : Colors.white12),
-                borderRadius: BorderRadius.circular(8),
-              ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      Text(hasActiveDeposit ? "ACTIVE DEPOSIT LOCKED" : "NEW TIME DEPOSIT", style: TextStyle(color: hasActiveDeposit ? const Color(0xFF39FF14) : Colors.white, fontSize: 13, letterSpacing: 1.2, fontWeight: FontWeight.bold)),
-                      if (hasActiveDeposit) const Icon(Icons.lock_clock, color: Color(0xFF39FF14), size: 16),
-                    ],
-                  ),
-                  const Divider(color: Colors.white12, height: 24),
-
-                  // 1. DEPOSIT INPUT
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      const Text("DEPOSIT AMOUNT", style: TextStyle(color: Colors.grey, fontSize: 11, letterSpacing: 1.2, fontWeight: FontWeight.bold)),
-                      if (!hasActiveDeposit) Text("Max Limit: ${_formatCash(currentBankCap)}", style: const TextStyle(color: Colors.white54, fontSize: 10, fontWeight: FontWeight.bold)),
-                    ],
-                  ),
-                  const SizedBox(height: 6),
-                  IgnorePointer(
-                    ignoring: hasActiveDeposit,
-                    child: Opacity(
-                      opacity: hasActiveDeposit ? 0.6 : 1.0,
-                      child: Row(
-                        children: [
-                          Expanded(
-                            child: TextField(
-                              controller: _amountController,
-                              keyboardType: TextInputType.number,
-                              style: const TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold),
-                              decoration: InputDecoration(
-                                prefixIcon: const Icon(Icons.attach_money, color: Colors.grey, size: 20),
-                                filled: true,
-                                fillColor: const Color(0xFF1E1E1E),
-                                contentPadding: const EdgeInsets.symmetric(vertical: 12),
-                                border: OutlineInputBorder(borderRadius: BorderRadius.circular(6), borderSide: BorderSide.none),
-                                hintText: "0",
-                                hintStyle: const TextStyle(color: Colors.white24),
-                              ),
-                              onChanged: _onAmountChanged,
-                            ),
-                          ),
-                          const SizedBox(width: 8),
-                          ElevatedButton(
-                            style: ElevatedButton.styleFrom(
-                              backgroundColor: Colors.grey[800],
-                              foregroundColor: Colors.white,
-                              padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 16),
-                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(6)),
-                            ),
-                            onPressed: totalCash > 0 ? _setMax : null,
-                            child: const Text("MAX", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-                  const SizedBox(height: 16),
-
-                  // 2. DURATION DROPDOWN
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      const Text("INVESTMENT DURATION", style: TextStyle(color: Colors.grey, fontSize: 11, letterSpacing: 1.2, fontWeight: FontWeight.bold)),
-                      if (!hasActiveDeposit) Text("Trust Lvl: $bankTrustLevel", style: const TextStyle(color: Color(0xFF39FF14), fontSize: 11, fontWeight: FontWeight.bold)),
-                    ],
-                  ),
-                  const SizedBox(height: 6),
-                  IgnorePointer(
-                    ignoring: hasActiveDeposit,
-                    child: Opacity(
-                      opacity: hasActiveDeposit ? 0.6 : 1.0,
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 12),
-                        decoration: BoxDecoration(color: const Color(0xFF1E1E1E), borderRadius: BorderRadius.circular(6)),
-                        child: DropdownButton<int>(
-                          value: _selectedDurationIndex,
-                          isExpanded: true,
-                          dropdownColor: const Color(0xFF1A1A1A),
-                          underline: const SizedBox(),
-                          icon: Icon(Icons.arrow_drop_down, color: hasActiveDeposit ? Colors.grey : const Color(0xFF39FF14)),
-                          items: List.generate(_durations.length, (index) {
-                            bool isLocked = index > bankTrustLevel;
-                            return DropdownMenuItem<int>(
-                              value: index,
-                              enabled: !isLocked,
-                              child: Row(
-                                children: [
-                                  if (isLocked) const Icon(Icons.lock, color: Colors.white24, size: 14),
-                                  if (isLocked) const SizedBox(width: 8),
-                                  Text(
-                                    "${_durations[index]}  —  ${(_baseRates[index] * 100).toStringAsFixed(1)}%",
-                                    style: TextStyle(color: isLocked ? Colors.white24 : Colors.white, fontWeight: FontWeight.bold, fontSize: 14),
-                                  ),
-                                ],
-                              ),
-                            );
-                          }),
-                          onChanged: (val) {
-                            if (val != null && !hasActiveDeposit) setState(() => _selectedDurationIndex = val);
-                          },
-                        ),
-                      ),
-                    ),
-                  ),
-                  const SizedBox(height: 20),
-
-                  // 3. PREVIEW GRAPH & STATS
-                  const Text("TRANSACTION PREVIEW", style: TextStyle(color: Colors.grey, fontSize: 11, letterSpacing: 1.2, fontWeight: FontWeight.bold)),
-                  const SizedBox(height: 6),
-                  Container(
-                    height: 240,
-                    padding: const EdgeInsets.all(12),
-                    decoration: BoxDecoration(color: const Color(0xFF121212), border: Border.all(color: Colors.white12), borderRadius: BorderRadius.circular(8)),
-                    child: Row(
-                      children: [
-                        Expanded(flex: 2, child: _buildStackedBarChart(dirtyUsed, cleanUsed, interestEarned, totalPayout)),
-                        const SizedBox(width: 16),
-                        Expanded(
-                          flex: 4,
-                          child: Column(
-                            mainAxisAlignment: MainAxisAlignment.center,
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              _buildStatRow("Dirty Used", _formatCash(dirtyUsed), const Color(0xFF39FF14)),
-                              const SizedBox(height: 8),
-                              _buildStatRow("Clean Used", _formatCash(cleanUsed), Colors.blueAccent),
-                              const SizedBox(height: 8),
-                              _buildStatRow("Interest Gain", "+${_formatCash(interestEarned)}", const Color(0xFF39FF14).withValues(alpha: 0.8)),
-                              const Padding(padding: EdgeInsets.symmetric(vertical: 8), child: Divider(color: Colors.white24, height: 1)),
-                              const Text("TOTAL PAYOUT", style: TextStyle(color: Colors.grey, fontSize: 9, letterSpacing: 1.2, fontWeight: FontWeight.bold)),
-                              Text(_formatCash(totalPayout), style: const TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.w900)),
-                            ],
-                          ),
-                        )
-                      ],
-                    ),
-                  ),
-                  const SizedBox(height: 20),
-
-                  // 4. ACTION BUTTON OR TIMER
-                  SizedBox(
-                    width: double.infinity,
-                    height: 50,
-                    child: hasActiveDeposit
-                        ? (_isDepositMatured
-                            ? ElevatedButton(
-                                style: ElevatedButton.styleFrom(
-                                  backgroundColor: const Color(0xFF39FF14),
-                                  foregroundColor: Colors.black,
-                                  shape: RoundedRectangleBorder(
-                                    borderRadius: BorderRadius.circular(6),
-                                  ),
-                                ),
-                                onPressed: _claimMaturedDeposit,
-                                child: const Text(
-                                  "CLAIM MATURED DEPOSIT",
-                                  style: TextStyle(
-                                    fontSize: 14,
-                                    fontWeight: FontWeight.w900,
-                                    letterSpacing: 1,
-                                  ),
-                                ),
-                              )
-                            : Container(
-                                decoration: BoxDecoration(
-                                  color: const Color(0xFF1E1E1E),
-                                  border: Border.all(color: Colors.white24),
-                                  borderRadius: BorderRadius.circular(6),
-                                ),
-                                alignment: Alignment.center,
-                                child: Row(
-                                  mainAxisAlignment: MainAxisAlignment.center,
-                                  children: [
-                                    const Icon(Icons.timer, color: Colors.white54, size: 18),
-                                    const SizedBox(width: 8),
-                                    Text(
-                                      "UNLOCKS IN: ${_getTimeLeft(activeDepositUnlockTime)}",
-                                      style: const TextStyle(
-                                        color: Colors.white70,
-                                        fontSize: 14,
-                                        fontWeight: FontWeight.bold,
-                                        letterSpacing: 1,
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                              ))
-                        : ElevatedButton(
-                      style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF39FF14), foregroundColor: Colors.black, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(6))),
-                      onPressed: _depositAmount > 0 ? () => _showConfirmationDialog(_depositAmount, _durations[_selectedDurationIndex], interestEarned, totalPayout) : null,
-                      child: const Text("CONFIRM DEPOSIT", style: TextStyle(fontSize: 14, fontWeight: FontWeight.w900, letterSpacing: 1)),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-            const SizedBox(height: 32),
-
-            // --- SECTION 2: CHECK WITHDRAWALS ---
-            const Text("INCOMING TRANSFERS", style: TextStyle(color: Colors.grey, fontSize: 13, letterSpacing: 1.2, fontWeight: FontWeight.bold)),
-            const SizedBox(height: 6),
-            const Text(
-              "WARNING: Uncleared funds will automatically liquidate into your street wallet after 24 hours, increasing risk of muggings.",
-              style: TextStyle(color: Colors.redAccent, fontSize: 11, fontStyle: FontStyle.italic),
-            ),
+            const Icon(Icons.account_balance_outlined,
+                color: Colors.redAccent, size: 34),
             const SizedBox(height: 12),
-
-            if (pendingChecks.isEmpty)
-              Container(
-                width: double.infinity,
-                padding: const EdgeInsets.symmetric(vertical: 24),
-                decoration: BoxDecoration(color: const Color(0xFF1A1A1A), borderRadius: BorderRadius.circular(8), border: Border.all(color: Colors.white24)),
-                child: const Text("No pending transfers found.", textAlign: TextAlign.center, style: TextStyle(color: Colors.white54, fontSize: 13)),
-              )
-            else
-              ...pendingChecks.asMap().entries.map((entry) {
-                int index = entry.key;
-                var check = entry.value;
-                DateTime expiry = DateTime.parse(check['expires_at']).toLocal();
-
-                return Container(
-                  margin: const EdgeInsets.only(bottom: 8),
-                  padding: const EdgeInsets.all(12),
-                  decoration: BoxDecoration(color: const Color(0xFF1E1E1E), border: Border.all(color: Colors.blueAccent.withValues(alpha: 0.3)), borderRadius: BorderRadius.circular(8)),
-                  child: Row(
-                    children: [
-                      const Icon(Icons.account_balance_wallet, color: Colors.blueAccent, size: 28),
-                      const SizedBox(width: 12),
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(check['source'] ?? "Unknown Source", style: const TextStyle(color: Colors.white70, fontSize: 11, fontWeight: FontWeight.bold)),
-                            Text(_formatCash(_parseDouble(check['amount'])), style: const TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w900)),
-                            Text("Auto-liquidates in: ${_getTimeLeft(expiry)}", style: const TextStyle(color: Colors.redAccent, fontSize: 10, fontWeight: FontWeight.bold)),
-                          ],
-                        ),
-                      ),
-                      ElevatedButton(
-                        style: ElevatedButton.styleFrom(backgroundColor: Colors.blueAccent, foregroundColor: Colors.white, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(4))),
-                        onPressed: () => _claimCheck(index),
-                        child: const Text("CLAIM", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12)),
-                      ),
-                    ],
-                  ),
-                );
-              }),
-
-            const SizedBox(height: 40),
+            Text(
+              _error ?? 'Unable to load Bank.',
+              textAlign: TextAlign.center,
+              style: const TextStyle(color: Colors.white70),
+            ),
+            const SizedBox(height: 16),
+            ElevatedButton(
+              onPressed: _fetchBank,
+              style: ElevatedButton.styleFrom(
+                backgroundColor: cGreen,
+                foregroundColor: Colors.black,
+              ),
+              child: const Text('RETRY'),
+            ),
           ],
         ),
       ),
     );
   }
 
-  // --- HELPER WIDGETS ---
-
-  Widget _buildSummaryRow(String label, String value, Color valueColor, {bool isBold = false}) {
-    return Row(
-      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-      children: [
-        Text(label, style: const TextStyle(color: Colors.grey, fontSize: 13)),
-        Text(
-            value,
+  Widget _buildStatusBanner() {
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: Colors.amber.withValues(alpha: 0.07),
+        border: Border.all(color: Colors.amber.withValues(alpha: 0.6)),
+        borderRadius: BorderRadius.circular(6),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Row(
+            children: [
+              Icon(Icons.shield_outlined, color: Colors.amber, size: 18),
+              SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  'BANK SETTLEMENT PAUSED — SOURCE RECONCILIATION',
+                  style: TextStyle(
+                    color: Colors.amber,
+                    fontSize: 11,
+                    fontWeight: FontWeight.w900,
+                    letterSpacing: 0.7,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          const Text(
+            'Deposit creation, matured-deposit payout, and pending-check claims are disabled. Historical code would convert deposited Dirty Cash into Clean Cash at maturity, which conflicts with the recovered laundering model.',
             style: TextStyle(
-                color: valueColor,
-                fontSize: isBold ? 16 : 14,
-                fontWeight: isBold ? FontWeight.bold : FontWeight.w500
-            )
-        ),
-      ],
+              color: Colors.white70,
+              fontSize: 11,
+              height: 1.45,
+            ),
+          ),
+          const SizedBox(height: 10),
+          Wrap(
+            spacing: 8,
+            runSpacing: 6,
+            children: [
+              _chip('BANK', _bankStatus),
+              _chip('TERMS', _termsStatus),
+              _chip('DIRTY→CLEAN', _conversionStatus),
+              _chip('CHECK SOURCE', _checkProducerStatus),
+            ],
+          ),
+          if (_blockers.isNotEmpty) ...[
+            const SizedBox(height: 10),
+            Text(
+              'Blocked by: ${_blockers.map((e) => e.toString().replaceAll('_', ' ')).join(', ')}',
+              style: const TextStyle(color: Colors.white38, fontSize: 9),
+            ),
+          ],
+        ],
+      ),
     );
   }
 
-  Widget _buildStatRow(String label, String value, Color valueColor) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(label, style: const TextStyle(color: Colors.grey, fontSize: 10, fontWeight: FontWeight.bold, letterSpacing: 0.5)),
-        const SizedBox(height: 2),
-        Text(value, style: TextStyle(color: valueColor, fontSize: 14, fontWeight: FontWeight.bold)),
-      ],
+  Widget _buildBalances() {
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: cPanel,
+        border: Border.all(color: Colors.white12),
+        borderRadius: BorderRadius.circular(6),
+      ),
+      child: Column(
+        children: [
+          _row('Dirty Cash', _formatCash(_account['dirty_cash']), cGreen),
+          const SizedBox(height: 8),
+          _row(
+            'Clean Cash',
+            _formatCash(_account['clean_cash']),
+            Colors.blueAccent,
+          ),
+          const Divider(color: Colors.white12, height: 20),
+          _row(
+            'Recorded Bank Trust',
+            _formatInteger(_account['bank_trust_level_recorded']),
+            Colors.white70,
+          ),
+          const SizedBox(height: 6),
+          const Align(
+            alignment: Alignment.centerLeft,
+            child: Text(
+              'Bank Trust progression is not currently source-reconciled and does not unlock executable deposit terms.',
+              style: TextStyle(
+                color: Colors.white38,
+                fontSize: 9,
+                height: 1.35,
+              ),
+            ),
+          ),
+        ],
+      ),
     );
   }
 
-  Widget _buildStackedBarChart(double dirty, double clean, double interest, double total) {
-    if (total == 0) {
-      return Container(decoration: BoxDecoration(border: Border(bottom: BorderSide(color: Colors.grey.shade800, width: 2))));
-    }
+  Widget _buildDepositCard(Map<String, dynamic> deposit) {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 8),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: cPanel,
+        border: Border.all(color: Colors.white12),
+        borderRadius: BorderRadius.circular(6),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Icon(Icons.lock_clock, color: Colors.white54, size: 18),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  'DEPOSIT #${deposit['deposit_id']}',
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 11,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+              ),
+              const Text(
+                'SETTLEMENT PAUSED',
+                style: TextStyle(
+                  color: Colors.amber,
+                  fontSize: 8,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          _row(
+            'Dirty principal recorded',
+            _formatCash(deposit['dirty_deposited']),
+            cGreen,
+          ),
+          _row(
+            'Clean principal recorded',
+            _formatCash(deposit['clean_deposited']),
+            Colors.blueAccent,
+          ),
+          _row(
+            'Payout recorded',
+            _formatCash(deposit['total_payout_recorded']),
+            Colors.white70,
+          ),
+          _row(
+            'Duration index recorded',
+            deposit['duration_index_recorded']?.toString() ?? 'n/a',
+            Colors.white54,
+          ),
+          _row(
+            'Status',
+            _formatStatus(deposit['status']),
+            Colors.white54,
+          ),
+          _row(
+            'Created',
+            _formatTimestamp(deposit['created_at']),
+            Colors.white38,
+          ),
+          _row(
+            'Unlock timestamp',
+            _formatTimestamp(deposit['unlocks_at']),
+            Colors.white38,
+          ),
+          const SizedBox(height: 6),
+          Text(
+            deposit['timestamp_matured'] == true
+                ? 'Timestamp has passed, but payout remains paused pending settlement reconciliation.'
+                : 'Recorded unlock timestamp has not passed.',
+            style: const TextStyle(
+              color: Colors.white38,
+              fontSize: 9,
+              height: 1.35,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
 
-    int interestFlex = max(1, ((interest / total) * 1000).toInt());
-    int dirtyFlex = max(1, ((dirty / total) * 1000).toInt());
-    int cleanFlex = max(1, ((clean / total) * 1000).toInt());
+  Widget _buildCheckCard(Map<String, dynamic> check) {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 8),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: cPanel,
+        border: Border.all(color: Colors.white12),
+        borderRadius: BorderRadius.circular(6),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Icon(Icons.receipt_long, color: Colors.white54, size: 18),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  check['source']?.toString() ?? 'Unknown source',
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 11,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+              ),
+              const Text(
+                'CLAIM PAUSED',
+                style: TextStyle(
+                  color: Colors.amber,
+                  fontSize: 8,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          _row(
+            'Recorded amount',
+            _formatCash(check['amount_recorded']),
+            Colors.blueAccent,
+          ),
+          _row('Status', _formatStatus(check['status']), Colors.white54),
+          _row(
+            'Created',
+            _formatTimestamp(check['created_at']),
+            Colors.white38,
+          ),
+          _row(
+            'Expiry timestamp',
+            _formatTimestamp(check['expires_at']),
+            Colors.white38,
+          ),
+          const SizedBox(height: 6),
+          const Text(
+            'No authoritative producer or auto-liquidation worker for pending checks was recovered, so expiry does not currently trigger a payout path.',
+            style: TextStyle(
+              color: Colors.white38,
+              fontSize: 9,
+              height: 1.35,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
 
-    List<Widget> bars = [];
-
-    if (interest > 0) {
-      bars.add(Flexible(
-        flex: interestFlex,
-        child: Container(
-          width: 50,
-          decoration: BoxDecoration(color: const Color(0xFF39FF14).withValues(alpha: 0.1), border: Border.all(color: const Color(0xFF39FF14), width: 1.5), borderRadius: const BorderRadius.vertical(top: Radius.circular(4))),
+  Widget _chip(String label, String value) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+      decoration: BoxDecoration(
+        color: cPanel,
+        border: Border.all(color: Colors.white12),
+        borderRadius: BorderRadius.circular(4),
+      ),
+      child: Text(
+        '$label: ${_formatStatus(value)}',
+        style: const TextStyle(
+          color: Colors.white54,
+          fontSize: 8,
+          fontWeight: FontWeight.bold,
         ),
-      ));
-    }
-    if (dirty > 0) {
-      bars.add(Flexible(
-        flex: dirtyFlex,
-        child: Container(width: 50, decoration: BoxDecoration(color: const Color(0xFF39FF14), borderRadius: interest == 0 ? const BorderRadius.vertical(top: Radius.circular(4)) : BorderRadius.zero)),
-      ));
-    }
-    if (clean > 0) {
-      bars.add(Flexible(
-        flex: cleanFlex,
-        child: Container(width: 50, decoration: BoxDecoration(color: Colors.blueAccent, borderRadius: (interest == 0 && dirty == 0) ? BorderRadius.circular(4) : const BorderRadius.vertical(bottom: Radius.circular(4)))),
-      ));
-    }
+      ),
+    );
+  }
 
-    return Column(mainAxisAlignment: MainAxisAlignment.end, children: bars);
+  Widget _row(String label, String value, Color color) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 5),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Expanded(
+            child: Text(
+              label,
+              style: const TextStyle(color: Colors.white38, fontSize: 9),
+            ),
+          ),
+          const SizedBox(width: 12),
+          Flexible(
+            child: Text(
+              value,
+              textAlign: TextAlign.right,
+              style: TextStyle(
+                color: color,
+                fontSize: 10,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _sectionTitle(String text) {
+    return Text(
+      text,
+      style: const TextStyle(
+        color: Colors.white54,
+        fontSize: 10,
+        fontWeight: FontWeight.bold,
+        letterSpacing: 1.2,
+      ),
+    );
+  }
+
+  Widget _emptyCard(String text) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(vertical: 24, horizontal: 16),
+      decoration: BoxDecoration(
+        color: cPanel,
+        border: Border.all(color: Colors.white12),
+        borderRadius: BorderRadius.circular(6),
+      ),
+      child: Text(
+        text,
+        textAlign: TextAlign.center,
+        style: const TextStyle(color: Colors.white38, fontSize: 11),
+      ),
+    );
   }
 }
