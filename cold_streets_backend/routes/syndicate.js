@@ -6,85 +6,16 @@ const { requireOwnedPlayerParam } = require('../middleware/playerIdentity');
 router.param('user_id', requireOwnedPlayerParam);
 
 const pool = require('../db');
-const { randomInt } = require('node:crypto');
 const {
-    ActionError, integer, dbInteger, exactJsonAmount, actorId, sendActionError
+    ActionError, integer, actorId, sendActionError
 } = require('../utils/economyValidation');
 const { requireIdempotencyKey, beginIdempotent, completeIdempotent } = require('../utils/idempotency');
-const { handleCrewDomainTransfer } = require('../utils/crewDomain');
-const {
-    getCrewCrimeRule, listCrewCrimeRules, ownsRequiredTool
-} = require('../utils/crewCrimeCatalog');
+const { listCrewCrimeRules } = require('../utils/crewCrimeCatalog');
 
-// --- CONSTANTS & POOLS ---
-const firstNames = [
-    "Aaron", "Adrian", "Alejandro", "Alex", "Alonzo", "Andre", "Andres", "Anthony", "Antonio", "Armando",
-    "Arthur", "Benjamin", "Brian", "Caleb", "Calvin", "Camila", "Carlos", "Carmen", "Carter", "Cesar",
-    "Charles", "Christian", "Christopher", "Claudia", "Damian", "Daniel", "Dante", "Darius", "David", "Desmond",
-    "Diego", "Dominic", "Edgar", "Eduardo", "Elena", "Elias", "Emilio", "Emmanuel", "Eric", "Esteban",
-    "Eva", "Fernando", "Francisco", "Gabriel", "Hector", "Hugo", "Isaac", "Isabella", "Ivan", "Jace",
-    "Jackson", "Jacob", "Jamal", "James", "Javier", "Jax", "Jeremiah", "Jesse", "Jimmy", "Joaquin",
-    "John", "Jonathan", "Jordan", "Jorge", "Jose", "Joseph", "Juan", "Julian", "Julio", "Justin",
-    "Kevin", "Leo", "Leon", "Leonardo", "Lorenzo", "Lucas", "Luis", "Malik", "Manuel", "Marcus",
-    "Maria", "Mario", "Martin", "Mateo", "Matthew", "Mia", "Michael", "Miguel", "Miles", "Nathaniel",
-    "Nicolas", "Oscar", "Pablo", "Pedro", "Rafael", "Ramon", "Raul", "Raymond", "Ricardo", "Richard",
-    "Robert", "Roberto", "Roman", "Rosa", "Ruben", "Ryan", "Samuel", "Santiago", "Silas", "Sofia",
-    "Thomas", "Tommy", "Tyler", "Tyrone", "Valentina", "Victor", "Vincent", "William", "Xavier", "Zachary"
-];
-
-const lastNames = [
-    "Aguilar", "Alvarez", "Arias", "Avila", "Ayala", "Bautista", "Beltran", "Benitez", "Black", "Brooks",
-    "Cabrera", "Calderon", "Camacho", "Campos", "Cardenas", "Carrillo", "Castaneda", "Castillo", "Castro", "Cervantes",
-    "Chavez", "Cisneros", "Contreras", "Cordova", "Corona", "Coronado", "Cortez", "Cross", "Cruz", "Daniels",
-    "Delgado", "Diaz", "Dominguez", "Duran", "Escobar", "Espinoza", "Estrada", "Fernandez", "Figueroa", "Flores",
-    "Franco", "Fuentes", "Gallardo", "Galvan", "Garcia", "Garza", "Gomez", "Gonzales", "Gonzalez", "Guerra",
-    "Guerrero", "Gutierrez", "Guzman", "Hernandez", "Herrera", "Huerta", "Jackson", "Jenkins", "Jimenez", "Juarez",
-    "Lara", "Leon", "Lopez", "Lozano", "Luna", "Macias", "Marquez", "Martinez", "Medina", "Mejia",
-    "Melendez", "Mendez", "Mendoza", "Mercado", "Miranda", "Molina", "Montes", "Montoya", "Mora", "Morales",
-    "Moreno", "Munoz", "Navarro", "Nelson", "Nunez", "Ochoa", "Orozco", "Ortiz", "Pacheco", "Padilla",
-    "Palacios", "Pena", "Perez", "Pineda", "Ponce", "Price", "Ramirez", "Ramos", "Reed", "Reyes",
-    "Rios", "Rivas", "Rivera", "Robles", "Rocha", "Rodriguez", "Rojas", "Roman", "Romero", "Rosales",
-    "Ruiz", "Salas", "Salazar", "Salinas", "Sanchez", "Sandoval", "Santana", "Santiago", "Santos", "Serrano",
-    "Silva", "Solis", "Soto", "Suarez", "Tapia", "Torres", "Trevino", "Trujillo", "Valdez", "Valenzuela"
-];
-
-// V1.2 FIX: Massive Stat Boost & Progression Scaling
-const RECRUITMENT_COOLDOWN_SECONDS = 120;
-
-const TIER_DATA = {
-    1: { name: "Runner", minLvl: 1, curRange: [10, 50], maxRange: [100, 1000], barMax: 1000 },
-    2: { name: "Hustler", minLvl: 15, curRange: [100, 500], maxRange: [2000, 10000], barMax: 10000 },
-    3: { name: "Enforcer", minLvl: 25, curRange: [1000, 5000], maxRange: [20000, 80000], barMax: 80000 },
-    4: { name: "Specialist", minLvl: 35, curRange: [10000, 25000], maxRange: [100000, 350000], barMax: 350000 },
-    5: { name: "Lieutenant", minLvl: 50, curRange: [50000, 100000], maxRange: [500000, 1000000], barMax: 1000000 }
-};
-
-const getRnd = (min, max) => randomInt(min, max + 1);
-
-async function generateUniqueName(client, userId, reserved = new Set()) {
-    for (let attempts = 0; attempts < 100; attempts++) {
-        const name = firstNames[getRnd(0, firstNames.length - 1)] + ' ' +
-            lastNames[getRnd(0, lastNames.length - 1)];
-        if (reserved.has(name)) continue;
-        const check = await client.query(
-            `SELECT 1
-               FROM user_crew
-              WHERE user_id = $1 AND npc_name = $2
-             UNION ALL
-             SELECT 1
-               FROM recruitment_offers
-              WHERE user_id = $1 AND npc_name = $2
-                AND claimed_at IS NULL AND expires_at > NOW()
-             LIMIT 1`,
-            [userId, name]
-        );
-        if (!check.rowCount) {
-            reserved.add(name);
-            return name;
-        }
-    }
-    throw new Error('Could not generate a unique recruit name.');
-}
+// Recruit generation/hiring is intentionally absent here. Recruits Canvas
+// conflicts with the legacy generator on stat ranges and leaves the cost
+// multipliers undefined. The endpoints below remain fail-closed until the
+// owner selects canonical rules.
 
 // --- ROUTES ---
 
