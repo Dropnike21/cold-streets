@@ -657,7 +657,7 @@ class _CompanyManagementViewState extends State<CompanyManagementView> {
       children: [
         const Text("INVENTORY MANAGEMENT", style: TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.bold)),
         const SizedBox(height: 8),
-        const Text("WARNING: External stock shipments suffer a 1-day delivery delay.", style: TextStyle(color: Colors.redAccent, fontSize: 10, fontStyle: FontStyle.italic)),
+        const Text("STOCK ORDERING PAUSED: supplier contracts, system markup, delivery timing, and authoritative product blueprints are not yet reconciled.", style: TextStyle(color: Colors.amber, fontSize: 10, fontStyle: FontStyle.italic, height: 1.4)),
         const SizedBox(height: 16),
 
         if (inputProducts.isEmpty)
@@ -683,8 +683,8 @@ class _CompanyManagementViewState extends State<CompanyManagementView> {
                 Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
-                      const Text("System Price (+20%):", style: TextStyle(color: Colors.white54, fontSize: 11)),
-                      Text("\$${_formatNumber(cost * 1.20)}", style: const TextStyle(color: Colors.redAccent, fontSize: 11, fontWeight: FontWeight.bold))
+                      const Text("Recorded Unit Price:", style: TextStyle(color: Colors.white54, fontSize: 11)),
+                      Text("\$${_formatNumber(cost)}", style: const TextStyle(color: Colors.white70, fontSize: 11, fontWeight: FontWeight.bold))
                     ]
                 ),
                 const SizedBox(height: 16),
@@ -706,9 +706,9 @@ class _CompanyManagementViewState extends State<CompanyManagementView> {
                 SizedBox(
                   width: double.infinity, height: 40,
                   child: ElevatedButton(
-                      onPressed: orderTotal > 0 ? () => _submitAction('order-stock', {'item_id': id, 'order_quantity': _orderControllers[id]!.text, 'total_cost': orderTotal}) : null,
+                      onPressed: null,
                       style: ElevatedButton.styleFrom(backgroundColor: neonGreen.withValues(alpha: 0.1), side: BorderSide(color: neonGreen)),
-                      child: Text("PLACE ORDER", style: TextStyle(color: neonGreen, fontWeight: FontWeight.bold))
+                      child: const Text("ORDERING PAUSED", style: TextStyle(color: Colors.white24, fontWeight: FontWeight.bold))
                   ),
                 )
               ],
@@ -916,97 +916,31 @@ class _CompanyManagementViewState extends State<CompanyManagementView> {
     );
   }
 
-  // --- 7. UPGRADES (Dynamic Progress Bars) ---
+  // --- 7. UPGRADES ---
   Widget _buildUpgradesView() {
-    int setupCost = _safeInt(_company['setup_cost'], fallback: 2500000);
-    int dirtyCash = _safeInt(_company['bank_dirty']);
-
-    int curSize = _safeInt(_company['size_upgrade_level'], fallback: 0);
-    int curStaff = _safeInt(_company['staff_room_level'], fallback: 0);
-    int curWare = _safeInt(_company['warehouse_level'], fallback: 0);
-    bool hasWarehouse = _safeInt(_company['base_warehouse_max'], fallback: 100) > 0;
-
-    int maxLevel = 8;
-
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
-        const Text("COMPANY UPGRADES", style: TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.bold)),
-        const SizedBox(height: 8),
-        const Text("Upgrades are purchased using Corporate Dirty Cash.", style: TextStyle(color: Colors.white54, fontSize: 10, fontStyle: FontStyle.italic)),
-        const SizedBox(height: 16),
-
-        _buildUpgradeCard("Company Size", "Increases max employees by 25%. Costs ${10 + (curSize*10)}% of base startup cost.", (setupCost * (0.10 + (curSize*0.10))).toInt(), dirtyCash, 'size', curSize, maxLevel),
-        _buildUpgradeCard("Staff Room", "Helps maintain 100% environment.", (setupCost * (0.05 + (curStaff*0.05))).toInt(), dirtyCash, 'staff', curStaff, maxLevel),
-
-        if (hasWarehouse)
-          _buildUpgradeCard("Warehouse Space", "Expands input/output capacity.", (setupCost * (0.15 + (curWare*0.15))).toInt(), dirtyCash, 'warehouse', curWare, maxLevel)
-        else
-          const Padding(
-            padding: EdgeInsets.all(16.0),
-            child: Text("This industry does not utilize a warehouse.", style: TextStyle(color: Colors.white54, fontStyle: FontStyle.italic)),
+        const Text(
+          "COMPANY UPGRADES",
+          style: TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.bold),
+        ),
+        const SizedBox(height: 12),
+        Container(
+          padding: const EdgeInsets.all(14),
+          decoration: BoxDecoration(
+            color: Colors.amber.withValues(alpha: 0.07),
+            border: Border.all(color: Colors.amber.withValues(alpha: 0.5)),
+            borderRadius: BorderRadius.circular(6),
           ),
+          child: const Text(
+            "UPGRADE PURCHASES PAUSED\n\nThe old client calculated upgrade costs from startup cost and local level formulas. The recovered upgrade definitions remain legacy text and the normalized upgrade catalog is incomplete, so no client-side price is authoritative.",
+            style: TextStyle(color: Colors.amber, fontSize: 10, height: 1.45, fontWeight: FontWeight.bold),
+          ),
+        ),
       ],
     );
   }
-
-  Widget _buildUpgradeCard(String title, String desc, int cost, int dirtyCash, String type, int currentLevel, int maxLevel) {
-    bool canAfford = dirtyCash >= cost;
-    bool isMaxed = currentLevel >= maxLevel;
-
-    return Container(
-      margin: const EdgeInsets.only(bottom: 12), padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(color: darkSurface, border: Border.all(color: const Color(0xFF333333)), borderRadius: BorderRadius.circular(4)),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(title, style: TextStyle(color: neonGreen, fontSize: 12, fontWeight: FontWeight.bold)),
-                    const SizedBox(height: 4),
-                    Text(desc, style: const TextStyle(color: Colors.white54, fontSize: 9)),
-                    const SizedBox(height: 4),
-                    if (!isMaxed)
-                      Text("Cost: \$${_formatNumber(cost)}", style: TextStyle(color: canAfford ? Colors.white : Colors.redAccent, fontSize: 10, fontWeight: FontWeight.bold))
-                    else
-                      const Text("MAXIMUM LEVEL REACHED", style: TextStyle(color: Colors.amberAccent, fontSize: 10, fontWeight: FontWeight.bold)),
-                  ],
-                ),
-              ),
-              if (!isMaxed)
-                ElevatedButton(
-                    onPressed: canAfford ? () => _submitAction('buy-upgrade', {'upgrade_type': type, 'cost': cost}) : null,
-                    style: ElevatedButton.styleFrom(backgroundColor: Colors.amber.withValues(alpha: 0.1), side: const BorderSide(color: Colors.amber)),
-                    child: const Text("BUY", style: TextStyle(color: Colors.amber))
-                )
-            ],
-          ),
-          const SizedBox(height: 12),
-          Row(
-            children: List.generate(maxLevel, (index) {
-              bool isUnlocked = index < currentLevel;
-              return Expanded(
-                child: Container(
-                  height: 6,
-                  margin: const EdgeInsets.only(right: 4),
-                  decoration: BoxDecoration(
-                      color: isUnlocked ? neonGreen : Colors.black,
-                      border: Border.all(color: isUnlocked ? neonGreen : const Color(0xFF333333)),
-                      borderRadius: BorderRadius.circular(2)
-                  ),
-                ),
-              );
-            }),
-          )
-        ],
-      ),
-    );
-  }
-
   // --- 8. EDIT PROFILE ---
   Widget _buildEditProfileView() {
     return ListView(
@@ -1058,17 +992,22 @@ class _CompanyManagementViewState extends State<CompanyManagementView> {
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
-        const Text("LIQUIDATE ASSETS", style: TextStyle(color: Colors.redAccent, fontSize: 12, fontWeight: FontWeight.bold, letterSpacing: 1)),
-        const SizedBox(height: 8),
-        const Text("Selling your company to the system permanently destroys it. All employees will be fired.\n\nReturns:\n• 75% of initial cost\n• 75% of all upgrades\n• 5% of lifetime revenue\n• 100% of current vault funds", style: TextStyle(color: Colors.white70, fontSize: 11, height: 1.5)),
-        const SizedBox(height: 32),
-        SizedBox(
-            width: double.infinity, height: 50,
-            child: ElevatedButton(
-                onPressed: () => _submitAction('sell-company', {}),
-                style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent.withValues(alpha: 0.2), side: const BorderSide(color: Colors.redAccent, width: 2)),
-                child: const Text("SELL COMPANY", style: TextStyle(color: Colors.redAccent, fontSize: 14, fontWeight: FontWeight.bold, letterSpacing: 2))
-            )
+        const Text(
+          "COMPANY LIQUIDATION",
+          style: TextStyle(color: Colors.redAccent, fontSize: 12, fontWeight: FontWeight.bold, letterSpacing: 1),
+        ),
+        const SizedBox(height: 12),
+        Container(
+          padding: const EdgeInsets.all(14),
+          decoration: BoxDecoration(
+            color: Colors.redAccent.withValues(alpha: 0.06),
+            border: Border.all(color: Colors.redAccent.withValues(alpha: 0.45)),
+            borderRadius: BorderRadius.circular(6),
+          ),
+          child: const Text(
+            "LIQUIDATION PAUSED\n\nThe legacy 75% setup/upgrade refund, 5% lifetime-revenue return, vault distribution, employee severance, and bankruptcy settlement are not source-reconciled. No liquidation payout is currently calculated or displayed.",
+            style: TextStyle(color: Colors.redAccent, fontSize: 10, height: 1.5, fontWeight: FontWeight.bold),
+          ),
         ),
       ],
     );
