@@ -575,10 +575,23 @@ router.get('/:company_id/dashboard/:user_id', async (req, res) => {
                 WHERE cs.company_id = $1 AND cs.arrival_date > NOW()
             `, [company_id]),
             pool.query(`
-                SELECT ca.*, u.username, u.level, u.stat_acu, u.stat_ops, u.stat_pre, u.stat_res
-                FROM company_applicants ca
-                JOIN users u ON ca.user_id = u.user_id
-                WHERE ca.company_id = $1 AND ca.status = 'Pending'
+                SELECT ca.*,
+                       u.username, u.level,
+                       u.stat_acu, u.stat_ops, u.stat_pre, u.stat_res,
+                       eo.offer_id AS pending_offer_id,
+                       eo.position_id AS pending_offer_position_id,
+                       eo.daily_salary_clean AS pending_offer_daily_salary_clean,
+                       ep.role_key AS pending_offer_role_key
+                  FROM company_applicants ca
+                  JOIN users u ON ca.user_id = u.user_id
+                  LEFT JOIN company_employment_offers eo
+                    ON eo.application_id = ca.application_id
+                   AND eo.status = 'pending'
+                  LEFT JOIN company_positions_master ep
+                    ON ep.position_id = eo.position_id
+                 WHERE ca.company_id = $1
+                   AND ca.status = 'Pending'
+                 ORDER BY ca.application_id ASC
             `, [company_id]),
             pool.query(`
                 SELECT special_id, type_id, star_requirement AS star,
