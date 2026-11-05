@@ -30,6 +30,9 @@ class _CityHallViewState extends State<CityHallView> {
 
   List<dynamic> _blueprints = [];
   List<dynamic> _myCompanies = [];
+  List<dynamic> _employmentOffers = [];
+  bool _incorporationAvailable = false;
+  String _incorporationBlocker = 'Company incorporation is paused.';
 
   final int _itemsPerPage = 7;
   int _levelPage = 0;
@@ -62,6 +65,11 @@ class _CityHallViewState extends State<CityHallView> {
       if (blueprintsRes.statusCode == 200) {
         final bData = jsonDecode(blueprintsRes.body);
         _blueprints = bData['blueprints'] ?? [];
+        _incorporationAvailable =
+            bData['incorporation_available'] == true;
+        _incorporationBlocker =
+            bData['incorporation_blocker']?.toString() ??
+                'Company incorporation is paused.';
       } else {
         debugPrint("Failed Blueprints: ${blueprintsRes.statusCode}");
       }
@@ -72,6 +80,18 @@ class _CityHallViewState extends State<CityHallView> {
         _myCompanies = cData['companies'] ?? [];
       } else {
         debugPrint("Failed My Companies: ${myCompaniesRes.statusCode}");
+      }
+
+      final offersRes = await http.get(
+        Uri.parse(
+          '$companiesApiUrl/employment-offers/${widget.userData['user_id']}',
+        ),
+      );
+      if (offersRes.statusCode == 200) {
+        final oData = jsonDecode(offersRes.body);
+        _employmentOffers = oData['offers'] ?? [];
+      } else {
+        debugPrint("Failed Employment Offers: ${offersRes.statusCode}");
       }
 
       if (mounted) setState(() => _isLoading = false);
@@ -130,6 +150,10 @@ class _CityHallViewState extends State<CityHallView> {
   }
 
   void _openIncorporationDialog(Map<String, dynamic> blueprint) {
+    if (!_incorporationAvailable) {
+      _showSnackbar(_incorporationBlocker, isError: true);
+      return;
+    }
     final TextEditingController nameController = TextEditingController();
 
     showDialog(
@@ -188,7 +212,7 @@ class _CityHallViewState extends State<CityHallView> {
     try {
       final response = await http.post(Uri.parse('$companiesApiUrl/incorporate'),
           headers: {"Content-Type": "application/json"},
-          body: jsonEncode({"user_id": widget.userData['user_id'], "type_id": typeId, "company_name": companyName}));
+          body: jsonEncode({"type_id": typeId, "company_name": companyName}));
 
       final data = jsonDecode(response.body);
 
@@ -202,6 +226,37 @@ class _CityHallViewState extends State<CityHallView> {
       }
     } catch (e) {
       _showSnackbar("Network error submitting registration.", isError: true);
+    } finally {
+      if (mounted) setState(() => _isProcessing = false);
+    }
+  }
+
+  Future<void> _respondEmploymentOffer(
+    dynamic offer,
+    String action,
+  ) async {
+    setState(() => _isProcessing = true);
+    try {
+      final response = await http.post(
+        Uri.parse('$companiesApiUrl/employment-offers/respond'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'offer_id': offer['offer_id'],
+          'action': action,
+        }),
+      );
+      final data = jsonDecode(response.body);
+      if (response.statusCode == 200) {
+        _showSnackbar(data['message']?.toString() ?? 'Offer updated.');
+        await _fetchData();
+      } else {
+        _showSnackbar(
+          data['error']?.toString() ?? 'Employment offer failed.',
+          isError: true,
+        );
+      }
+    } catch (_) {
+      _showSnackbar('Network error responding to employment offer.', isError: true);
     } finally {
       if (mounted) setState(() => _isProcessing = false);
     }
@@ -421,7 +476,12 @@ class _CityHallViewState extends State<CityHallView> {
             decoration: BoxDecoration(color: darkSurface, border: Border.all(color: const Color(0xFF333333))),
             child: const Text("COMMERCIAL REGISTRY\nManage your corporate portfolio or file for new enterprise licensing.", style: TextStyle(color: Colors.white70, fontSize: 11, fontStyle: FontStyle.italic)),
           ),
-          const SizedBox(height: 24),
+          const SizedBox(height: 16),
+          if (_employmentOffers.any((o) => o['status'] == 'pending')) ...[
+            _buildEmploymentOffersCard(),
+            const SizedBox(height: 24),
+          ] else
+            const SizedBox(height: 8),
 
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -588,9 +648,30 @@ class _CityHallViewState extends State<CityHallView> {
                         SizedBox(
                           width: double.infinity, height: 36,
                           child: ElevatedButton(
-                            onPressed: () => _openIncorporationDialog(bp),
-                            style: ElevatedButton.styleFrom(backgroundColor: darkSurface, side: BorderSide(color: neonGreen.withOpacity(0.5))),
-                            child: Text("INCORPORATE ENTERPRISE", style: TextStyle(color: neonGreen, fontSize: 11, fontWeight: FontWeight.bold, letterSpacing: 1)),
+                            onPressed: _incorporationAvailable
+                                ? () => _openIncorporationDialog(bp)
+                                : null,
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: darkSurface,
+                              side: BorderSide(
+                                color: _incorporationAvailable
+                                    ? neonGreen.withOpacity(0.5)
+                                    : Colors.white12,
+                              ),
+                            ),
+                            child: Text(
+                              _incorporationAvailable
+                                  ? "INCORPORATE ENTERPRISE"
+                                  : "INCORPORATION PAUSED",
+                              style: TextStyle(
+                                color: _incorporationAvailable
+                                    ? neonGreen
+                                    : Colors.white24,
+                                fontSize: 11,
+                                fontWeight: FontWeight.bold,
+                                letterSpacing: 1,
+                              ),
+                            ),
                           ),
                         )
                       ],
@@ -601,6 +682,144 @@ class _CityHallViewState extends State<CityHallView> {
             );
           }).toList(),
           const SizedBox(height: 40),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildEmploymentOffersCard() {
+    final pending = _employmentOffers
+        .where((o) => o['status'] == 'pending')
+        .toList();
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: Colors.amber.withOpacity(0.05),
+        border: Border.all(color: Colors.amber.withOpacity(0.5)),
+        borderRadius: BorderRadius.circular(4),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            "PENDING EMPLOYMENT OFFERS",
+            style: TextStyle(
+              color: Colors.amberAccent,
+              fontSize: 11,
+              fontWeight: FontWeight.bold,
+              letterSpacing: 1,
+            ),
+          ),
+          const SizedBox(height: 6),
+          const Text(
+            "Real-player company employment requires your explicit consent to the source role and negotiated Clean Cash salary. Payroll settlement remains paused.",
+            style: TextStyle(
+              color: Colors.white54,
+              fontSize: 9,
+              height: 1.4,
+            ),
+          ),
+          const SizedBox(height: 10),
+          ...pending.map((offer) {
+            final role = (offer['role_key'] ?? 'unknown')
+                .toString()
+                .replaceAll('_', ' ')
+                .toUpperCase();
+            final canAccept = offer['can_accept'] == true;
+            final req = offer['requirements'] is Map
+                ? Map<String, dynamic>.from(offer['requirements'])
+                : <String, dynamic>{};
+            final primary = req['primary'] is Map
+                ? Map<String, dynamic>.from(req['primary'])
+                : <String, dynamic>{};
+            final secondary = req['secondary'] is Map
+                ? Map<String, dynamic>.from(req['secondary'])
+                : <String, dynamic>{};
+
+            return Container(
+              margin: const EdgeInsets.only(top: 8),
+              padding: const EdgeInsets.all(10),
+              decoration: BoxDecoration(
+                color: darkSurface,
+                border: Border.all(color: Colors.white12),
+                borderRadius: BorderRadius.circular(4),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    offer['company_name']?.toString() ?? 'Company',
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 11,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                  Text(
+                    "$role • ${_formatCash(offer['daily_salary_clean'])} CLEAN / DAY",
+                    style: TextStyle(
+                      color: neonGreen,
+                      fontSize: 10,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                  const SizedBox(height: 5),
+                  Text(
+                    "Requires ${(primary['stat'] ?? '').toString().toUpperCase()} ${primary['required'] ?? '?'} and ${(secondary['stat'] ?? '').toString().toUpperCase()} ${secondary['required'] ?? '?'}",
+                    style: const TextStyle(
+                      color: Colors.white38,
+                      fontSize: 9,
+                    ),
+                  ),
+                  if (!canAccept)
+                    const Padding(
+                      padding: EdgeInsets.only(top: 4),
+                      child: Text(
+                        "ACCEPTANCE CURRENTLY BLOCKED BY SERVER-VERIFIED ELIGIBILITY/EMPLOYMENT STATE",
+                        style: TextStyle(
+                          color: Colors.redAccent,
+                          fontSize: 8,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ),
+                  const SizedBox(height: 8),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.end,
+                    children: [
+                      TextButton(
+                        onPressed: _isProcessing
+                            ? null
+                            : () => _respondEmploymentOffer(offer, 'reject'),
+                        child: const Text(
+                          "REJECT",
+                          style: TextStyle(color: Colors.redAccent),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      ElevatedButton(
+                        onPressed: !_isProcessing && canAccept
+                            ? () => _respondEmploymentOffer(offer, 'accept')
+                            : null,
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: neonGreen.withOpacity(0.12),
+                          side: BorderSide(color: neonGreen),
+                        ),
+                        child: Text(
+                          "ACCEPT",
+                          style: TextStyle(
+                            color: canAccept ? neonGreen : Colors.white24,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            );
+          }),
         ],
       ),
     );
