@@ -26,6 +26,7 @@ class _CompanyManagementViewState extends State<CompanyManagementView> {
   List<dynamic> _inventory = [];
   List<dynamic> _shipments = [];
   List<dynamic> _applicants = [];
+  Map<String, dynamic> _cashFlow = {};
 
   final List<String> _manageOptions = [
     'Employees', 'Company Positions', 'Pricing',
@@ -35,7 +36,6 @@ class _CompanyManagementViewState extends State<CompanyManagementView> {
   String _selectedManageOption = 'Employees';
 
   // UI Controllers
-  String _fundsCurrency = 'dirty';
   final TextEditingController _nameEditController = TextEditingController();
   final TextEditingController _imageEditController = TextEditingController();
   final TextEditingController _newDirectorController = TextEditingController();
@@ -86,6 +86,9 @@ class _CompanyManagementViewState extends State<CompanyManagementView> {
             _inventory = data['inventory'] ?? [];
             _shipments = data['shipments'] ?? [];
             _applicants = data['applicants'] ?? [];
+            _cashFlow = data['cash_flow'] is Map
+                ? Map<String, dynamic>.from(data['cash_flow'])
+                : <String, dynamic>{};
 
             _nameEditController.text = _company['company_name'] ?? "";
             _imageEditController.text = _company['logo_url'] ?? "";
@@ -124,7 +127,7 @@ class _CompanyManagementViewState extends State<CompanyManagementView> {
       final response = await http.post(
           Uri.parse('${ApiConfig.baseUrl}/company-management/$endpoint'),
           headers: {"Content-Type": "application/json"},
-          body: jsonEncode({"company_id": widget.companyId, "user_id": widget.userData['user_id'], ...payload})
+          body: jsonEncode({"company_id": widget.companyId, ...payload})
       );
       final data = jsonDecode(response.body);
 
@@ -750,105 +753,165 @@ class _CompanyManagementViewState extends State<CompanyManagementView> {
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
-        const Text("MARKETING & ADVERTISING", style: TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.bold)),
-        const SizedBox(height: 8),
-        const Text("Set a daily budget to attract customers. Advertising has a base cap of 40% efficiency. This cap decays based on competition from other companies of the same type. The highest budget secures the 40% bonus, with diminishing returns for lower budgets.", style: TextStyle(color: Colors.white54, fontSize: 10, height: 1.4)),
-        const SizedBox(height: 16),
-        TextFormField(
-          controller: _adBudgetController,
-          keyboardType: TextInputType.number,
-          style: const TextStyle(color: Colors.greenAccent, fontSize: 14),
-          decoration: const InputDecoration(border: OutlineInputBorder(), prefixText: "\$ ", labelText: "Daily Ad Budget (Dirty Cash)"),
+        const Text(
+          "MARKETING & ADVERTISING",
+          style: TextStyle(
+            color: Colors.white,
+            fontSize: 12,
+            fontWeight: FontWeight.bold,
+          ),
+        ),
+        const SizedBox(height: 12),
+        Container(
+          padding: const EdgeInsets.all(14),
+          decoration: BoxDecoration(
+            color: Colors.amber.withValues(alpha: 0.07),
+            border: Border.all(color: Colors.amber.withValues(alpha: 0.5)),
+            borderRadius: BorderRadius.circular(6),
+          ),
+          child: const Text(
+            "ADVERTISING SETTLEMENT PAUSED\n\nThe old client claimed a 40% competition-based efficiency cap and daily Dirty Cash spend, but those formulas and the daily settlement worker are not source-reconciled. The stored budget is shown for reference only.",
+            style: TextStyle(
+              color: Colors.amber,
+              fontSize: 10,
+              height: 1.45,
+              fontWeight: FontWeight.bold,
+            ),
+          ),
         ),
         const SizedBox(height: 16),
-        SizedBox(
-          width: double.infinity, height: 40,
-          child: ElevatedButton(
-              onPressed: () => _submitAction('update-advertising', {'ad_budget': _adBudgetController.text}),
-              style: ElevatedButton.styleFrom(backgroundColor: neonGreen.withValues(alpha: 0.1), side: BorderSide(color: neonGreen)),
-              child: Text("SET BUDGET", style: TextStyle(color: neonGreen, fontWeight: FontWeight.bold))
-          ),
-        )
+        Text(
+          "Recorded daily budget: \$${_formatNumber(_company['advertising_budget'])}",
+          style: const TextStyle(color: Colors.white54, fontSize: 11),
+        ),
       ],
     );
   }
 
-  // --- 6. FUNDS (Radio Buttons) ---
+  // --- 6. COMPANY CASH FUNDING ---
   Widget _buildFundsView() {
+    final dirtyFundingAvailable =
+        _cashFlow['owner_dirty_funding_available'] == true;
+
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
-        const Text("CORPORATE VAULT", style: TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.bold)),
+        const Text(
+          "CORPORATE VAULT",
+          style: TextStyle(
+            color: Colors.white,
+            fontSize: 12,
+            fontWeight: FontWeight.bold,
+          ),
+        ),
         const SizedBox(height: 16),
-
         Row(
           mainAxisAlignment: MainAxisAlignment.spaceEvenly,
           children: [
             Column(
               children: [
-                const Text("Dirty Cash", style: TextStyle(color: Colors.white54, fontSize: 10)),
-                Text("\$${_formatNumber(_company['bank_dirty'])}", style: TextStyle(color: neonGreen, fontSize: 14, fontWeight: FontWeight.bold)),
+                const Text(
+                  "Dirty Cash",
+                  style: TextStyle(color: Colors.white54, fontSize: 10),
+                ),
+                Text(
+                  "\\$${_formatNumber(_company['bank_dirty'])}",
+                  style: TextStyle(
+                    color: neonGreen,
+                    fontSize: 14,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
               ],
             ),
             Column(
               children: [
-                const Text("Clean Cash", style: TextStyle(color: Colors.white54, fontSize: 10)),
-                Text("\$${_formatNumber(_company['bank_clean'])}", style: const TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.bold)),
+                const Text(
+                  "Clean Cash",
+                  style: TextStyle(color: Colors.white54, fontSize: 10),
+                ),
+                Text(
+                  "\\$${_formatNumber(_company['bank_clean'])}",
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 14,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
               ],
             ),
           ],
         ),
         const Divider(color: Color(0xFF333333), height: 32),
-
-        // Currency Selector
-        Row(
-          children: [
-            Expanded(
-              child: RadioListTile<String>(
-                title: Text("Dirty Cash", style: TextStyle(color: neonGreen, fontSize: 11)),
-                value: 'dirty',
-                groupValue: _fundsCurrency,
-                activeColor: neonGreen,
-                contentPadding: EdgeInsets.zero,
-                onChanged: (val) => setState(() => _fundsCurrency = val!),
-              ),
+        Container(
+          padding: const EdgeInsets.all(12),
+          decoration: BoxDecoration(
+            color: Colors.amber.withValues(alpha: 0.07),
+            border: Border.all(color: Colors.amber.withValues(alpha: 0.45)),
+            borderRadius: BorderRadius.circular(5),
+          ),
+          child: const Text(
+            "SOURCE-RECONCILED FUNDING ONLY\n\nThe owner may commit Dirty Cash to the company bank. This does not convert it to Clean Cash. Clean deposits, withdrawals, payroll conversion, sales settlement, laundering tax, and bankruptcy distribution are paused.",
+            style: TextStyle(
+              color: Colors.amber,
+              fontSize: 10,
+              height: 1.45,
+              fontWeight: FontWeight.bold,
             ),
-            Expanded(
-              child: RadioListTile<String>(
-                title: const Text("Clean Cash", style: TextStyle(color: Colors.white, fontSize: 11)),
-                value: 'clean',
-                groupValue: _fundsCurrency,
-                activeColor: Colors.white,
-                contentPadding: EdgeInsets.zero,
-                onChanged: (val) => setState(() => _fundsCurrency = val!),
-              ),
-            ),
-          ],
+          ),
         ),
-
         const SizedBox(height: 16),
         TextFormField(
           controller: _fundsAmountController,
+          enabled: dirtyFundingAvailable && !_isProcessing,
           keyboardType: TextInputType.number,
           style: const TextStyle(color: Colors.white),
-          decoration: const InputDecoration(border: OutlineInputBorder(), prefixText: "\$ ", labelText: "Amount"),
+          decoration: const InputDecoration(
+            border: OutlineInputBorder(),
+            prefixText: "\\$ ",
+            labelText: "Dirty Cash Amount",
+          ),
         ),
-        const SizedBox(height: 16),
-        Row(
-          children: [
-            Expanded(child: ElevatedButton(
-                onPressed: () => _submitAction('funds', {'amount': _fundsAmountController.text, 'action_type': 'deposit', 'currency_type': _fundsCurrency}),
-                style: ElevatedButton.styleFrom(backgroundColor: Colors.greenAccent.withValues(alpha: 0.1), side: const BorderSide(color: Colors.greenAccent)),
-                child: const Text("DEPOSIT", style: TextStyle(color: Colors.greenAccent))
-            )),
-            const SizedBox(width: 8),
-            Expanded(child: ElevatedButton(
-                onPressed: () => _submitAction('funds', {'amount': _fundsAmountController.text, 'action_type': 'withdraw', 'currency_type': _fundsCurrency}),
-                style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent.withValues(alpha: 0.1), side: const BorderSide(color: Colors.redAccent)),
-                child: const Text("WITHDRAW", style: TextStyle(color: Colors.redAccent))
-            )),
-          ],
-        )
+        const SizedBox(height: 14),
+        SizedBox(
+          width: double.infinity,
+          height: 42,
+          child: ElevatedButton(
+            onPressed: dirtyFundingAvailable && !_isProcessing
+                ? () => _submitAction(
+                      'funds',
+                      {
+                        'amount': _fundsAmountController.text,
+                        'action_type': 'deposit',
+                        'currency_type': 'dirty',
+                      },
+                    )
+                : null,
+            style: ElevatedButton.styleFrom(
+              backgroundColor: neonGreen.withValues(alpha: 0.1),
+              side: BorderSide(color: neonGreen),
+            ),
+            child: Text(
+              dirtyFundingAvailable
+                  ? "COMMIT DIRTY CASH TO COMPANY BANK"
+                  : "FUNDING PAUSED",
+              style: TextStyle(
+                color: dirtyFundingAvailable ? neonGreen : Colors.white24,
+                fontSize: 10,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+          ),
+        ),
+        const SizedBox(height: 10),
+        const Text(
+          "Company withdrawals are intentionally disabled until settlement provenance and laundering rules are canonical.",
+          style: TextStyle(
+            color: Colors.white38,
+            fontSize: 9,
+            height: 1.35,
+          ),
+        ),
       ],
     );
   }
