@@ -163,137 +163,25 @@ router.get('/crimes_board/:user_id', async (_req, res) => {
             tool_item_id: rule.toolItemId,
             tool_req: rule.toolName
         }));
-        return res.json({ success: true, crimes });
+        return res.json({
+            success: true,
+            assignment_available: false,
+            automation_status: 'paused_source_conflict',
+            conflict:
+                'Recruits Canvas specifies fixed 60-second loops and flat 1% mortality, while crimes_master carries per-crime automation/casualty values.',
+            crimes
+        });
     } catch (err) {
         return sendActionError(res, err, 'Crew crime board failed:');
     }
 });
 
 // --- ASSIGN CREW TO A CRIME ---
-router.post('/assign_job', async (req, res) => {
-    let client, transaction = false;
-    try {
-        const userId = actorId(req);
-        const idempotencyKey = requireIdempotencyKey(req);
-        const crewId = integer(req.body?.crew_id, {
-            field: 'Crew ID', min: 1n, max: 9223372036854775807n
-        }).toString();
-
-        const crimeId = integer(req.body?.crime_id, {
-            field: 'Crime ID', min: 1n, max: 9223372036854775807n
-        }).toString();
-
-        client = await pool.connect();
-        await client.query('BEGIN');
-        transaction = true;
-
-        // Match the worker lock order: schedule -> crew -> user -> inventory.
-        await client.query(
-            `SELECT crew_id
-               FROM crew_crime_assignments
-              WHERE crew_id = $1
-              FOR UPDATE`,
-            [crewId]
-        );
-        const crew = await client.query(
-            `SELECT crew_id, current_domain, last_transfer_at
-               FROM user_crew
-              WHERE crew_id = $1 AND user_id = $2
-              FOR UPDATE`,
-            [crewId, userId]
-        );
-        if (crew.rowCount !== 1) {
-            throw new ActionError(404, 'Crew member not found.');
-        }
-        const player = await client.query(
-            'SELECT user_id FROM users WHERE user_id = $1 FOR UPDATE',
-            [userId]
-        );
-        if (player.rowCount !== 1) throw new ActionError(404, 'Player not found.');
-
-        const idem = await beginIdempotent(
-            client,
-            userId,
-            'syndicate.assign_crew_crime',
-            idempotencyKey,
-            { crewId, crimeId }
-        );
-        if (idem.replay) {
-            await client.query('COMMIT');
-            transaction = false;
-            return res.status(idem.status).json(idem.response);
-        }
-
-        const rule = await getCrewCrimeRule(client, { crimeId });
-
-        const hasTool = await ownsRequiredTool(
-            client,
-            userId,
-            rule,
-            { lock: true }
-        );
-        if (!hasTool) {
-            throw new ActionError(
-                409,
-                'Required tool is not present in the player inventory.'
-            );
-        }
-
-        await handleCrewDomainTransfer(client, userId, crewId, 'CRIMES');
-
-        const scheduled = await client.query(
-            `INSERT INTO crew_crime_assignments (
-                 crew_id, crime_id, assigned_at, next_tick_at, last_tick_at, updated_at
-             )
-             VALUES (
-                 $1, $2::bigint, NOW(),
-                 NOW() + ($3::bigint * INTERVAL '1 second'),
-                 NULL, NOW()
-             )
-             ON CONFLICT (crew_id) DO UPDATE
-                 SET crime_id = EXCLUDED.crime_id,
-                     assigned_at = EXCLUDED.assigned_at,
-                     next_tick_at = EXCLUDED.next_tick_at,
-                     last_tick_at = NULL,
-                     updated_at = NOW()
-             RETURNING next_tick_at`,
-            [crewId, rule.crimeId, rule.automationSeconds]
-        );
-
-        await client.query(
-            `UPDATE user_crew
-                SET assignment = $1,
-                    current_domain = 'CRIMES'
-              WHERE user_id = $2 AND crew_id = $3`,
-            [rule.title, userId, crewId]
-        );
-
-        const response = {
-            success: true,
-            message: 'Crew crime automation scheduled.',
-            crew_id: crewId,
-            crime_id: rule.crimeId,
-            crime_title: rule.title,
-            average_payout: rule.averageCash,
-            automation_seconds: rule.automationSeconds,
-            casualty_ppm: rule.casualtyPpm,
-            next_tick_at: scheduled.rows[0].next_tick_at
-        };
-        await completeIdempotent(client, idem, 200, response);
-        await client.query('COMMIT');
-        transaction = false;
-        return res.json(response);
-    } catch (err) {
-        if (transaction) {
-            try { await client.query('ROLLBACK'); }
-            catch (rollback) {
-                console.error('Crew assignment rollback:', rollback);
-            }
-        }
-        return sendActionError(res, err, 'Crew assignment failed:');
-    } finally {
-        if (client) client.release();
-    }
+router.post('/assign_job', (_req, res) => {
+    return res.status(503).json({
+        error:
+            'Crew crime assignment is paused until Recruits Canvas and crimes_master automation timing/mortality rules are reconciled.'
+    });
 });
 
 // Company NPC positions cannot be authorized safely until the canonical company
@@ -385,232 +273,18 @@ router.post('/unassign_job', async (req, res) => {
     }
 });
 
-router.post('/generate_board', async (req, res) => {
-    let client, transaction = false;
-    try {
-        const userId = actorId(req);
-        const idempotencyKey = requireIdempotencyKey(req);
-        client = await pool.connect();
-        await client.query('BEGIN');
-        transaction = true;
-
-        const userRes = await client.query(
-            'SELECT level, recruit_refreshes FROM users WHERE user_id = $1 FOR UPDATE',
-            [userId]
-        );
-        if (userRes.rowCount !== 1) throw new ActionError(404, 'Player not found.');
-        const idem = await beginIdempotent(
-            client, userId, 'syndicate.generate_board', idempotencyKey, {}
-        );
-        if (idem.replay) {
-            await client.query('COMMIT');
-            transaction = false;
-            return res.status(idem.status).json(idem.response);
-        }
-
-        const cdCheck = await client.query(
-            `SELECT EXTRACT(EPOCH FROM (expires_at - NOW())) AS seconds_left
-               FROM user_cooldowns
-              WHERE user_id = $1 AND type = 'recruitment' AND expires_at > NOW()
-              ORDER BY expires_at DESC LIMIT 1`,
-            [userId]
-        );
-        if (cdCheck.rowCount) {
-            throw new ActionError(409, 'Scouts are on cooldown.');
-        }
-
-        const level = Number(userRes.rows[0].level);
-        const refreshes = Number(userRes.rows[0].recruit_refreshes);
-        if (!Number.isSafeInteger(level) || level < 1) throw new Error('Invalid player level.');
-        if (!Number.isSafeInteger(refreshes) || refreshes <= 0) {
-            throw new ActionError(409, 'No recruitment refreshes remaining.');
-        }
-
-        await client.query(
-            'UPDATE users SET recruit_refreshes = recruit_refreshes - 1 WHERE user_id = $1',
-            [userId]
-        );
-        await client.query(
-            'DELETE FROM recruitment_offers WHERE user_id = $1 AND claimed_at IS NULL',
-            [userId]
-        );
-
-        const reserved = new Set();
-        const board = [];
-        for (let i = 0; i < 5; i++) {
-            let tier = 1;
-            const roll = getRnd(1, 100);
-            if (level >= 50 && roll >= 99) tier = 5;
-            else if (level >= 35 && roll >= 90) tier = 4;
-            else if (level >= 25 && roll >= 70) tier = 3;
-            else if (level >= 15 && roll >= 40) tier = 2;
-
-            const meta = TIER_DATA[tier];
-            const name = await generateUniqueName(client, userId, reserved);
-            const stats = {};
-            for (const stat of ['str','def','dex','spd','acu','ops','pre','res']) {
-                stats[stat] = {
-                    cur: getRnd(meta.curRange[0], meta.curRange[1]),
-                    max: getRnd(meta.maxRange[0], meta.maxRange[1])
-                };
-            }
-            const totalCur = Object.values(stats).reduce((sum, stat) => sum + stat.cur, 0);
-            const price = BigInt(totalCur) * 50n * BigInt(tier);
-
-            const inserted = await client.query(
-                `INSERT INTO recruitment_offers (
-                    user_id, npc_name, tier, price,
-                    cur_str,max_str,cur_def,max_def,cur_dex,max_dex,cur_spd,max_spd,
-                    cur_acu,max_acu,cur_ops,max_ops,cur_pre,max_pre,cur_res,max_res
-                 ) VALUES (
-                    $1,$2,$3,$4::numeric,
-                    $5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20
-                 )
-                 RETURNING offer_id, expires_at`,
-                [
-                    userId,name,tier,price.toString(),
-                    stats.str.cur,stats.str.max,stats.def.cur,stats.def.max,
-                    stats.dex.cur,stats.dex.max,stats.spd.cur,stats.spd.max,
-                    stats.acu.cur,stats.acu.max,stats.ops.cur,stats.ops.max,
-                    stats.pre.cur,stats.pre.max,stats.res.cur,stats.res.max
-                ]
-            );
-            board.push({
-                offer_id: inserted.rows[0].offer_id,
-                expires_at: inserted.rows[0].expires_at,
-                name,
-                tier: meta.name,
-                tier_id: tier,
-                barMax: meta.barMax,
-                stats,
-                price: exactJsonAmount(price)
-            });
-        }
-
-        const response = {
-            success: true,
-            board,
-            refreshesLeft: refreshes - 1
-        };
-        await completeIdempotent(client, idem, 200, response);
-        await client.query('COMMIT');
-        transaction = false;
-        return res.json(response);
-    } catch (err) {
-        if (transaction) {
-            try { await client.query('ROLLBACK'); } catch (rollback) { console.error('Recruit board rollback:', rollback); }
-        }
-        return sendActionError(res, err, 'Recruit board generation failed:');
-    } finally { if (client) client.release(); }
+router.post('/generate_board', (_req, res) => {
+    return res.status(503).json({
+        error:
+            'Recruit generation is paused: Recruits Canvas stat ranges conflict with legacy generator ranges and the cost multipliers are not defined.'
+    });
 });
 
-router.post('/hire', async (req, res) => {
-    let client, transaction = false;
-    try {
-        const userId = actorId(req);
-        const idempotencyKey = requireIdempotencyKey(req);
-        const offerId = req.body?.offer_id;
-        if (typeof offerId !== 'string' ||
-            !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(offerId)) {
-            throw new ActionError(400, 'Invalid recruitment offer.');
-        }
-
-        client = await pool.connect();
-        await client.query('BEGIN');
-        transaction = true;
-        const player = await client.query(
-            'SELECT dirty_cash FROM users WHERE user_id = $1 FOR UPDATE', [userId]
-        );
-        if (player.rowCount !== 1) throw new ActionError(404, 'Player not found.');
-        const idem = await beginIdempotent(
-            client, userId, 'syndicate.hire', idempotencyKey, { offerId }
-        );
-        if (idem.replay) {
-            await client.query('COMMIT');
-            transaction = false;
-            return res.status(idem.status).json(idem.response);
-        }
-
-        const cooldown = await client.query(
-            `SELECT 1 FROM user_cooldowns
-              WHERE user_id = $1 AND type = 'recruitment' AND expires_at > NOW()
-              LIMIT 1`,
-            [userId]
-        );
-        if (cooldown.rowCount) throw new ActionError(409, 'Scouts are on cooldown.');
-
-        const offerRes = await client.query(
-            `SELECT *
-               FROM recruitment_offers
-              WHERE offer_id = $1::uuid AND user_id = $2
-                AND claimed_at IS NULL AND expires_at > NOW()
-              FOR UPDATE`,
-            [offerId, userId]
-        );
-        if (offerRes.rowCount !== 1) {
-            throw new ActionError(409, 'Recruitment offer expired or unavailable.');
-        }
-        const offer = offerRes.rows[0];
-        const price = dbInteger(offer.price, { field: 'Recruit price' });
-        if (dbInteger(player.rows[0].dirty_cash) < price) {
-            throw new ActionError(409, 'Insufficient Dirty Cash.');
-        }
-        const debit = await client.query(
-            'UPDATE users SET dirty_cash = dirty_cash - $1::numeric WHERE user_id = $2 AND dirty_cash >= $1::numeric RETURNING dirty_cash',
-            [price.toString(), userId]
-        );
-        if (debit.rowCount !== 1) throw new ActionError(409, 'Wallet changed before recruitment.');
-
-        const crew = await client.query(
-            `INSERT INTO user_crew (
-                user_id,npc_name,tier,
-                cur_str,max_str,cur_def,max_def,cur_dex,max_dex,cur_spd,max_spd,
-                cur_acu,max_acu,cur_ops,max_ops,cur_pre,max_pre,cur_res,max_res
-             ) VALUES (
-                $1,$2,$3,
-                $4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19
-             )
-             RETURNING crew_id`,
-            [
-                userId,offer.npc_name,offer.tier,
-                offer.cur_str,offer.max_str,offer.cur_def,offer.max_def,
-                offer.cur_dex,offer.max_dex,offer.cur_spd,offer.max_spd,
-                offer.cur_acu,offer.max_acu,offer.cur_ops,offer.max_ops,
-                offer.cur_pre,offer.max_pre,offer.cur_res,offer.max_res
-            ]
-        );
-        await client.query(
-            'UPDATE recruitment_offers SET claimed_at = NOW() WHERE offer_id = $1::uuid AND user_id = $2',
-            [offerId, userId]
-        );
-        await client.query(
-            `INSERT INTO user_cooldowns (user_id,type,expires_at,reason)
-             VALUES (
-                 $1,
-                 'recruitment',
-                 NOW() + ($2::bigint * INTERVAL '1 second'),
-                 'Your scouts are out looking for new prospects.'
-             )`,
-            [userId, RECRUITMENT_COOLDOWN_SECONDS]
-        );
-
-        const response = {
-            success: true,
-            message: offer.npc_name + ' joined the crew.',
-            crew_id: crew.rows[0].crew_id,
-            dirty_cash: debit.rows[0].dirty_cash,
-            recruitment_cooldown_seconds: RECRUITMENT_COOLDOWN_SECONDS
-        };
-        await completeIdempotent(client, idem, 200, response);
-        await client.query('COMMIT');
-        transaction = false;
-        return res.json(response);
-    } catch (err) {
-        if (transaction) {
-            try { await client.query('ROLLBACK'); } catch (rollback) { console.error('Recruit hire rollback:', rollback); }
-        }
-        return sendActionError(res, err, 'Recruit hire failed:');
-    } finally { if (client) client.release(); }
+router.post('/hire', (_req, res) => {
+    return res.status(503).json({
+        error:
+            'Recruit hiring is paused until recruit stat generation and purchase pricing are selected from an authoritative rule set.'
+    });
 });
 
 router.post('/complete_job', (_req, res) => {
