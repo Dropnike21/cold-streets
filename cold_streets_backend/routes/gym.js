@@ -1,3 +1,4 @@
+const logger = require('../utils/logger');
 const express = require('express');
 const router = express.Router();
 // Reject URLs referencing any player other than the verified session owner.
@@ -58,7 +59,7 @@ async function ensureStarterGym(userId) {
     } catch (err) {
         if (transaction) {
             try { await client.query('ROLLBACK'); }
-            catch (rollback) { console.error('Starter gym rollback:', rollback); }
+            catch (rollback) { logger.error('starter_gym_rollback_failed', logger.errorFields(rollback)); }
         }
         throw err;
     } finally {
@@ -106,7 +107,7 @@ router.get('/:user_id', async (req, res) => {
 
         res.json({ success: true, gym_exp, active_gym_id, gyms: mappedGyms });
     } catch (err) {
-        console.error(err);
+        logger.error('gym_dashboard_failed', logger.errorFields(err));
         res.status(500).json({ error: "Server error fetching gym data." });
     }
 });
@@ -215,7 +216,7 @@ router.post('/purchase', async (req, res) => {
     } catch (err) {
         if (transaction) {
             try { await client.query('ROLLBACK'); }
-            catch (rollback) { console.error('Gym purchase rollback:', rollback); }
+            catch (rollback) { logger.error('gym_purchase_rollback_failed', logger.errorFields(rollback)); }
         }
         return sendActionError(res, err, 'Gym purchase failed:');
     } finally {
@@ -298,7 +299,7 @@ router.post('/activate', async (req, res) => {
     } catch (err) {
         if (transaction) {
             try { await client.query('ROLLBACK'); }
-            catch (rollback) { console.error('Gym activation rollback:', rollback); }
+            catch (rollback) { logger.error('gym_activation_rollback_failed', logger.errorFields(rollback)); }
         }
         return sendActionError(res, err, 'Gym activation failed:');
     } finally {
@@ -455,7 +456,7 @@ router.post('/train', async (req, res) => {
     } catch (err) {
         if (transaction) {
             try { await client.query('ROLLBACK'); }
-            catch (rollback) { console.error('Gym train rollback:', rollback); }
+            catch (rollback) { logger.error('gym_train_rollback_failed', logger.errorFields(rollback)); }
         }
         return sendActionError(res, err, 'Gym training failed:');
     } finally {
