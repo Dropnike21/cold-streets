@@ -1,3 +1,4 @@
+const logger = require('../utils/logger');
 const express = require('express');
 const { createHash } = require('node:crypto');
 const router = express.Router();
@@ -191,7 +192,7 @@ router.get('/:user_id', async (req, res) => {
             jobs: mappedJobs
         });
     } catch (err) {
-        console.error(err);
+        logger.error('jobs_dashboard_failed', logger.errorFields(err));
         res.status(500).json({ error: "Server error fetching jobs dashboard." });
     }
 });
@@ -356,7 +357,7 @@ router.get('/interview/:job_id/:user_id', async (req, res) => {
         if (transaction) {
             try { await client.query('ROLLBACK'); }
             catch (rollback) {
-                console.error('Interview start rollback:', rollback);
+                logger.error('interview_start_rollback_failed', logger.errorFields(rollback));
             }
         }
         return sendActionError(res, err, 'Interview start failed:');
@@ -601,7 +602,7 @@ router.post('/interview/submit', async (req, res) => {
         if (transaction) {
             try { await client.query('ROLLBACK'); }
             catch (rollback) {
-                console.error('Interview submit rollback:', rollback);
+                logger.error('interview_submit_rollback_failed', logger.errorFields(rollback));
             }
         }
         return sendActionError(res, err, 'Interview submission failed:');
@@ -727,7 +728,7 @@ router.post('/claim-daily', async (req, res) => {
     } catch (err) {
         if (transaction) {
             try { await client.query('ROLLBACK'); }
-            catch (rollback) { console.error('Daily job settlement rollback:', rollback); }
+            catch (rollback) { logger.error('daily_job_rollback_failed', logger.errorFields(rollback)); }
         }
         return sendActionError(res, err, 'Daily City Job settlement failed:');
     } finally {
@@ -829,7 +830,7 @@ router.post('/promote', async (req, res) => {
         return res.json(response);
     } catch (err) {
         if (transaction) {
-            try { await client.query('ROLLBACK'); } catch (rollback) { console.error('Promotion rollback:', rollback); }
+            try { await client.query('ROLLBACK'); } catch (rollback) { logger.error('job_promotion_rollback_failed', logger.errorFields(rollback)); }
         }
         return sendActionError(res, err, 'Promotion failed:');
     } finally { if (client) client.release(); }
@@ -1062,7 +1063,7 @@ router.post('/mastery/activate', async (req, res) => {
     } catch (err) {
         if (transaction) {
             try { await client.query('ROLLBACK'); }
-            catch (rollback) { console.error('Mastery activation rollback:', rollback); }
+            catch (rollback) { logger.error('mastery_activation_rollback_failed', logger.errorFields(rollback)); }
         }
         return sendActionError(res, err, 'Career Mastery activation failed:');
     } finally {
