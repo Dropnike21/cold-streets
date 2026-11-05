@@ -1,13 +1,11 @@
 const express = require('express');
 const pool = require('../db');
-const { randomInt } = require('node:crypto');
 const {
     ActionError, integer, actorId, sendActionError, exactJsonAmount
 } = require('../utils/economyValidation');
 const {
     requireIdempotencyKey, beginIdempotent, completeIdempotent
 } = require('../utils/idempotency');
-const { assertKevinContractComplete } = require('../utils/missionProgress');
 const {
     anonymousRep,
     assertReconciledMission,
@@ -28,92 +26,138 @@ router.param('user_id', requireOwnedPlayerParam);
 // ==========================================
 router.get('/details/:user_id/:contact', async (req, res) => {
     try {
-        const { user_id, contact } = req.params;
+        const userId = actorId(req);
+        const contact = String(req.params.contact || '').toLowerCase();
 
         const userRes = await pool.query(
             'SELECT contact_exp, active_contract FROM users WHERE user_id = $1',
-            [user_id]
+            [userId]
         );
-        if (userRes.rows.length === 0) {
-            return res.status(404).json({ error: 'User not found.' });
+        if (userRes.rowCount !== 1) {
+            throw new ActionError(404, 'Player not found.');
         }
 
         const user = userRes.rows[0];
+        const rep = anonymousRep(user.contact_exp);
 
         if (contact === 'anonymous') {
-            const rep = anonymousRep(user.contact_exp);
-            const missionRes = await pool.query(
+            if (rep <= 6) {
+                const missionRes = await pool.query(
+                    `SELECT id, contact_name, rep_req, title, message, objective_text,
+                            reward_text, reqs_json, rewards_json
+                       FROM missions_master
+                      WHERE contact_name = 'anonymous' AND rep_req = $1
+                      LIMIT 2`,
+                    [rep]
+                );
+
+                if (missionRes.rowCount !== 1) {
+                    throw new ActionError(
+                        503,
+                        'Anonymous mission catalog is incomplete or ambiguous.'
+                    );
+                }
+
+                const mission = missionRes.rows[0];
+                assertReconciledMission(mission, rep);
+
+                const progressRes = await pool.query(
+                    `SELECT status, progress_jsonb, completed_at
+                       FROM user_mission_progress
+                      WHERE user_id = $1 AND mission_id = $2`,
+                    [userId, mission.id]
+                );
+
+                return res.json({
+                    status: 'active',
+                    mission,
+                    progress: progressRes.rows[0]?.progress_jsonb || {},
+                    progress_status: progressRes.rows[0]?.status || 'active',
+                    verification_available: true,
+                    anonymous_reputation: rep,
+                    kevin_contact_available: false
+                });
+            }
+
+            // The recovered catalog has one terminal row at rep 7. Its prose
+            // clearly hands the player to Kevin, but reward_text says None
+            // while rewards_json contains 1000 Clean Cash. Treat it as an
+            // informational handoff only: no VERIFY and no reward settlement.
+            const terminalRes = await pool.query(
                 `SELECT id, contact_name, rep_req, title, message, objective_text,
                         reward_text, reqs_json, rewards_json
                    FROM missions_master
-                  WHERE contact_name = 'anonymous' AND rep_req = $1
-                  LIMIT 2`,
-                [rep]
+                  WHERE contact_name = 'anonymous' AND rep_req = 7
+                  LIMIT 2`
             );
-
-            if (missionRes.rowCount === 0) {
-                return res.json({
-                    status: 'completed',
-                    mission: {
-                        title: 'END OF THE LINE',
-                        message: 'Anonymous has no further reconciled mission data.',
-                        objective_text: 'No further objectives.',
-                        reward_text: 'None.'
-                    },
-                    progress: {},
-                    verification_available: false
-                });
-            }
-            if (missionRes.rowCount !== 1) {
-                throw new ActionError(503, 'Anonymous mission catalog is ambiguous.');
+            if (terminalRes.rowCount !== 1) {
+                throw new ActionError(
+                    503,
+                    'Anonymous terminal handoff catalog is incomplete or ambiguous.'
+                );
             }
 
-            const mission = missionRes.rows[0];
-
-            // Reps 1-6 are the six recovered guided tutorial steps. Rep 7 is
-            // deliberately non-settling: reward_text says None while the
-            // stored reward payload contains Clean Cash, and the Kevin unlock
-            // threshold conflicts with the current client.
-            if (rep > 6) {
-                return res.json({
-                    status: 'paused',
-                    mission,
-                    progress: {},
-                    verification_available: false,
-                    reason: 'Terminal Anonymous progression requires canonical source reconciliation.'
-                });
+            const terminal = terminalRes.rows[0];
+            const terminalReqs = terminal.reqs_json || {};
+            const terminalRewards = terminal.rewards_json || {};
+            if (
+                String(terminal.id) !== '11' ||
+                String(terminal.contact_name) !== 'anonymous' ||
+                Number(terminal.rep_req) !== 7 ||
+                String(terminal.title) !== 'END OF THE LINE' ||
+                String(terminal.objective_text) !==
+                    'No further objectives. Request a contract from Kevin.' ||
+                String(terminal.reward_text) !== 'None' ||
+                Object.keys(terminalReqs).length !== 0 ||
+                Object.keys(terminalRewards).length !== 1 ||
+                String(terminalRewards.clean_cash) !== '1000'
+            ) {
+                throw new ActionError(
+                    503,
+                    'Anonymous terminal handoff changed and requires source reconciliation.'
+                );
             }
-
-            assertReconciledMission(mission, rep);
-            const progressRes = await pool.query(
-                `SELECT status, progress_jsonb, completed_at
-                   FROM user_mission_progress
-                  WHERE user_id = $1 AND mission_id = $2`,
-                [user_id, mission.id]
-            );
-            const progress = progressRes.rows[0]?.progress_jsonb || {};
 
             return res.json({
-                status: 'active',
-                mission,
-                progress,
-                progress_status: progressRes.rows[0]?.status || 'active',
-                verification_available: true
+                status: 'handoff',
+                mission: terminal,
+                progress: {},
+                verification_available: false,
+                reward_settlement_available: false,
+                anonymous_reputation: rep,
+                kevin_contact_available: true,
+                reason:
+                    'Anonymous progression ends here. Kevin contract rules are not source-reconciled.'
             });
         }
-
-        const expMap = user.contact_exp || { anonymous: 1, kevin: 0, uncle_john: 0 };
-        const rep = Number(expMap[contact]) || 0;
 
         if (contact === 'kevin') {
+            if (rep < 7) {
+                return res.status(403).json({
+                    status: 'locked',
+                    reputation: Number(user.contact_exp?.kevin || 0),
+                    anonymous_reputation: rep,
+                    unlock_requirement: 'Complete the six reconciled Anonymous tutorial missions.'
+                });
+            }
+
             return res.json({
-                status: user.active_contract?.fixer === 'kevin' ? 'active' : 'available',
-                contract: user.active_contract?.fixer === 'kevin' ? user.active_contract : null,
-                reputation: rep
+                status: 'paused',
+                reputation: Number(user.contact_exp?.kevin || 0),
+                anonymous_reputation: rep,
+                contract_available: false,
+                contract: null,
+                legacy_active_contract_present:
+                    user.active_contract?.fixer === 'kevin',
+                reason:
+                    'Kevin is unlocked by the Anonymous rep-7 handoff, but contract objectives, payouts, and reputation rules are not source-reconciled.'
             });
         }
 
-        return res.json({ status: 'unknown', message: 'Contact logic not built.' });
+        return res.json({
+            status: 'unknown',
+            message: 'Contact logic is not source-reconciled.'
+        });
     } catch (err) {
         return sendActionError(res, err, 'Mission fetch failed:');
     }
@@ -275,107 +319,22 @@ router.post('/action', async (req, res) => {
             return res.json(response);
         }
 
-        // PARTIAL still has no source-backed completion threshold or payout
-        // rule beyond the old unsafe client-triggered endpoint, so it remains
-        // disabled. TURN_IN is backed by server-recorded crime/gym progress.
-        if (contact === 'kevin' && actionType === 'PARTIAL') {
+        if (contact === 'kevin') {
+            // Kevin has no recovered mission rows and no mission sheet source.
+            // The old random generator (crime count, gym count, reward curve,
+            // reputation gains/penalties) is therefore not authoritative.
+            // Do not create, advance, settle, abort, or pay those contracts.
+            if (!['REQUEST', 'TURN_IN', 'PARTIAL', 'ABORT'].includes(actionType)) {
+                throw new ActionError(400, 'Unsupported Kevin action.');
+            }
+
             throw new ActionError(
                 503,
-                'Partial contract settlement is paused pending an explicit design rule.'
+                'Kevin contracts are paused until objectives, rewards, and reputation semantics are recovered from an authoritative source.'
             );
         }
-        if (contact !== 'kevin' || !['REQUEST', 'TURN_IN', 'ABORT'].includes(actionType)) {
-            throw new ActionError(400, 'Unsupported mission action.');
-        }
 
-        client = await pool.connect();
-        await client.query('BEGIN');
-        transaction = true;
-        const player = await client.query(
-            'SELECT level, contact_exp, active_contract FROM users WHERE user_id = $1 FOR UPDATE',
-            [userId]
-        );
-        if (player.rowCount !== 1) throw new ActionError(404, 'Player not found.');
-        const user = player.rows[0];
-
-        if (actionType === 'REQUEST') {
-            if (user.active_contract !== null) {
-                throw new ActionError(
-                    409,
-                    'An active contract must be completed or aborted before requesting another.'
-                );
-            }
-            const level = integer(user.level, {
-                field: 'Player level', min: 1n, max: 1000000n
-            });
-            const reqCrimes = randomInt(3, 8);
-            const reward = BigInt(randomInt(500, 1000)) * level;
-            const contract = {
-                fixer: 'kevin',
-                reqs: { crimes: reqCrimes, gym: 10 },
-                progress: { crimes: 0, gym: 0 },
-                reward_cash: reward.toString()
-            };
-            const updated = await client.query(
-                'UPDATE users SET active_contract = $1::jsonb WHERE user_id = $2 RETURNING *',
-                [JSON.stringify(contract), userId]
-            );
-            await client.query('COMMIT');
-            transaction = false;
-            return res.json({ message: 'Contract downloaded.', user: updated.rows[0] });
-        }
-
-        const current = user.active_contract;
-        if (!current || current.fixer !== 'kevin') {
-            throw new ActionError(409, 'No active Kevin contract.');
-        }
-        const contactExp = user.contact_exp && typeof user.contact_exp === 'object'
-            ? { ...user.contact_exp }
-            : { anonymous: 1, kevin: 0, uncle_john: 0 };
-        const existingRep = Number(contactExp.kevin) || 0;
-
-        if (actionType === 'TURN_IN') {
-            assertKevinContractComplete(current);
-            const reward = integer(current.reward_cash, {
-                field: 'Contract reward', min: 0n, max: 999999999999999999999999n
-            });
-            contactExp.kevin = existingRep + 2;
-            const updated = await client.query(
-                `UPDATE users
-                 SET dirty_cash = dirty_cash + $1::numeric,
-                     contact_exp = $2::jsonb,
-                     active_contract = NULL
-                 WHERE user_id = $3 AND active_contract IS NOT NULL
-                 RETURNING *`,
-                [reward.toString(), JSON.stringify(contactExp), userId]
-            );
-            if (updated.rowCount !== 1) {
-                throw new ActionError(409, 'Contract changed before settlement.');
-            }
-            await client.query('COMMIT');
-            transaction = false;
-            return res.json({
-                message: 'Contract completed. Payment transferred.',
-                payout: exactJsonAmount(reward),
-                user: updated.rows[0]
-            });
-        }
-
-        contactExp.kevin = Math.max(0, existingRep - 2);
-        const updated = await client.query(
-            `UPDATE users
-                SET contact_exp = $1::jsonb,
-                    active_contract = NULL
-              WHERE user_id = $2
-              RETURNING *`,
-            [JSON.stringify(contactExp), userId]
-        );
-        await client.query('COMMIT');
-        transaction = false;
-        return res.json({
-            message: 'Contract aborted. Reputation penalty applied.',
-            user: updated.rows[0]
-        });
+        throw new ActionError(400, 'Unsupported mission action.');
     } catch (error) {
         if (transaction) {
             try { await client.query('ROLLBACK'); }
