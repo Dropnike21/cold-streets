@@ -8,6 +8,7 @@ const pool = require('../db');
 const { randomInt } = require('node:crypto');
 const { ActionError, integer, dbInteger, actorId, sendActionError } = require('../utils/economyValidation');
 const { requireIdempotencyKey, beginIdempotent, completeIdempotent } = require('../utils/idempotency');
+const { handleCrewDomainTransfer } = require('../utils/crewDomain');
 const {
     getCrewCrimeRule, listCrewCrimeRules, ownsRequiredTool
 } = require('../utils/crewCrimeCatalog');
@@ -164,47 +165,6 @@ router.get('/crimes_board/:user_id', async (_req, res) => {
     }
 });
 
-// --- HELPER: CHECK DOMAIN TRANSFER ---
-async function handleDomainTransfer(client, userId, crewId, newDomain) {
-    const crewRes = await client.query(
-        `SELECT current_domain,
-                GREATEST(
-                    0,
-                    CEIL(EXTRACT(EPOCH FROM (
-                        (last_transfer_at + INTERVAL '10 minutes') - NOW()
-                    )))
-                )::bigint AS transfer_seconds_remaining
-           FROM user_crew
-          WHERE crew_id = $1 AND user_id = $2
-          FOR UPDATE`,
-        [crewId, userId]
-    );
-    if (crewRes.rowCount !== 1) throw new ActionError(404, 'Crew member not found.');
-    const crew = crewRes.rows[0];
-    const currentDomain = crew.current_domain || 'IDLE';
-    const remainingSeconds = crew.transfer_seconds_remaining == null
-        ? 0
-        : Number(crew.transfer_seconds_remaining);
-
-    if (!Number.isSafeInteger(remainingSeconds) || remainingSeconds < 0) {
-        throw new Error('Invalid crew transfer cooldown state.');
-    }
-    if (currentDomain !== 'IDLE' && currentDomain !== newDomain &&
-        remainingSeconds > 0) {
-        throw new ActionError(
-            409,
-            'Transfer cooldown active for ' +
-                Math.ceil(remainingSeconds / 60) + ' more minute(s).'
-        );
-    }
-    if (currentDomain !== newDomain) {
-        await client.query(
-            'UPDATE user_crew SET current_domain = $1, last_transfer_at = NOW() WHERE crew_id = $2 AND user_id = $3',
-            [newDomain, crewId, userId]
-        );
-    }
-}
-
 // --- ASSIGN CREW TO A CRIME ---
 router.post('/assign_job', async (req, res) => {
     let client, transaction = false;
@@ -288,7 +248,7 @@ router.post('/assign_job', async (req, res) => {
             );
         }
 
-        await handleDomainTransfer(client, userId, crewId, 'CRIMES');
+        await handleCrewDomainTransfer(client, userId, crewId, 'CRIMES');
 
         const scheduled = await client.query(
             `INSERT INTO crew_crime_assignments (

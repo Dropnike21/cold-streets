@@ -7,13 +7,14 @@ router.param('user_id', requireOwnedPlayerParam);
 const pool = require('../db');
 const { ActionError, integer, dbInteger, exactJsonAmount, actorId, sendActionError } = require('../utils/economyValidation');
 const { requireIdempotencyKey, beginIdempotent, completeIdempotent } = require('../utils/idempotency');
-const { assertPositionEligibility } = require('../utils/companyEmployment');
+const { assertPositionEligibility, assertCrewPositionEligibility } = require('../utils/companyEmployment');
+const { handleCrewDomainTransfer } = require('../utils/crewDomain');
 
 // Central actor/company ownership check. The original route checks allowed
 // some company_id operations with no director authorization at all.
 const pausedManagementActions = new Set([
     '/manage-employee', '/change-director', '/sell-company',
-    '/order-stock', '/buy-upgrade', '/assign-crew', '/update-advertising',
+    '/order-stock', '/buy-upgrade', '/update-advertising',
     '/update-pricing'
 ]);
 router.use(async (req, res, next) => {
@@ -382,23 +383,332 @@ router.post('/buy-upgrade', (_req, res) => {
     });
 });
 
-// --- 10. FETCH NPC CREW ---
+// --- 10. FETCH NPC CREW + SOURCE POSITION ELIGIBILITY ---
 router.get('/:company_id/available-crew/:user_id', async (req, res) => {
     try {
-        const { user_id } = req.params;
-        const crewRes = await pool.query(`SELECT crew_id, npc_name, tier, assignment, cur_acu, cur_ops, cur_pre, cur_res FROM user_crew WHERE user_id = $1 ORDER BY tier DESC`, [user_id]);
-        res.json({ success: true, crew: crewRes.rows });
-    } catch (err) { res.status(500).json({ error: "Failed to fetch crew." }); }
+        const actor = actorId(req);
+        const companyId = integer(req.params.company_id, {
+            field: 'Company ID', min: 1n, max: 9223372036854775807n
+        }).toString();
+
+        const company = await pool.query(
+            `SELECT pc.owner_id, pc.type_id, pc.is_active
+               FROM player_companies pc
+              WHERE pc.company_id = $1`,
+            [companyId]
+        );
+        if (
+            company.rowCount !== 1 ||
+            String(company.rows[0].owner_id) !== actor
+        ) {
+            throw new ActionError(403, 'Only the company owner may inspect recruit staffing.');
+        }
+
+        const [crewRes, positionsRes, rosterRes] = await Promise.all([
+            pool.query(
+                `SELECT uc.crew_id, uc.npc_name, uc.tier, uc.assignment,
+                        uc.current_domain, uc.last_transfer_at,
+                        uc.cur_acu, uc.cur_ops, uc.cur_pre, uc.cur_res,
+                        uc.max_acu, uc.max_ops, uc.max_pre, uc.max_res,
+                        cca.crime_id AS scheduled_crime_id
+                   FROM user_crew uc
+                   LEFT JOIN crew_crime_assignments cca
+                     ON cca.crew_id = uc.crew_id
+                  WHERE uc.user_id = $1
+                  ORDER BY uc.tier DESC, uc.crew_id ASC`,
+                [actor]
+            ),
+            pool.query(
+                `SELECT position_id, role_key,
+                        req_stat_primary, req_amount_primary,
+                        req_stat_secondary, req_amount_secondary
+                   FROM company_positions_master
+                  WHERE type_id = $1
+                  ORDER BY position_id ASC`,
+                [company.rows[0].type_id]
+            ),
+            pool.query(
+                `SELECT employee_id, position_role
+                   FROM company_employees
+                  WHERE company_id = $1
+                    AND is_npc = true`,
+                [companyId]
+            )
+        ]);
+
+        const assignedHere = new Map(
+            rosterRes.rows.map(row => [
+                String(row.employee_id),
+                row.position_role
+            ])
+        );
+
+        const crew = crewRes.rows.map(row => {
+            const eligiblePositionIds = [];
+            for (const position of positionsRes.rows) {
+                try {
+                    assertCrewPositionEligibility(row, position);
+                    eligiblePositionIds.push(position.position_id);
+                } catch (err) {
+                    if (!(err instanceof ActionError) || err.status !== 409) {
+                        throw err;
+                    }
+                }
+            }
+
+            return {
+                ...row,
+                assigned_to_this_company: assignedHere.has(String(row.crew_id)),
+                company_position_role:
+                    assignedHere.get(String(row.crew_id)) || null,
+                eligible_position_ids: eligiblePositionIds,
+                assignment_available:
+                    company.rows[0].is_active === true &&
+                    row.scheduled_crime_id == null &&
+                    !assignedHere.has(String(row.crew_id)) &&
+                    eligiblePositionIds.length > 0,
+                effectiveness_status: 'unresolved',
+                salary_clean: 0
+            };
+        });
+
+        return res.json({
+            success: true,
+            company_id: companyId,
+            company_active: company.rows[0].is_active === true,
+            npc_salary_rule: 'zero',
+            effectiveness_status: 'unresolved',
+            positions: positionsRes.rows.map(row => ({
+                position_id: row.position_id,
+                role_key: row.role_key,
+                req_stat_primary: row.req_stat_primary,
+                req_amount_primary: exactJsonAmount(
+                    dbInteger(row.req_amount_primary, {
+                        field: 'Primary position requirement'
+                    })
+                ),
+                req_stat_secondary: row.req_stat_secondary,
+                req_amount_secondary: exactJsonAmount(
+                    dbInteger(row.req_amount_secondary, {
+                        field: 'Secondary position requirement'
+                    })
+                )
+            })),
+            crew
+        });
+    } catch (err) {
+        return sendActionError(res, err, 'Company recruit staffing fetch failed:');
+    }
 });
 
-// --- 11. ASSIGN NPC ---
-router.post('/assign-crew', (_req, res) => {
-    // company_positions_master is currently empty. A recruit can only be
-    // moved into the Company domain once a canonical position/work rule can
-    // be selected and its requirements enforced server-side.
-    return res.status(503).json({
-        error: 'NPC company assignment is paused pending company position catalog recovery.'
-    });
+// --- 11. ASSIGN NPC TO SOURCE POSITION ---
+// Source-backed subset:
+// - NPC Crew may occupy company positions;
+// - they work for zero salary;
+// - source position stat requirements are enforced;
+// - weighted effectiveness is intentionally left unresolved.
+router.post('/assign-crew', async (req, res) => {
+    let client, transaction = false;
+    try {
+        const actor = actorId(req);
+        const companyId = req.managedCompanyId;
+        const idempotencyKey = requireIdempotencyKey(req);
+        const crewId = integer(req.body?.crew_id, {
+            field: 'Crew ID', min: 1n, max: 9223372036854775807n
+        }).toString();
+        const positionId = integer(req.body?.position_id, {
+            field: 'Position ID', min: 1n, max: 9223372036854775807n
+        }).toString();
+
+        client = await pool.connect();
+        await client.query('BEGIN');
+        transaction = true;
+
+        // Crew scheduler lock order: schedule -> crew -> owner.
+        const schedule = await client.query(
+            `SELECT crew_id, crime_id
+               FROM crew_crime_assignments
+              WHERE crew_id = $1
+              FOR UPDATE`,
+            [crewId]
+        );
+        if (schedule.rowCount) {
+            throw new ActionError(
+                409,
+                'Recall this recruit from its crime automation before company assignment.'
+            );
+        }
+
+        const crew = await client.query(
+            `SELECT crew_id, user_id, assignment, current_domain,
+                    last_transfer_at,
+                    cur_acu, cur_ops, cur_pre, cur_res
+               FROM user_crew
+              WHERE crew_id = $1
+                AND user_id = $2
+              FOR UPDATE`,
+            [crewId, actor]
+        );
+        if (crew.rowCount !== 1) {
+            throw new ActionError(404, 'Recruit not found or not yours.');
+        }
+
+        const player = await client.query(
+            'SELECT user_id FROM users WHERE user_id = $1 FOR UPDATE',
+            [actor]
+        );
+        if (player.rowCount !== 1) {
+            throw new ActionError(404, 'Player not found.');
+        }
+
+        const idem = await beginIdempotent(
+            client,
+            actor,
+            'company.assign_crew',
+            idempotencyKey,
+            { companyId, crewId, positionId }
+        );
+        if (idem.replay) {
+            await client.query('COMMIT');
+            transaction = false;
+            return res.status(idem.status).json(idem.response);
+        }
+
+        const company = await client.query(
+            `SELECT pc.owner_id, pc.type_id, pc.is_active,
+                    ctm.max_employees
+               FROM player_companies pc
+               JOIN company_types_master ctm ON ctm.type_id = pc.type_id
+              WHERE pc.company_id = $1
+              FOR UPDATE OF pc`,
+            [companyId]
+        );
+        if (
+            company.rowCount !== 1 ||
+            String(company.rows[0].owner_id) !== actor ||
+            company.rows[0].is_active !== true
+        ) {
+            throw new ActionError(403, 'Company ownership or active state changed.');
+        }
+
+        const existingRoster = await client.query(
+            `SELECT company_id
+               FROM company_employees
+              WHERE employee_id = $1
+                AND is_npc = true
+              FOR UPDATE`,
+            [crewId]
+        );
+        if (existingRoster.rowCount) {
+            throw new ActionError(
+                409,
+                'Recruit is already assigned to a company. Recall it before reassignment.'
+            );
+        }
+
+        const staff = await client.query(
+            'SELECT COUNT(*)::bigint AS total FROM company_employees WHERE company_id = $1',
+            [companyId]
+        );
+        if (BigInt(staff.rows[0].total) >= BigInt(company.rows[0].max_employees)) {
+            throw new ActionError(409, 'Company is at its recovered base staff capacity.');
+        }
+
+        const position = await client.query(
+            `SELECT position_id, role_key,
+                    req_stat_primary, req_amount_primary,
+                    req_stat_secondary, req_amount_secondary
+               FROM company_positions_master
+              WHERE position_id = $1
+                AND type_id = $2`,
+            [positionId, company.rows[0].type_id]
+        );
+        if (position.rowCount !== 1) {
+            throw new ActionError(404, 'Position is not part of this company type.');
+        }
+
+        const eligibility = assertCrewPositionEligibility(
+            crew.rows[0],
+            position.rows[0]
+        );
+
+        await handleCrewDomainTransfer(
+            client,
+            actor,
+            crewId,
+            'COMPANY'
+        );
+
+        await client.query(
+            `INSERT INTO company_employees (
+                company_id,
+                employee_id,
+                is_npc,
+                position_role,
+                daily_salary,
+                effectiveness_score
+             )
+             VALUES ($1, $2, true, $3, 0, NULL)`,
+            [companyId, crewId, position.rows[0].role_key]
+        );
+
+        await client.query(
+            `UPDATE user_crew
+                SET assignment = $1,
+                    current_domain = 'COMPANY'
+              WHERE crew_id = $2
+                AND user_id = $3`,
+            ['Company: ' + companyId, crewId, actor]
+        );
+
+        await client.query(
+            `INSERT INTO company_logs (company_id, log_type, log_text)
+             VALUES ($1, 'STAFF', $2)`,
+            [
+                companyId,
+                'Assigned NPC recruit to role ' +
+                    position.rows[0].role_key +
+                    ' at 0 Clean Cash salary.'
+            ]
+        );
+
+        const response = {
+            success: true,
+            message: 'NPC recruit assigned to company position.',
+            crew_id: crewId,
+            position_id: positionId,
+            role_key: position.rows[0].role_key,
+            salary_clean: 0,
+            effectiveness_status: 'unresolved',
+            requirements: {
+                primary: {
+                    stat: eligibility.primary.stat,
+                    required: exactJsonAmount(eligibility.primary.required),
+                    actual: exactJsonAmount(eligibility.primary.actual)
+                },
+                secondary: {
+                    stat: eligibility.secondary.stat,
+                    required: exactJsonAmount(eligibility.secondary.required),
+                    actual: exactJsonAmount(eligibility.secondary.actual)
+                }
+            }
+        };
+
+        await completeIdempotent(client, idem, 200, response);
+        await client.query('COMMIT');
+        transaction = false;
+        return res.json(response);
+    } catch (err) {
+        if (transaction) {
+            try { await client.query('ROLLBACK'); }
+            catch (rollback) {
+                console.error('Company recruit assignment rollback:', rollback);
+            }
+        }
+        return sendActionError(res, err, 'Company recruit assignment failed:');
+    } finally {
+        if (client) client.release();
+    }
 });
 
 // --- 12. RECALL NPC ---
