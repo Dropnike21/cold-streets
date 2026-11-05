@@ -96,7 +96,7 @@ class _JobsViewState extends State<JobsView> {
       final response = await http.post(
         Uri.parse('$apiUrl/claim-daily'),
         headers: const {"Content-Type": "application/json"},
-        body: jsonEncode({"user_id": widget.userData['user_id']}),
+        body: jsonEncode(const <String, dynamic>{}),
       );
       final data = jsonDecode(response.body);
       if (response.statusCode == 200) {
@@ -154,8 +154,7 @@ class _JobsViewState extends State<JobsView> {
       final response = await http.post(Uri.parse('$apiUrl/interview/submit'),
           headers: {"Content-Type": "application/json"},
           body: jsonEncode({
-            "user_id": widget.userData['user_id'],
-            "interview_id": _interviewId,
+             "interview_id": _interviewId,
             "answers": answersPayload,
           }));
 
@@ -175,7 +174,7 @@ class _JobsViewState extends State<JobsView> {
     try {
       final response = await http.post(Uri.parse('$apiUrl/promote'),
           headers: {"Content-Type": "application/json"},
-          body: jsonEncode({"user_id": widget.userData['user_id']}));
+          body: jsonEncode(const <String, dynamic>{}));
       final data = jsonDecode(response.body);
       if (response.statusCode == 200) {
         _showSnackbar(data['message']);
@@ -191,7 +190,7 @@ class _JobsViewState extends State<JobsView> {
     try {
       final response = await http.post(Uri.parse('$apiUrl/quit'),
           headers: {"Content-Type": "application/json"},
-          body: jsonEncode({"user_id": widget.userData['user_id'], "exit_type": exitType}));
+          body: jsonEncode({"exit_type": exitType}));
       final data = jsonDecode(response.body);
 
       if (response.statusCode == 200) {
