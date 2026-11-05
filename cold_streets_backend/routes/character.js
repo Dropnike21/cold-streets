@@ -7,6 +7,7 @@ const {
 const {
     requireIdempotencyKey, beginIdempotent, completeIdempotent
 } = require('../utils/idempotency');
+const { unlockAchievementsForValue } = require('../utils/achievement_engine');
 
 const BASE_EXP = 25;
 const EXPONENT = 1.7;
@@ -79,6 +80,9 @@ router.post('/level-up', async (req, res) => {
             if (updated.rowCount !== 1) {
                 throw new ActionError(409, 'EXP changed before level-up.');
             }
+            await unlockAchievementsForValue(
+                client, userId, 'player_level', updated.rows[0].level
+            );
             response = { status: 'leveled_up', user: updated.rows[0] };
         }
 
