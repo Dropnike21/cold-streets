@@ -122,7 +122,7 @@ Operational rule:
 
 Git now contains:
 
-`20261105093500_data_api_privilege_hardening_20261105.sql`
+`20261105100004_data_api_privilege_hardening_20261105.sql`
 
 It reproduces the successful hardening:
 
@@ -131,9 +131,9 @@ It reproduces the successful hardening:
 - revoke public/client function execution;
 - harden future postgres-owned default privileges.
 
-The SQL was applied directly to the development project for verification. Its
-migration-history entry was not fabricated manually; the file remains pending
-for the next authorized normal migration-history reconciliation pass.
+The hardening SQL was first verified directly against development, then applied
+through Supabase's normal migration mechanism. Its recorded development version
+is now identical to the Git filename above.
 
 ## Security Advisor
 
