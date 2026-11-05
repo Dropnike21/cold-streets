@@ -1,4 +1,4 @@
-const REQUIRED_WORKERS = ['crew_crime', 'state_duration'];
+const REQUIRED_WORKERS = ['state_duration'];
 
 const state = {
     startedAt: new Date(),
