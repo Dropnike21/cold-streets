@@ -194,36 +194,115 @@ router.get('/interview/:job_id/:user_id', async (req, res) => {
     try {
         const userId = actorId(req);
         const jobId = integer(req.params.job_id, {
-            field: 'Job ID', min: 1n, max: 9223372036854775807n
+            field: 'Job ID',
+            min: 1n,
+            max: 9223372036854775807n
         }).toString();
+
         client = await pool.connect();
         await client.query('BEGIN');
         transaction = true;
 
+        // Player lock serializes interview issuance for this actor. A refresh
+        // reuses the same live session instead of re-rolling questions.
         const player = await client.query(
-            'SELECT current_job_id FROM users WHERE user_id = $1 FOR UPDATE', [userId]
+            'SELECT current_job_id FROM users WHERE user_id = $1 FOR UPDATE',
+            [userId]
         );
-        if (player.rowCount !== 1) throw new ActionError(404, 'Player not found.');
-        if (player.rows[0].current_job_id !== null) {
-            throw new ActionError(409, 'Resign from your current City Job first.');
+        if (player.rowCount !== 1) {
+            throw new ActionError(404, 'Player not found.');
         }
+        if (player.rows[0].current_job_id !== null) {
+            throw new ActionError(
+                409,
+                'Resign from your current City Job first.'
+            );
+        }
+
         const company = await client.query(
-            'SELECT position_role FROM company_employees WHERE employee_id = $1 AND is_npc = false LIMIT 1',
+            `SELECT position_role
+               FROM company_employees
+              WHERE employee_id = $1
+                AND is_npc = false
+              LIMIT 1`,
             [userId]
         );
         if (company.rowCount) {
-            throw new ActionError(409, 'Resign from private employment before applying for a City Job.');
+            throw new ActionError(
+                409,
+                'Resign from private employment before applying for a City Job.'
+            );
         }
-        const job = await client.query('SELECT job_id FROM jobs_master WHERE job_id = $1', [jobId]);
-        if (job.rowCount !== 1) throw new ActionError(404, 'Job not found.');
+
+        const job = await client.query(
+            'SELECT job_id FROM jobs_master WHERE job_id = $1',
+            [jobId]
+        );
+        if (job.rowCount !== 1) {
+            throw new ActionError(404, 'Job not found.');
+        }
 
         const ban = await client.query(
-            'SELECT ban_expiry FROM user_job_data WHERE user_id = $1 AND job_id = $2',
+            `SELECT (ban_expiry IS NOT NULL AND ban_expiry > NOW()) AS banned
+               FROM user_job_data
+              WHERE user_id = $1
+                AND job_id = $2`,
             [userId, jobId]
         );
-        if (ban.rowCount && ban.rows[0].ban_expiry &&
-            new Date(ban.rows[0].ban_expiry).getTime() > Date.now()) {
-            throw new ActionError(409, 'You recently failed an interview here. Try again later.');
+        if (ban.rowCount && ban.rows[0].banned === true) {
+            throw new ActionError(
+                409,
+                'You recently failed an interview here. Try again later.'
+            );
+        }
+
+        const existing = await client.query(
+            `SELECT interview_id, question_ids, expires_at
+               FROM job_interview_sessions
+              WHERE user_id = $1
+                AND job_id = $2
+                AND consumed_at IS NULL
+                AND expires_at > NOW()
+              ORDER BY created_at DESC, interview_id DESC
+              LIMIT 1
+              FOR UPDATE`,
+            [userId, jobId]
+        );
+
+        if (existing.rowCount === 1) {
+            const questionIds = (existing.rows[0].question_ids || [])
+                .map(String);
+            if (questionIds.length !== 5 ||
+                new Set(questionIds).size !== 5) {
+                throw new Error(
+                    'Persisted interview session has invalid question identity.'
+                );
+            }
+
+            const questions = await client.query(
+                `SELECT question_id, question_text, options_json AS options
+                   FROM job_interviews
+                  WHERE job_id = $1
+                    AND question_id = ANY($2::bigint[])
+                  ORDER BY array_position($2::bigint[], question_id)`,
+                [jobId, questionIds]
+            );
+            if (questions.rowCount !== 5) {
+                throw new ActionError(
+                    503,
+                    'Persisted interview questions no longer match the catalog.'
+                );
+            }
+
+            await client.query('COMMIT');
+            transaction = false;
+            return res.json({
+                success: true,
+                interview_id: existing.rows[0].interview_id,
+                expires_at: existing.rows[0].expires_at,
+                reused_session: true,
+                questions: questions.rows
+            });
         }
 
         const questions = await client.query(
@@ -235,29 +314,47 @@ router.get('/interview/:job_id/:user_id', async (req, res) => {
             [jobId]
         );
         if (questions.rowCount !== 5) {
-            throw new ActionError(503, 'Interview catalog is incomplete for this job.');
+            throw new ActionError(
+                503,
+                'Interview catalog is incomplete for this job.'
+            );
         }
-        const questionIds = questions.rows.map(row => String(row.question_id));
+
+        const questionIds = questions.rows.map(
+            row => String(row.question_id)
+        );
         const session = await client.query(
-            `INSERT INTO job_interview_sessions (user_id, job_id, question_ids)
+            `INSERT INTO job_interview_sessions (
+                user_id, job_id, question_ids
+             )
              VALUES ($1, $2, $3::bigint[])
              RETURNING interview_id, expires_at`,
             [userId, jobId, questionIds]
         );
+        if (session.rowCount !== 1) {
+            throw new Error('Interview session issuance failed.');
+        }
+
         await client.query('COMMIT');
         transaction = false;
         return res.json({
             success: true,
             interview_id: session.rows[0].interview_id,
             expires_at: session.rows[0].expires_at,
+            reused_session: false,
             questions: questions.rows
         });
     } catch (err) {
         if (transaction) {
-            try { await client.query('ROLLBACK'); } catch (rollback) { console.error('Interview start rollback:', rollback); }
+            try { await client.query('ROLLBACK'); }
+            catch (rollback) {
+                console.error('Interview start rollback:', rollback);
+            }
         }
         return sendActionError(res, err, 'Interview start failed:');
-    } finally { if (client) client.release(); }
+    } finally {
+        if (client) client.release();
+    }
 });
 
 // --- 3. SUBMIT INTERVIEW ---
