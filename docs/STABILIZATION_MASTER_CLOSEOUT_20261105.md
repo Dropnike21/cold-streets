@@ -97,7 +97,11 @@ The enabled worker uses persisted DB state and multi-replica-safe row claiming.
 - HTTP request/socket/header bounds;
 - PostgreSQL statement/query/lock/transaction bounds;
 - pool backpressure;
-- release configuration preflight.
+- bounded Supabase Auth verification (10-second timeout + per-process concurrency cap);
+- automatic gameplay-runtime bootstrap recovery after transient startup DB failure;
+- runtime-enforced port/TLS/flag/CORS/Auth configuration validation;
+- release configuration preflight;
+- canonical release runbook, monitoring checklist, and future runtime verification plan.
 
 ## What is deliberately not complete
 
@@ -154,3 +158,17 @@ The project should not add more gameplay settlement until either:
 Once a decision is made, its implementation should follow the same
 server-authoritative/idempotent/conservation rules established by this
 stabilization stack.
+
+
+## Operational handoff
+
+The final operational handoff is split into three documents:
+
+- `OPERATIONAL_RELEASE_RUNBOOK_20261105.md` — deterministic operator sequence,
+  configuration contract, health gates, enable/disable procedure and rollback;
+- `PRODUCTION_MONITORING_CHECKLIST_20261105.md` — signals, event names,
+  dashboards and alert conditions to establish before production;
+- `RUNTIME_VERIFICATION_PLAN_20261105.md` — exact test order for the first
+  explicitly authorized runtime validation pass.
+
+The static operational lane has no remaining known source-level blocker.
