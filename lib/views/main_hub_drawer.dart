@@ -212,7 +212,7 @@ class MainHubDrawer extends StatelessWidget {
                       title: "THE UNDERWORLD",
                       initiallyExpanded: anonExp == 6,
                       children: [
-                        _buildMenuTile(icon: Icons.diamond, color: Colors.cyanAccent, title: "Credit Broker / Item Market", onTap: () => _handleNavigation(context, 6)),
+                        _buildMenuTile(icon: Icons.diamond, color: Colors.cyanAccent, title: "Credit Broker", onTap: () => _handleNavigation(context, 6)),
                         _buildMenuTile(icon: Icons.security, color: Colors.grey, title: "Underground Munitions (undeveloped)", onTap: () {}),
                         _buildMenuTile(icon: Icons.casino, color: Colors.purpleAccent, title: "The Casino", onTap: ()  => _handleNavigation(context, 20)),
                       ]
