@@ -36,7 +36,8 @@ router.get('/:user_id', async (req, res) => {
             { rows: stats },
             { rows: crimes },
             { rows: users },
-            { rows: courses }
+            { rows: courses },
+            { rows: missions }
         ] = await Promise.all([
             pool.query(achQuery, [user_id]),
             pool.query(
@@ -50,6 +51,14 @@ router.get('/:user_id', async (req, res) => {
             pool.query('SELECT level FROM users WHERE user_id = $1', [user_id]),
             pool.query(
                 'SELECT COUNT(*)::bigint AS total FROM user_completed_courses WHERE user_id = $1',
+                [user_id]
+            ),
+            pool.query(
+                `SELECT COUNT(*)::bigint AS total
+                   FROM user_mission_progress
+                  WHERE user_id = $1
+                    AND status = 'completed'
+                    AND completed_at IS NOT NULL`,
                 [user_id]
             )
         ]);
@@ -66,7 +75,8 @@ router.get('/:user_id', async (req, res) => {
             player_level: users[0].level ?? 1,
             courses_completed: courses[0]?.total ?? '0',
             days_in_jail: stateProgress.days_in_jail,
-            hospital_hours: stateProgress.hospital_hours
+            hospital_hours: stateProgress.hospital_hours,
+            missions_completed: missions[0]?.total ?? '0'
         };
 
         const mappedAchievements = achievements.map(ach => {
