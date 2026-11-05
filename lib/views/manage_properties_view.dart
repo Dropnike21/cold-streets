@@ -22,18 +22,6 @@ class _ManagePropertiesViewState extends State<ManagePropertiesView> {
   bool isLoading = true;
   List<Map<String, dynamic>> ownedProperties = [];
 
-  final List<Map<String, dynamic>> upgradeCatalog = [
-    {'id': 'burner_phones', 'name': 'Burner Phone Farm', 'cost': 25000, 'desc': 'Generates Influence.', 'tiers': ['Urban Living']},
-    {'id': 'advanced_locks', 'name': 'Advanced Locks', 'cost': 75000, 'desc': 'Street robbery protection.', 'tiers': ['Urban Living']},
-    {'id': 'lobbying_office', 'name': 'Lobbying Office', 'cost': 2500000, 'desc': 'Generates Influence points.', 'tiers': ['Luxury Class']},
-    {'id': 'police_scanner', 'name': 'Police Scanner', 'cost': 1000000, 'desc': 'Heat decays 2x faster.', 'tiers': ['Luxury Class']},
-    {'id': 'panic_room', 'name': 'Panic Room', 'cost': 5000000, 'desc': 'Protects cash from raids.', 'tiers': ['Luxury Class']},
-    {'id': 'command_center', 'name': 'Syndicate Command', 'cost': 150000000, 'desc': 'Generates high Influence.', 'tiers': ['The Elite']},
-    {'id': 'police_payroll', 'name': 'Chief on Payroll', 'cost': 350000000, 'desc': 'Ignore minor crimes.', 'tiers': ['The Elite']},
-    {'id': 'vault_basic', 'name': 'Underground Vault', 'cost': 250000000, 'desc': 'Safely store \$500M.', 'tiers': ['The Elite'], 'requires_id': [14, 15]},
-    {'id': 'vault_max', 'name': 'Mega Vault', 'cost': 800000000, 'desc': 'Safely store \$2B.', 'tiers': ['The Elite'], 'requires_id': [15]},
-    {'id': 'airstrip', 'name': 'Private Airstrip', 'cost': 500000000, 'desc': 'Zero customs risk travel.', 'tiers': ['The Elite'], 'requires_id': [15]},
-  ];
 
   int _parseSafeInt(dynamic value) {
     if (value == null) return 0;
@@ -78,13 +66,15 @@ class _ManagePropertiesViewState extends State<ManagePropertiesView> {
             'tier': item['tier'],
             'name': item['name'],
             'owner': 'Player',
-            'market_price': _parseSafeInt(item['cost']),
-            'upkeep': _calculateUpkeep(item),
-            'hp_bonus': _parseSafeInt(item['hp_bonus']),
-            'gym_bonus': _parseSafeDouble(item['gym_bonus']),
-            'staff_cost': 0,
+            'market_price': _parseSafeInt(item['acquisition_cost_reference'] ?? item['cost']),
+            'upkeep': _parseSafeInt(item['total_upkeep_reference'] ?? item['upkeep_val']),
+            'hp_bonus': _parseSafeInt(item['hp_bonus_source_value'] ?? item['hp_bonus']),
+            'gym_bonus': item['gym_bonus_source_value'] ?? item['gym_bonus'],
             'status': item['status'] == 'active_residence' ? 'Primary Residence' : 'Idle',
-            'upgrades': item['upgrades'] ?? {},
+            'installed_upgrade_ids': item['installed_upgrade_ids'] ?? [],
+            'available_upgrades': item['available_upgrades'] ?? [],
+            'bonus_status': item['bonus_application_status'] ?? 'unresolved_source_conflict',
+            'upkeep_status': item['upkeep_collection_status'] ?? 'unimplemented',
           });
         }
 
@@ -194,22 +184,16 @@ class _ManagePropertiesViewState extends State<ManagePropertiesView> {
   double _calculateUpkeep(Map<String, dynamic> prop) {
     double cost = _parseSafeDouble(prop['cost']);
     double val = _parseSafeDouble(prop['upkeep_val']);
-    if (prop['upkeep_type'] == 'flat') return val;
-    return cost * val;
+    if (prop['upkeep_type'] == 'daily_cash' || prop['upkeep_type'] == 'flat') return val;
+    return 0;
   }
 
   bool _hasAccess(Map<String, dynamic> prop, String action) {
     bool isOwner = prop['owner'] == 'Player';
-    bool isTrailer = prop['type_id'] == 1;
-
-    // RULE: You cannot sell, lease, or give away the Default Trailer
-    if (isTrailer && ['Sell', 'Lease', 'Give'].contains(action)) {
-      return false;
-    }
-
-    if (isOwner) return true;
-    if (['Move In', 'Customize', 'Upkeep'].contains(action)) return true;
-    return false;
+    if (!isOwner) return false;
+    // Only Move In has an active mutation. The other actions remain visible
+    // so their reconciliation status can be explained in the management panel.
+    return true;
   }
 
   void _showPropertyModal(Map<String, dynamic> prop, {String initialAction = 'Overview'}) {
@@ -258,9 +242,9 @@ class _ManagePropertiesViewState extends State<ManagePropertiesView> {
                                   const Divider(color: Color(0xFF333333), height: 16),
                                   _buildModalDetailRow("Owner:", prop['owner'], Colors.white),
                                   _buildModalDetailRow("Value:", _formatCash(prop['market_price']), Colors.white),
-                                  _buildModalDetailRow("Upkeep:", "${_formatCash(prop['upkeep'])}/d", Colors.redAccent),
-                                  _buildModalDetailRow("Staff:", "${_formatCash(prop['staff_cost'])}/d", Colors.orangeAccent),
-                                  _buildModalDetailRow("Gains:", "+${prop['hp_bonus']}% HP | +${prop['gym_bonus']}% GYM", const Color(0xFF39FF14)),
+                                  _buildModalDetailRow("Upkeep ref:", "${_formatCash(prop['upkeep'])}/d", Colors.redAccent),
+                                  _buildModalDetailRow("HP source value:", "${prop['hp_bonus']}", const Color(0xFF39FF14)),
+                                  _buildModalDetailRow("Gym source value:", "${prop['gym_bonus']}", Colors.blueAccent),
                                   _buildModalDetailRow("Status:", prop['status'], Colors.cyanAccent),
                                 ],
                               ),
@@ -330,70 +314,106 @@ class _ManagePropertiesViewState extends State<ManagePropertiesView> {
           ],
         );
       case 'Customize':
-        List<Map<String, dynamic>> availableUpgrades = upgradeCatalog.where((u) {
-          bool correctTier = u['tiers'].contains(prop['tier']);
-          bool correctProperty = u['requires_id'] == null || (u['requires_id'] as List).contains(prop['type_id']);
-          return correctTier && correctProperty;
-        }).toList();
+        final availableUpgrades = prop['available_upgrades'] is List
+            ? List<dynamic>.from(prop['available_upgrades'])
+            : <dynamic>[];
+        final installedIds = prop['installed_upgrade_ids'] is List
+            ? Set<String>.from((prop['installed_upgrade_ids'] as List).map((e) => e.toString()))
+            : <String>{};
 
         if (availableUpgrades.isEmpty) {
-          return const Center(child: Text("This property tier does not support upgrades.", style: TextStyle(color: Colors.white54, fontSize: 12)));
+          return const Center(
+            child: Text(
+              "No recovered upgrades are defined for this property.",
+              style: TextStyle(color: Colors.white54, fontSize: 12),
+            ),
+          );
         }
 
         return ListView.builder(
           itemCount: availableUpgrades.length,
           itemBuilder: (context, index) {
-            var upgrade = availableUpgrades[index];
-            bool hasUpgrade = (prop['upgrades'] as Map).containsKey(upgrade['id']);
-            bool canAfford = cleanCash >= _parseSafeInt(upgrade['cost']);
-
+            final upgrade = Map<String, dynamic>.from(availableUpgrades[index] as Map);
+            final id = upgrade['id']?.toString() ?? '';
+            final installed = installedIds.contains(id);
             return Container(
-              margin: const EdgeInsets.only(bottom: 12), padding: const EdgeInsets.all(12),
-              decoration: BoxDecoration(color: const Color(0xFF121212), border: Border.all(color: hasUpgrade ? const Color(0xFF39FF14) : Colors.white12), borderRadius: BorderRadius.circular(8)),
+              margin: const EdgeInsets.only(bottom: 10),
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: const Color(0xFF121212),
+                border: Border.all(
+                  color: installed ? const Color(0xFF39FF14) : Colors.white12,
+                ),
+                borderRadius: BorderRadius.circular(8),
+              ),
               child: Row(
                 children: [
                   Expanded(
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Text(upgrade['name'], style: TextStyle(color: hasUpgrade ? const Color(0xFF39FF14) : Colors.white, fontSize: 13, fontWeight: FontWeight.bold)),
+                        Text(
+                          id.replaceAll('_', ' ').toUpperCase(),
+                          style: TextStyle(
+                            color: installed ? const Color(0xFF39FF14) : Colors.white,
+                            fontSize: 12,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
                         const SizedBox(height: 4),
-                        Text(upgrade['desc'], style: const TextStyle(color: Colors.grey, fontSize: 11)),
+                        Text(
+                          "Cost ref: ${_formatCash(upgrade['cost'])}  •  Upkeep +${_formatCash(upgrade['upkeep_increase'])}/d",
+                          style: const TextStyle(color: Colors.white54, fontSize: 10),
+                        ),
                       ],
                     ),
                   ),
-                  if (hasUpgrade)
-                    const Icon(Icons.check_circle, color: Color(0xFF39FF14), size: 24)
-                  else
-                    ElevatedButton(
-                      style: ElevatedButton.styleFrom(backgroundColor: canAfford ? Colors.grey[800] : Colors.transparent, foregroundColor: canAfford ? Colors.white : Colors.white24),
-                      onPressed: canAfford ? () => _purchaseUpgrade(prop, upgrade, setModalState) : null,
-                      child: Text(_formatCash(upgrade['cost']), style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold)),
-                    )
+                  const SizedBox(width: 8),
+                  Text(
+                    installed ? "INSTALLED" : "PURCHASE PAUSED",
+                    style: TextStyle(
+                      color: installed ? const Color(0xFF39FF14) : Colors.amber,
+                      fontSize: 9,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
                 ],
               ),
             );
           },
         );
       case 'Sell':
-        return Column(
-          mainAxisAlignment: MainAxisAlignment.center, crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Text("LIST PROPERTY ON MARKET", style: TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.bold, letterSpacing: 1)),
-            const SizedBox(height: 16),
-            TextField(
-              style: const TextStyle(color: Colors.white, fontSize: 16),
-              decoration: InputDecoration(filled: true, fillColor: const Color(0xFF121212), hintText: "Asking Price", hintStyle: const TextStyle(color: Colors.white24), prefixIcon: const Icon(Icons.attach_money, color: Color(0xFF39FF14), size: 20), border: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: const BorderSide(color: Colors.white12))),
-              keyboardType: TextInputType.number,
-            ),
-            const Spacer(),
-            SizedBox(width: double.infinity, height: 45, child: ElevatedButton(style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent, foregroundColor: Colors.white, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(6))), onPressed: () {}, child: const Text("CONFIRM SALE", style: TextStyle(fontWeight: FontWeight.w900, letterSpacing: 1))))
-          ],
+        return const Center(
+          child: Text(
+            "SALE LISTING PAUSED\n\nPlayer-market settlement currency, fees, and cancellation rules are not yet canonical.",
+            textAlign: TextAlign.center,
+            style: TextStyle(color: Colors.amber, fontSize: 12, height: 1.5),
+          ),
         );
       case 'Upkeep':
+        return const Center(
+          child: Text(
+            "UPKEEP PAYMENT PAUSED\n\nThe source defines daily upkeep and a 7-day missed-payment consequence, but the payment currency/cadence mechanics are not yet canonical.",
+            textAlign: TextAlign.center,
+            style: TextStyle(color: Colors.amber, fontSize: 12, height: 1.5),
+          ),
+        );
       case 'Lease':
+        return const Center(
+          child: Text(
+            "LEASES PAUSED\n\nContract duration, rent denomination, settlement timing, and renter rights are unresolved.",
+            textAlign: TextAlign.center,
+            style: TextStyle(color: Colors.amber, fontSize: 12, height: 1.5),
+          ),
+        );
       case 'Give':
-        return Center(child: Text("$action management coming soon.", style: const TextStyle(color: Colors.white54, fontStyle: FontStyle.italic, fontSize: 12)));
+        return const Center(
+          child: Text(
+            "GIFT TRANSFERS PAUSED\n\nTransfer restrictions and audit semantics are unresolved.",
+            textAlign: TextAlign.center,
+            style: TextStyle(color: Colors.amber, fontSize: 12, height: 1.5),
+          ),
+        );
       default:
         return const Center(child: Text("Select an action from the menu above to manage this property.", textAlign: TextAlign.center, style: TextStyle(color: Colors.white54, fontSize: 12, height: 1.5)));
     }
@@ -428,7 +448,7 @@ class _ManagePropertiesViewState extends State<ManagePropertiesView> {
               child: Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
-                  const Text("PORTFOLIO VALUE:", style: TextStyle(color: Colors.grey, fontSize: 10, fontWeight: FontWeight.bold, letterSpacing: 1)),
+                  const Text("CATALOG COST REFERENCE:", style: TextStyle(color: Colors.grey, fontSize: 10, fontWeight: FontWeight.bold, letterSpacing: 1)),
                   Text(_formatCash(portfolioValue), style: const TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.bold)),
                 ],
               ),
