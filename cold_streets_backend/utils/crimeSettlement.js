@@ -1,3 +1,4 @@
+const logger = require('./logger');
 const { randomInt } = require('node:crypto');
 const { completeIdempotent } = require('./idempotency');
 
@@ -30,7 +31,7 @@ async function commitCrimeOutcome(client, req, res, response, afterCommit = null
         try {
             afterCommit();
         } catch (error) {
-            console.error('Post-commit crime side effect failed:', error);
+            logger.error('crime_post_commit_side_effect_failed', logger.errorFields(error));
         }
     }
     return res.json(response);
