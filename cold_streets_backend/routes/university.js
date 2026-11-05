@@ -1,3 +1,4 @@
+const logger = require('../utils/logger');
 const express = require('express');
 const pool = require('../db');
 const router = express.Router();
@@ -44,6 +45,55 @@ function normalizeCourseRewards(raw) {
         throw new Error('University entitlement catalog is invalid.');
     }
     return { stats, perks, unlocks };
+}
+
+const EXPLICIT_MAX_NERVE_COURSES = Object.freeze({
+    '162': 2n,
+    '170': 10n
+});
+
+function explicitMaxNerveReward(courseId, perks) {
+    const id = String(courseId);
+    const matches = [];
+
+    for (const perk of perks) {
+        if (!perk || typeof perk !== 'object' || Array.isArray(perk)) {
+            throw new Error('University perk catalog contains a malformed entry.');
+        }
+        if (perk.type === 'max_nerve') {
+            matches.push(perk);
+        }
+    }
+
+    const expected = EXPLICIT_MAX_NERVE_COURSES[id];
+
+    if (expected === undefined) {
+        if (matches.length) {
+            throw new Error(
+                'University max_nerve perk appeared on an unreconciled course.'
+            );
+        }
+        return 0n;
+    }
+
+    if (matches.length !== 1) {
+        throw new Error(
+            'Reconciled University max_nerve course changed its perk count.'
+        );
+    }
+
+    const value = integer(matches[0].value, {
+        field: 'University Max Nerve reward',
+        min: 1n,
+        max: 1000000n
+    });
+    if (value !== expected) {
+        throw new Error(
+            'Reconciled University Max Nerve reward changed and requires review.'
+        );
+    }
+
+    return value;
 }
 
 // ==========================================
@@ -192,7 +242,7 @@ router.post('/enroll', async (req, res) => {
     } catch (err) {
         if (transaction) {
             try { await client.query('ROLLBACK'); }
-            catch (rollback) { console.error('University enrollment rollback:', rollback); }
+            catch (rollback) { logger.error('university_enroll_rollback_failed', logger.errorFields(rollback)); }
         }
         return sendActionError(res, err, 'University enrollment failed:');
     } finally {
@@ -247,7 +297,7 @@ router.post('/dropout', async (req, res) => {
     } catch (err) {
         if (transaction) {
             try { await client.query('ROLLBACK'); }
-            catch (rollback) { console.error('University dropout rollback:', rollback); }
+            catch (rollback) { logger.error('university_dropout_rollback_failed', logger.errorFields(rollback)); }
         }
         return sendActionError(res, err, 'University dropout failed:');
     } finally {
@@ -304,6 +354,10 @@ router.post('/graduate', async (req, res) => {
         if (courseRes.rowCount !== 1) throw new Error('Active course catalog row is missing.');
         const course = courseRes.rows[0];
         const rewards = normalizeCourseRewards(course.rewards_jsonb);
+        const maxNerveReward = explicitMaxNerveReward(
+            course.course_id,
+            rewards.perks
+        );
 
         const completion = await client.query(
             `INSERT INTO user_completed_courses (user_id, course_id)
@@ -323,14 +377,16 @@ router.post('/graduate', async (req, res) => {
                     stat_acu = stat_acu + $1::numeric,
                     stat_ops = stat_ops + $2::numeric,
                     stat_pre = stat_pre + $3::numeric,
-                    stat_res = stat_res + $4::numeric
-              WHERE user_id = $5 AND active_course_id = $6
+                    stat_res = stat_res + $4::numeric,
+                    max_nerve = max_nerve + $5::numeric
+              WHERE user_id = $6 AND active_course_id = $7
               RETURNING *`,
             [
                 rewards.stats.acu.toString(),
                 rewards.stats.ops.toString(),
                 rewards.stats.pre.toString(),
                 rewards.stats.res.toString(),
+                maxNerveReward.toString(),
                 userId,
                 activeCourseId
             ]
@@ -356,6 +412,9 @@ router.post('/graduate', async (req, res) => {
                 pre: exactJsonAmount(rewards.stats.pre),
                 res: exactJsonAmount(rewards.stats.res)
             },
+            applied_explicit_perks: {
+                max_nerve: exactJsonAmount(maxNerveReward)
+            },
             recorded_entitlements: {
                 perks: rewards.perks,
                 unlocks: rewards.unlocks
@@ -369,7 +428,7 @@ router.post('/graduate', async (req, res) => {
     } catch (err) {
         if (transaction) {
             try { await client.query('ROLLBACK'); }
-            catch (rollback) { console.error('University graduation rollback:', rollback); }
+            catch (rollback) { logger.error('university_graduation_rollback_failed', logger.errorFields(rollback)); }
         }
         return sendActionError(res, err, 'University graduation failed:');
     } finally {

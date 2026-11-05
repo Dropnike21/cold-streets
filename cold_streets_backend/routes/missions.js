@@ -1,3 +1,4 @@
+const logger = require('../utils/logger');
 const express = require('express');
 const pool = require('../db');
 const {
@@ -15,6 +16,9 @@ const {
     assertAnonymousMissionComplete,
     rewardDeltas
 } = require('../utils/anonymousTutorial');
+const {
+    recordMissionCompletionAchievement
+} = require('../utils/achievement_engine');
 const router = express.Router();
 
 // Reject URLs referencing any player other than the verified session owner.
@@ -200,7 +204,7 @@ router.post('/tutorial/visit', async (req, res) => {
     } catch (error) {
         if (transaction) {
             try { await client.query('ROLLBACK'); }
-            catch (rollback) { console.error('Tutorial visit rollback failed:', rollback); }
+            catch (rollback) { logger.error('tutorial_visit_rollback_failed', logger.errorFields(rollback)); }
         }
         return sendActionError(res, error, 'Tutorial visit failed:');
     } finally {
@@ -300,10 +304,18 @@ router.post('/action', async (req, res) => {
                 throw new ActionError(409, 'Anonymous mission completion state changed.');
             }
 
+            const missionsCompleted = await recordMissionCompletionAchievement(
+                client,
+                userId
+            );
+
             const response = {
                 message: 'Objective verified. Anonymous reputation increased.',
                 completed_mission_id: mission.id,
                 anonymous_reputation: nextRep,
+                missions_completed: exactJsonAmount(
+                    BigInt(String(missionsCompleted))
+                ),
                 rewards: {
                     dirty_cash: exactJsonAmount(reward.dirtyCash),
                     clean_cash: exactJsonAmount(reward.cleanCash),
@@ -338,7 +350,7 @@ router.post('/action', async (req, res) => {
     } catch (error) {
         if (transaction) {
             try { await client.query('ROLLBACK'); }
-            catch (rollback) { console.error('Mission rollback failed:', rollback); }
+            catch (rollback) { logger.error('mission_rollback_failed', logger.errorFields(rollback)); }
         }
         return sendActionError(res, error, 'Mission action failure:');
     } finally {

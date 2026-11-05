@@ -1,3 +1,4 @@
+const logger = require('../utils/logger');
 const express = require('express');
 const { createHash } = require('node:crypto');
 const router = express.Router();
@@ -8,6 +9,7 @@ router.param('user_id', requireOwnedPlayerParam);
 const pool = require('../db');
 const { ActionError, integer, dbInteger, exactJsonAmount, actorId, sendActionError } = require('../utils/economyValidation');
 const { requireIdempotencyKey, beginIdempotent, completeIdempotent } = require('../utils/idempotency');
+const { refreshUniqueItemDiscoveryAchievements } = require('../utils/achievement_engine');
 
 // Job-special mappings in the legacy route were not source-authoritative:
 // job 1 is Armed Forces (not City Hospital), and item IDs 101/102 are weapons,
@@ -159,14 +161,22 @@ router.get('/:user_id', async (req, res) => {
                 };
             });
 
+            const isCurrent = user.current_job_id === job.job_id;
+
             return {
                 job_id: job.job_id,
                 job_name: job.job_name,
                 primary_stat: job.primary_stat,
                 mastery_passive: job.mastery_passive_desc,
                 mastery_active: job.mastery_active_desc,
-                is_current: user.current_job_id === job.job_id,
+                is_current: isCurrent,
                 current_rank: uData ? uData.current_rank : 1,
+                resignation_preview: isCurrent ? {
+                    settlement_available: false,
+                    status: 'paused_source_missing',
+                    reason:
+                        'City Job resignation retention, heist payout, Heat, and ban semantics are not defined by the recovered City Job source.'
+                } : null,
                 incentive_balance: uData ? uData.incentive_balance : 0,
                 is_mastered: uData ? uData.is_mastered : false,
                 ban_expiry: uData ? uData.ban_expiry : null,
@@ -182,7 +192,7 @@ router.get('/:user_id', async (req, res) => {
             jobs: mappedJobs
         });
     } catch (err) {
-        console.error(err);
+        logger.error('jobs_dashboard_failed', logger.errorFields(err));
         res.status(500).json({ error: "Server error fetching jobs dashboard." });
     }
 });
@@ -193,36 +203,115 @@ router.get('/interview/:job_id/:user_id', async (req, res) => {
     try {
         const userId = actorId(req);
         const jobId = integer(req.params.job_id, {
-            field: 'Job ID', min: 1n, max: 9223372036854775807n
+            field: 'Job ID',
+            min: 1n,
+            max: 9223372036854775807n
         }).toString();
+
         client = await pool.connect();
         await client.query('BEGIN');
         transaction = true;
 
+        // Player lock serializes interview issuance for this actor. A refresh
+        // reuses the same live session instead of re-rolling questions.
         const player = await client.query(
-            'SELECT current_job_id FROM users WHERE user_id = $1 FOR UPDATE', [userId]
+            'SELECT current_job_id FROM users WHERE user_id = $1 FOR UPDATE',
+            [userId]
         );
-        if (player.rowCount !== 1) throw new ActionError(404, 'Player not found.');
-        if (player.rows[0].current_job_id !== null) {
-            throw new ActionError(409, 'Resign from your current City Job first.');
+        if (player.rowCount !== 1) {
+            throw new ActionError(404, 'Player not found.');
         }
+        if (player.rows[0].current_job_id !== null) {
+            throw new ActionError(
+                409,
+                'Resign from your current City Job first.'
+            );
+        }
+
         const company = await client.query(
-            'SELECT position_role FROM company_employees WHERE employee_id = $1 AND is_npc = false LIMIT 1',
+            `SELECT position_role
+               FROM company_employees
+              WHERE employee_id = $1
+                AND is_npc = false
+              LIMIT 1`,
             [userId]
         );
         if (company.rowCount) {
-            throw new ActionError(409, 'Resign from private employment before applying for a City Job.');
+            throw new ActionError(
+                409,
+                'Resign from private employment before applying for a City Job.'
+            );
         }
-        const job = await client.query('SELECT job_id FROM jobs_master WHERE job_id = $1', [jobId]);
-        if (job.rowCount !== 1) throw new ActionError(404, 'Job not found.');
+
+        const job = await client.query(
+            'SELECT job_id FROM jobs_master WHERE job_id = $1',
+            [jobId]
+        );
+        if (job.rowCount !== 1) {
+            throw new ActionError(404, 'Job not found.');
+        }
 
         const ban = await client.query(
-            'SELECT ban_expiry FROM user_job_data WHERE user_id = $1 AND job_id = $2',
+            `SELECT (ban_expiry IS NOT NULL AND ban_expiry > NOW()) AS banned
+               FROM user_job_data
+              WHERE user_id = $1
+                AND job_id = $2`,
             [userId, jobId]
         );
-        if (ban.rowCount && ban.rows[0].ban_expiry &&
-            new Date(ban.rows[0].ban_expiry).getTime() > Date.now()) {
-            throw new ActionError(409, 'You recently failed an interview here. Try again later.');
+        if (ban.rowCount && ban.rows[0].banned === true) {
+            throw new ActionError(
+                409,
+                'You recently failed an interview here. Try again later.'
+            );
+        }
+
+        const existing = await client.query(
+            `SELECT interview_id, question_ids, expires_at
+               FROM job_interview_sessions
+              WHERE user_id = $1
+                AND job_id = $2
+                AND consumed_at IS NULL
+                AND expires_at > NOW()
+              ORDER BY created_at DESC, interview_id DESC
+              LIMIT 1
+              FOR UPDATE`,
+            [userId, jobId]
+        );
+
+        if (existing.rowCount === 1) {
+            const questionIds = (existing.rows[0].question_ids || [])
+                .map(String);
+            if (questionIds.length !== 5 ||
+                new Set(questionIds).size !== 5) {
+                throw new Error(
+                    'Persisted interview session has invalid question identity.'
+                );
+            }
+
+            const questions = await client.query(
+                `SELECT question_id, question_text, options_json AS options
+                   FROM job_interviews
+                  WHERE job_id = $1
+                    AND question_id = ANY($2::bigint[])
+                  ORDER BY array_position($2::bigint[], question_id)`,
+                [jobId, questionIds]
+            );
+            if (questions.rowCount !== 5) {
+                throw new ActionError(
+                    503,
+                    'Persisted interview questions no longer match the catalog.'
+                );
+            }
+
+            await client.query('COMMIT');
+            transaction = false;
+            return res.json({
+                success: true,
+                interview_id: existing.rows[0].interview_id,
+                expires_at: existing.rows[0].expires_at,
+                reused_session: true,
+                questions: questions.rows
+            });
         }
 
         const questions = await client.query(
@@ -234,29 +323,47 @@ router.get('/interview/:job_id/:user_id', async (req, res) => {
             [jobId]
         );
         if (questions.rowCount !== 5) {
-            throw new ActionError(503, 'Interview catalog is incomplete for this job.');
+            throw new ActionError(
+                503,
+                'Interview catalog is incomplete for this job.'
+            );
         }
-        const questionIds = questions.rows.map(row => String(row.question_id));
+
+        const questionIds = questions.rows.map(
+            row => String(row.question_id)
+        );
         const session = await client.query(
-            `INSERT INTO job_interview_sessions (user_id, job_id, question_ids)
+            `INSERT INTO job_interview_sessions (
+                user_id, job_id, question_ids
+             )
              VALUES ($1, $2, $3::bigint[])
              RETURNING interview_id, expires_at`,
             [userId, jobId, questionIds]
         );
+        if (session.rowCount !== 1) {
+            throw new Error('Interview session issuance failed.');
+        }
+
         await client.query('COMMIT');
         transaction = false;
         return res.json({
             success: true,
             interview_id: session.rows[0].interview_id,
             expires_at: session.rows[0].expires_at,
+            reused_session: false,
             questions: questions.rows
         });
     } catch (err) {
         if (transaction) {
-            try { await client.query('ROLLBACK'); } catch (rollback) { console.error('Interview start rollback:', rollback); }
+            try { await client.query('ROLLBACK'); }
+            catch (rollback) {
+                logger.error('interview_start_rollback_failed', logger.errorFields(rollback));
+            }
         }
         return sendActionError(res, err, 'Interview start failed:');
-    } finally { if (client) client.release(); }
+    } finally {
+        if (client) client.release();
+    }
 });
 
 // --- 3. SUBMIT INTERVIEW ---
@@ -265,86 +372,204 @@ router.post('/interview/submit', async (req, res) => {
     let client, transaction = false;
     try {
         const userId = actorId(req);
+        const idempotencyKey = requireIdempotencyKey(req);
         const interviewId = req.body?.interview_id;
         if (typeof interviewId !== 'string' ||
             !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(interviewId)) {
             throw new ActionError(400, 'Invalid interview session.');
         }
+
         const answers = req.body?.answers;
         if (!Array.isArray(answers) || answers.length !== 5) {
-            throw new ActionError(400, 'Exactly five interview answers are required.');
+            throw new ActionError(
+                400,
+                'Exactly five interview answers are required.'
+            );
         }
-        const normalized = answers.map(answer => ({
-            questionId: integer(answer?.question_id, {
-                field: 'Question ID', min: 1n, max: 9223372036854775807n
-            }).toString(),
-            selectedIndex: Number(answer?.selected_index)
-        }));
-        if (normalized.some(a => !Number.isInteger(a.selectedIndex) || a.selectedIndex < 0 || a.selectedIndex > 3)) {
+
+        const normalized = answers.map(answer => {
+            if (!answer || typeof answer !== 'object' || Array.isArray(answer)) {
+                throw new ActionError(400, 'Invalid interview answer.');
+            }
+            const keys = Object.keys(answer);
+            if (keys.some(key =>
+                key !== 'question_id' && key !== 'selected_index')) {
+                throw new ActionError(
+                    400,
+                    'Interview answers accept only question_id and selected_index.'
+                );
+            }
+            return {
+                questionId: integer(answer.question_id, {
+                    field: 'Question ID',
+                    min: 1n,
+                    max: 9223372036854775807n
+                }).toString(),
+                selectedIndex: Number(answer.selected_index)
+            };
+        });
+
+        if (normalized.some(answer =>
+            !Number.isInteger(answer.selectedIndex) ||
+            answer.selectedIndex < 0 ||
+            answer.selectedIndex > 3)) {
             throw new ActionError(400, 'Invalid interview answer index.');
         }
-        if (new Set(normalized.map(a => a.questionId)).size !== 5) {
-            throw new ActionError(400, 'Interview questions must be answered once each.');
+        if (new Set(normalized.map(answer => answer.questionId)).size !== 5) {
+            throw new ActionError(
+                400,
+                'Interview questions must be answered once each.'
+            );
         }
+
+        const canonicalAnswers = [...normalized].sort((a, b) => {
+            const aId = BigInt(a.questionId);
+            const bId = BigInt(b.questionId);
+            return aId < bId ? -1 : aId > bId ? 1 : 0;
+        });
 
         client = await pool.connect();
         await client.query('BEGIN');
         transaction = true;
+
+        // Replay must be resolved before employment/session-state checks,
+        // otherwise a successful retry would look already employed/consumed.
         const player = await client.query(
-            'SELECT current_job_id FROM users WHERE user_id = $1 FOR UPDATE', [userId]
-        );
-        if (player.rowCount !== 1) throw new ActionError(404, 'Player not found.');
-        if (player.rows[0].current_job_id !== null) {
-            throw new ActionError(409, 'You are already employed in a City Job.');
-        }
-        const company = await client.query(
-            'SELECT 1 FROM company_employees WHERE employee_id = $1 AND is_npc = false LIMIT 1',
+            'SELECT current_job_id FROM users WHERE user_id = $1 FOR UPDATE',
             [userId]
         );
-        if (company.rowCount) throw new ActionError(409, 'You are already employed in the private sector.');
+        if (player.rowCount !== 1) {
+            throw new ActionError(404, 'Player not found.');
+        }
+
+        const idem = await beginIdempotent(
+            client,
+            userId,
+            'jobs.interview_submit',
+            idempotencyKey,
+            {
+                interviewId: interviewId.toLowerCase(),
+                answers: canonicalAnswers
+            }
+        );
+        if (idem.replay) {
+            await client.query('COMMIT');
+            transaction = false;
+            return res.status(idem.status).json(idem.response);
+        }
+
+        if (player.rows[0].current_job_id !== null) {
+            throw new ActionError(
+                409,
+                'You are already employed in a City Job.'
+            );
+        }
+
+        const company = await client.query(
+            `SELECT 1
+               FROM company_employees
+              WHERE employee_id = $1
+                AND is_npc = false
+              LIMIT 1`,
+            [userId]
+        );
+        if (company.rowCount) {
+            throw new ActionError(
+                409,
+                'You are already employed in the private sector.'
+            );
+        }
 
         const session = await client.query(
             `SELECT job_id, question_ids
                FROM job_interview_sessions
-              WHERE interview_id = $1::uuid AND user_id = $2
-                AND consumed_at IS NULL AND expires_at > NOW()
+              WHERE interview_id = $1::uuid
+                AND user_id = $2
+                AND consumed_at IS NULL
+                AND expires_at > NOW()
               FOR UPDATE`,
             [interviewId, userId]
         );
         if (session.rowCount !== 1) {
-            throw new ActionError(409, 'Interview session expired or already submitted.');
+            throw new ActionError(
+                409,
+                'Interview session expired or already submitted.'
+            );
         }
+
         const jobId = String(session.rows[0].job_id);
-        const issued = new Set((session.rows[0].question_ids || []).map(String));
-        if (issued.size !== 5 || normalized.some(a => !issued.has(a.questionId))) {
-            throw new ActionError(400, 'Answers do not match the issued interview.');
+        const issued = new Set(
+            (session.rows[0].question_ids || []).map(String)
+        );
+        if (issued.size !== 5 ||
+            normalized.some(answer => !issued.has(answer.questionId))) {
+            throw new ActionError(
+                400,
+                'Answers do not match the issued interview.'
+            );
         }
 
         const questions = await client.query(
             `SELECT question_id, correct_index
                FROM job_interviews
-              WHERE job_id = $1 AND question_id = ANY($2::bigint[])`,
+              WHERE job_id = $1
+                AND question_id = ANY($2::bigint[])`,
             [jobId, [...issued]]
         );
-        if (questions.rowCount !== 5) throw new Error('Interview catalog changed during session.');
-        const correct = new Map(questions.rows.map(row => [String(row.question_id), Number(row.correct_index)]));
+        if (questions.rowCount !== 5) {
+            throw new Error('Interview catalog changed during session.');
+        }
+
+        const correct = new Map(
+            questions.rows.map(row => [
+                String(row.question_id),
+                Number(row.correct_index)
+            ])
+        );
         const correctCount = normalized.reduce(
-            (score, answer) => score + (correct.get(answer.questionId) === answer.selectedIndex ? 1 : 0),
+            (score, answer) =>
+                score +
+                (correct.get(answer.questionId) === answer.selectedIndex ? 1 : 0),
             0
         );
         const passed = correctCount >= 4;
 
-        await client.query(
-            'UPDATE job_interview_sessions SET consumed_at = NOW() WHERE interview_id = $1::uuid',
-            [interviewId]
+        const consumed = await client.query(
+            `UPDATE job_interview_sessions
+                SET consumed_at = NOW()
+              WHERE interview_id = $1::uuid
+                AND user_id = $2
+                AND consumed_at IS NULL
+              RETURNING consumed_at`,
+            [interviewId, userId]
         );
+        if (consumed.rowCount !== 1) {
+            throw new ActionError(
+                409,
+                'Interview session changed before settlement.'
+            );
+        }
+
         if (passed) {
-            await client.query(
-                'UPDATE users SET current_job_id = $1 WHERE user_id = $2',
+            const employed = await client.query(
+                `UPDATE users
+                    SET current_job_id = $1
+                  WHERE user_id = $2
+                    AND current_job_id IS NULL
+                  RETURNING current_job_id`,
                 [jobId, userId]
             );
+            if (employed.rowCount !== 1) {
+                throw new ActionError(
+                    409,
+                    'Employment state changed before interview settlement.'
+                );
+            }
+
             await client.query(
-                `INSERT INTO user_job_data (user_id, job_id, current_rank, ban_expiry)
+                `INSERT INTO user_job_data (
+                    user_id, job_id, current_rank, ban_expiry
+                 )
                  VALUES ($1, $2, 1, NULL)
                  ON CONFLICT (user_id, job_id)
                  DO UPDATE SET ban_expiry = NULL`,
@@ -359,22 +584,31 @@ router.post('/interview/submit', async (req, res) => {
                 [userId, jobId]
             );
         }
-        await client.query('COMMIT');
-        transaction = false;
-        return res.json({
+
+        const response = {
             success: true,
             passed,
             score: correctCount,
             message: passed
                 ? "Welcome to the team. Don't be late."
                 : 'We went with another candidate. Try again in 24 hours.'
-        });
+        };
+
+        await completeIdempotent(client, idem, 200, response);
+        await client.query('COMMIT');
+        transaction = false;
+        return res.status(200).json(response);
     } catch (err) {
         if (transaction) {
-            try { await client.query('ROLLBACK'); } catch (rollback) { console.error('Interview submit rollback:', rollback); }
+            try { await client.query('ROLLBACK'); }
+            catch (rollback) {
+                logger.error('interview_submit_rollback_failed', logger.errorFields(rollback));
+            }
         }
         return sendActionError(res, err, 'Interview submission failed:');
-    } finally { if (client) client.release(); }
+    } finally {
+        if (client) client.release();
+    }
 });
 
 // --- 4. CLAIM DAILY CITY JOB PAY ---
@@ -494,7 +728,7 @@ router.post('/claim-daily', async (req, res) => {
     } catch (err) {
         if (transaction) {
             try { await client.query('ROLLBACK'); }
-            catch (rollback) { console.error('Daily job settlement rollback:', rollback); }
+            catch (rollback) { logger.error('daily_job_rollback_failed', logger.errorFields(rollback)); }
         }
         return sendActionError(res, err, 'Daily City Job settlement failed:');
     } finally {
@@ -596,7 +830,7 @@ router.post('/promote', async (req, res) => {
         return res.json(response);
     } catch (err) {
         if (transaction) {
-            try { await client.query('ROLLBACK'); } catch (rollback) { console.error('Promotion rollback:', rollback); }
+            try { await client.query('ROLLBACK'); } catch (rollback) { logger.error('job_promotion_rollback_failed', logger.errorFields(rollback)); }
         }
         return sendActionError(res, err, 'Promotion failed:');
     } finally { if (client) client.release(); }
@@ -604,98 +838,11 @@ router.post('/promote', async (req, res) => {
 
 // --- 5. RESIGN FROM JOB (CLEAN EXIT VS HEIST) ---
 
-router.post('/quit', async (req, res) => {
-    let client, transaction = false;
-    try {
-        const userId = actorId(req);
-        const idempotencyKey = requireIdempotencyKey(req);
-        const exitType = req.body?.exit_type;
-        if (!['clean', 'heist'].includes(exitType)) throw new ActionError(400, 'Invalid exit strategy.');
-
-        client = await pool.connect();
-        await client.query('BEGIN');
-        transaction = true;
-        const userRes = await client.query(
-            'SELECT current_job_id FROM users WHERE user_id = $1 FOR UPDATE', [userId]
-        );
-        if (userRes.rowCount !== 1) throw new ActionError(404, 'Player not found.');
-        const jobId = userRes.rows[0].current_job_id;
-        if (!jobId) throw new ActionError(409, 'You are already unemployed.');
-
-        const idem = await beginIdempotent(
-            client, userId, 'jobs.quit', idempotencyKey,
-            { jobId: String(jobId), exitType }
-        );
-        if (idem.replay) {
-            await client.query('COMMIT');
-            transaction = false;
-            return res.status(idem.status).json(idem.response);
-        }
-
-        const jobDataRes = await client.query(
-            `SELECT current_rank, incentive_balance
-               FROM user_job_data
-              WHERE user_id = $1 AND job_id = $2
-              FOR UPDATE`,
-            [userId, jobId]
-        );
-        if (jobDataRes.rowCount !== 1) throw new Error('Job progress row missing.');
-        const jobData = jobDataRes.rows[0];
-        let response;
-
-        if (exitType === 'clean') {
-            await client.query(
-                `UPDATE user_job_data
-                    SET incentive_balance = FLOOR(incentive_balance / 2)
-                  WHERE user_id = $1 AND job_id = $2`,
-                [userId, jobId]
-            );
-            await client.query(
-                'UPDATE users SET current_job_id = NULL WHERE user_id = $1',
-                [userId]
-            );
-            response = {
-                success: true,
-                message: 'Clean exit completed. 50% of Job Points were retained.'
-            };
-        } else {
-            const rank = integer(jobData.current_rank, {
-                field: 'Job rank', min: 1n, max: 100n
-            });
-            const payout = rank * 10000n;
-            await client.query(
-                `UPDATE user_job_data
-                    SET incentive_balance = 0,
-                        ban_expiry = NOW() + INTERVAL '30 days'
-                  WHERE user_id = $1 AND job_id = $2`,
-                [userId, jobId]
-            );
-            const wallet = await client.query(
-                `UPDATE users
-                    SET current_job_id = NULL,
-                        dirty_cash = dirty_cash + $1::numeric,
-                        heat = 100
-                  WHERE user_id = $2
-                  RETURNING dirty_cash, heat`,
-                [payout.toString(), userId]
-            );
-            response = {
-                success: true,
-                message: 'Heist resignation completed. Maximum heat and 30-day job ban applied.',
-                payout: exactJsonAmount(payout),
-                dirty_cash: wallet.rows[0].dirty_cash
-            };
-        }
-        await completeIdempotent(client, idem, 200, response);
-        await client.query('COMMIT');
-        transaction = false;
-        return res.json(response);
-    } catch (err) {
-        if (transaction) {
-            try { await client.query('ROLLBACK'); } catch (rollback) { console.error('Job resignation rollback:', rollback); }
-        }
-        return sendActionError(res, err, 'Job resignation failed:');
-    } finally { if (client) client.release(); }
+router.post('/quit', (_req, res) => {
+    return res.status(503).json({
+        error:
+            'City Job resignation is paused until clean-exit retention and Final Heist payout/Heat/ban semantics are selected canonically.'
+    });
 });
 
 // --- 6. CAREER MASTERY ACTIVE ---
@@ -863,6 +1010,11 @@ router.post('/mastery/activate', async (req, res) => {
             );
             if (inventory.rowCount !== 1) throw new Error('Mastery inventory settlement failed.');
 
+            const uniqueItemsFound = await refreshUniqueItemDiscoveryAchievements(
+                client,
+                userId
+            );
+
             response = {
                 success: true,
                 reward_type: 'item',
@@ -871,6 +1023,10 @@ router.post('/mastery/activate', async (req, res) => {
                 inventory_quantity: exactJsonAmount(dbInteger(
                     inventory.rows[0].quantity,
                     { field: 'Inventory quantity' }
+                )),
+                unique_items_found: exactJsonAmount(dbInteger(
+                    uniqueItemsFound,
+                    { field: 'Unique item discoveries' }
                 )),
                 incentive_cost: exactJsonAmount(active.cost),
                 incentive_balance: exactJsonAmount(dbInteger(
@@ -907,7 +1063,7 @@ router.post('/mastery/activate', async (req, res) => {
     } catch (err) {
         if (transaction) {
             try { await client.query('ROLLBACK'); }
-            catch (rollback) { console.error('Mastery activation rollback:', rollback); }
+            catch (rollback) { logger.error('mastery_activation_rollback_failed', logger.errorFields(rollback)); }
         }
         return sendActionError(res, err, 'Career Mastery activation failed:');
     } finally {

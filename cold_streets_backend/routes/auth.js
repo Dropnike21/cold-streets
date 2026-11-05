@@ -1,5 +1,6 @@
 const express = require('express');
 const pool = require('../db');
+const logger = require('../utils/logger');
 const {
     requireSupabaseIdentity,
     requireAuthenticatedPlayer,
@@ -136,11 +137,17 @@ router.post('/session', requireSupabaseIdentity, async (req, res) => {
     } catch (err) {
         if (client && inTransaction) {
             try { await client.query('ROLLBACK'); } catch (rollbackError) {
-                console.error('Profile rollback failed:', rollbackError.message);
+                logger.error('profile_rollback_failed', {
+                    request_id: req.requestId,
+                    ...logger.errorFields(rollbackError)
+                });
             }
         }
         if (err.status) return res.status(err.status).json({ error: err.message });
-        console.error('Session profile error:', err.message);
+        logger.error('session_profile_failed', {
+            request_id: req.requestId,
+            ...logger.errorFields(err)
+        });
         return res.status(503).json({ error: 'Unable to initialize player profile.' });
     } finally {
         if (client) client.release();
@@ -170,7 +177,10 @@ router.get('/status/:user_id', async (req, res) => {
         );
         return res.json({ user: userQuery.rows[0], cooldowns: cdQuery.rows });
     } catch (err) {
-        console.error('Status sync failed:', err.message);
+        logger.error('status_sync_failed', {
+            request_id: req.requestId,
+            ...logger.errorFields(err)
+        });
         return res.status(503).json({ error: 'Unable to load player status.' });
     }
 });

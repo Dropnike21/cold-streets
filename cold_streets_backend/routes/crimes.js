@@ -1,8 +1,11 @@
 // routes/crimes.js
+const logger = require('../utils/logger');
 const express = require('express');
 const pool = require('../db');
 const router = express.Router();
-const { actorId, integer } = require('../utils/economyValidation');
+const {
+    ActionError, actorId, integer, sendActionError
+} = require('../utils/economyValidation');
 const { requireIdempotencyKey, beginIdempotent } = require('../utils/idempotency');
 
 // --- IMPORT YOUR SPECIFIC CRIME MODULES HERE ---
@@ -29,91 +32,112 @@ router.get('/list', async (req, res) => {
         const crimes = await pool.query("SELECT * FROM crimes_master ORDER BY req_skill_level ASC, id ASC");
         res.json(crimes.rows);
     } catch (err) {
-        console.error("Fetch Crimes Error:", err.message);
+        logger.error('crimes_fetch_failed', logger.errorFields(err));
         res.status(500).json({ error: "Failed to load Job Board." });
     }
 });
 
 router.post('/execute', async (req, res) => {
-    const client = await pool.connect();
+    let client;
+    let transaction = false;
 
     try {
         const userId = actorId(req);
         const idempotencyKey = requireIdempotencyKey(req);
         const crimeId = integer(req.body?.crime_id, {
-            field: 'Crime ID', min: 1n, max: 9223372036854775807n
+            field: 'Crime ID',
+            min: 1n,
+            max: 9223372036854775807n
         }).toString();
-        const activityName = typeof req.body?.activity_name === 'string'
-            ? req.body.activity_name
-            : null;
 
+        client = await pool.connect();
         await client.query('BEGIN');
+        transaction = true;
 
-        // 1. Universal Checks (Valid User, Jail, Hospital, HP)
-        const userCheck = await client.query("SELECT * FROM users WHERE user_id = $1 FOR UPDATE", [userId]);
-        if (userCheck.rows.length === 0) {
-            await client.query('ROLLBACK');
-            return res.status(404).json({ error: "Ghost account." });
+        const userCheck = await client.query(
+            'SELECT * FROM users WHERE user_id = $1 FOR UPDATE',
+            [userId]
+        );
+        if (userCheck.rowCount !== 1) {
+            throw new ActionError(404, 'Player not found.');
         }
         const user = userCheck.rows[0];
+
         const idem = await beginIdempotent(
             client,
             userId,
             'crimes.execute',
             idempotencyKey,
-            { crimeId, activityName }
+            { crimeId }
         );
         if (idem.replay) {
             await client.query('COMMIT');
+            transaction = false;
             return res.status(idem.status).json(idem.response);
         }
         req.crimeIdempotency = idem;
+
         const now = new Date();
-
         if (user.jail_expires_at && new Date(user.jail_expires_at) > now) {
-            await client.query('ROLLBACK');
-            return res.status(403).json({ error: "You are locked behind bars." });
+            throw new ActionError(403, 'You are locked behind bars.');
         }
-        if (user.hospital_expires_at && new Date(user.hospital_expires_at) > now) {
-            await client.query('ROLLBACK');
-            return res.status(403).json({ error: "You are recovering in the hospital." });
+        if (user.hospital_expires_at &&
+            new Date(user.hospital_expires_at) > now) {
+            throw new ActionError(
+                403,
+                'You are recovering in the hospital.'
+            );
         }
-        if (user.hp < 25) {
-            await client.query('ROLLBACK');
-            return res.status(403).json({ error: "You are too weak. Heal up to 25 HP first." });
+        if (Number(user.hp) < 25) {
+            throw new ActionError(
+                403,
+                'You are too weak. Heal up to 25 HP first.'
+            );
         }
 
-        // 2. Fetch the Crime
-        const crimeCheck = await client.query("SELECT * FROM crimes_master WHERE id = $1", [crimeId]);
-        if (crimeCheck.rows.length === 0) {
-            await client.query('ROLLBACK');
-            return res.status(404).json({ error: "Crime not found." });
+        const crimeCheck = await client.query(
+            'SELECT * FROM crimes_master WHERE id = $1',
+            [crimeId]
+        );
+        if (crimeCheck.rowCount !== 1) {
+            throw new ActionError(404, 'Crime not found.');
         }
         const crime = crimeCheck.rows[0];
 
-        // 3. THE ROUTER SWITCH
         switch (crime.sub_category) {
             case 'Searching':
-                return await searchingEngine.execute(client, user, crime, req, res);
+                return await searchingEngine.execute(
+                    client, user, crime, req, res
+                );
 
             case 'Shoplifting':
-                return await shopliftingEngine.execute(client, user, crime, req, res);
+                return await shopliftingEngine.execute(
+                    client, user, crime, req, res
+                );
 
             case 'Pickpocketing':
-                return await pickpocketEngine.execute(client, user, crime, req, res);
+                throw new ActionError(
+                    503,
+                    'Pickpocket execution is paused until target activity is server-issued.'
+                );
 
             default:
-                await client.query('ROLLBACK');
-                return res.status(400).json({ error: "Crime mechanics not yet implemented for this category." });
+                throw new ActionError(
+                    400,
+                    'Crime mechanics are not implemented for this category.'
+                );
         }
-
     } catch (err) {
-        await client.query('ROLLBACK');
-        console.error("Master Crime Router Error:", err.message);
-        res.status(500).json({ error: "Server malfunction." });
+        if (client && transaction) {
+            try { await client.query('ROLLBACK'); }
+            catch (rollback) {
+                // sendActionError records the primary failure. A rollback
+                // failure is infrastructure-level and should not replace it.
+            }
+        }
+        return sendActionError(res, err, 'Crime execution failed:');
     } finally {
-        client.release();
+        if (client) client.release();
     }
 });
-
 module.exports = router;

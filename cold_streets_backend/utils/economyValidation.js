@@ -1,3 +1,4 @@
+const logger = require('./logger');
 // Shared money validation for server-authoritative transactions.
 // node-postgres returns NUMERIC as strings; avoid JS Number for ledger math.
 class ActionError extends Error {
@@ -39,7 +40,11 @@ function actorId(req) {
 }
 function sendActionError(res, error, context) {
   if (error instanceof ActionError) return res.status(error.status).json({ error: error.message });
-  console.error(context, error);
+  logger.error('action_failed', {
+    request_id: res.req?.requestId,
+    context,
+    ...logger.errorFields(error)
+  });
   return res.status(500).json({ error: 'Transaction could not be completed.' });
 }
 module.exports = { ActionError, integer, dbInteger, exactJsonAmount, actorId, sendActionError, MAX_MONEY, SAFE_INTEGER };

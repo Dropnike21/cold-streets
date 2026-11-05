@@ -1,3 +1,4 @@
+const logger = require('../utils/logger');
 const express = require('express');
 const router = express.Router();
 // Route parameters are parsed after app-level middleware; enforce actor ownership here.
@@ -61,20 +62,10 @@ router.post('/funds', async (req, res) => {
         const actor = actorId(req);
         const idempotencyKey = requireIdempotencyKey(req);
         const companyId = req.managedCompanyId;
-        const { action_type: action, currency_type: currency } = req.body || {};
 
-        if (!['deposit', 'withdraw'].includes(action) ||
-            !['clean', 'dirty'].includes(currency)) {
-            throw new ActionError(400, 'Invalid company transfer action or currency.');
-        }
-
-        if (action !== 'deposit' || currency !== 'dirty') {
-            throw new ActionError(
-                503,
-                'Only owner Dirty Cash funding is source-reconciled. Company withdrawals and Clean Cash funding are paused pending cash-flow settlement rules.'
-            );
-        }
-
+        // The route itself represents the only source-reconciled transfer:
+        // owner Dirty Cash -> company Dirty Cash. The client does not choose a
+        // denomination or transfer direction.
         const amount = integer(req.body?.amount, {
             field: 'Dirty Cash funding amount',
             min: 1n
@@ -218,7 +209,7 @@ router.post('/funds', async (req, res) => {
             try {
                 await client.query('ROLLBACK');
             } catch (rollback) {
-                console.error('Company Dirty Cash funding rollback:', rollback);
+                logger.error('company_funding_rollback_failed', logger.errorFields(rollback));
             }
         }
         return sendActionError(res, err, 'Company cash funding failed:');
@@ -292,7 +283,7 @@ router.post('/update-profile', async (req, res) => {
     } catch (err) {
         if (transaction) {
             try { await client.query('ROLLBACK'); }
-            catch (rollback) { console.error('Company profile rollback:', rollback); }
+            catch (rollback) { logger.error('company_profile_rollback_failed', logger.errorFields(rollback)); }
         }
         return sendActionError(res, err, 'Company profile update failed:');
     } finally {
@@ -328,22 +319,10 @@ router.post('/sell-company', (_req, res) => {
 });
 
 // --- 6. UPDATE PRICING: exact non-negative integer and known inventory.
-router.post('/update-pricing', async (req, res) => {
-    try {
-        const companyId = req.managedCompanyId;
-        const productId = integer(req.body?.item_id, { field: 'Product ID', min: 1n, max: 9223372036854775807n }).toString();
-        const price = integer(req.body?.product_price, { field: 'Product price', min: 0n, max: 1000000000000n });
-        const changed = await pool.query(
-            'UPDATE company_inventory SET price_per_unit = $1::numeric WHERE company_id = $2 AND product_id = $3 RETURNING product_id',
-            [price.toString(), companyId, productId]
-        );
-        if (!changed.rowCount) throw new ActionError(404, 'Product not in company inventory.');
-        await pool.query(
-            "INSERT INTO company_logs (company_id, log_type, log_text) VALUES ($1, 'MAIN', $2)",
-            [companyId, 'Director set product ' + productId + ' price to ' + price.toString() + '.']
-        );
-        return res.json({ success: true, message: 'Pricing updated.' });
-    } catch (err) { return sendActionError(res, err, 'Company pricing error:'); }
+router.post('/update-pricing', (_req, res) => {
+    return res.status(503).json({
+        error: 'Company pricing is paused pending source-reconciled sales and pricing semantics.'
+    });
 });
 
 // --- 7. ORDER STOCK ---
@@ -357,21 +336,10 @@ router.post('/order-stock', (_req, res) => {
 });
 
 // --- 8. UPDATE ADVERTISING: validate server-side budget limit.
-router.post('/update-advertising', async (req, res) => {
-    try {
-        const companyId = req.managedCompanyId;
-        const budget = integer(req.body?.ad_budget, { field: 'Advertising budget', min: 0n, max: 1000000000000n });
-        const updated = await pool.query(
-            'UPDATE player_companies SET advertising_budget = $1::numeric WHERE company_id = $2 RETURNING company_id',
-            [budget.toString(), companyId]
-        );
-        if (!updated.rowCount) throw new ActionError(404, 'Company no longer exists.');
-        await pool.query(
-            "INSERT INTO company_logs (company_id, log_type, log_text) VALUES ($1, 'FUNDS', $2)",
-            [companyId, 'Daily advertising budget set to ' + budget.toString() + '.']
-        );
-        return res.json({ success: true, message: 'Advertising budget updated.' });
-    } catch (err) { return sendActionError(res, err, 'Company advertising error:'); }
+router.post('/update-advertising', (_req, res) => {
+    return res.status(503).json({
+        error: 'Company advertising is paused pending source-reconciled budget and effectiveness semantics.'
+    });
 });
 
 // --- 9. BUY UPGRADE ---
@@ -702,7 +670,7 @@ router.post('/assign-crew', async (req, res) => {
         if (transaction) {
             try { await client.query('ROLLBACK'); }
             catch (rollback) {
-                console.error('Company recruit assignment rollback:', rollback);
+                logger.error('company_crew_assign_rollback_failed', logger.errorFields(rollback));
             }
         }
         return sendActionError(res, err, 'Company recruit assignment failed:');
@@ -819,7 +787,7 @@ router.post('/recall-crew', async (req, res) => {
         if (transaction) {
             try { await client.query('ROLLBACK'); }
             catch (rollback) {
-                console.error('Company recruit recall rollback:', rollback);
+                logger.error('company_crew_recall_rollback_failed', logger.errorFields(rollback));
             }
         }
         return sendActionError(res, err, 'Company recruit recall failed:');
@@ -1031,7 +999,7 @@ router.post('/employment-offer', async (req, res) => {
         if (transaction) {
             try { await client.query('ROLLBACK'); }
             catch (rollback) {
-                console.error('Employment offer create rollback:', rollback);
+                logger.error('employment_offer_create_rollback_failed', logger.errorFields(rollback));
             }
         }
         return sendActionError(res, err, 'Employment offer failed:');
@@ -1130,7 +1098,7 @@ router.post('/employment-offer/withdraw', async (req, res) => {
         if (transaction) {
             try { await client.query('ROLLBACK'); }
             catch (rollback) {
-                console.error('Employment offer withdraw rollback:', rollback);
+                logger.error('employment_offer_withdraw_rollback_failed', logger.errorFields(rollback));
             }
         }
         return sendActionError(res, err, 'Employment offer withdrawal failed:');
@@ -1258,7 +1226,7 @@ router.post('/manage-applicant', async (req, res) => {
         if (transaction) {
             try { await client.query('ROLLBACK'); }
             catch (rollback) {
-                console.error('Applicant rejection rollback:', rollback);
+                logger.error('applicant_rejection_rollback_failed', logger.errorFields(rollback));
             }
         }
         return sendActionError(res, err, 'Applicant management failed:');

@@ -1,3 +1,4 @@
+const logger = require('../utils/logger');
 const express = require('express');
 const { createHash } = require('node:crypto');
 const router = express.Router();
@@ -466,7 +467,7 @@ router.post('/move-in', async (req, res) => {
             try {
                 await client.query('ROLLBACK');
             } catch (rollback) {
-                console.error('Move-in rollback failed:', rollback);
+                logger.error('property_move_in_rollback_failed', logger.errorFields(rollback));
             }
         }
         return sendActionError(res, error, 'Property move-in failed:');

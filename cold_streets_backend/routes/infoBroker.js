@@ -1,3 +1,4 @@
+const logger = require('../utils/logger');
 const express = require('express');
 const router = express.Router();
 const pool = require('../db');
@@ -122,7 +123,7 @@ router.post('/classifieds', async (req, res) => {
     } catch (err) {
         if (transaction) {
             try { await client.query('ROLLBACK'); }
-            catch (rollback) { console.error('Classified rollback:', rollback); }
+            catch (rollback) { logger.error('classified_rollback_failed', logger.errorFields(rollback)); }
         }
         return sendActionError(res, err, 'Classified purchase failed:');
     } finally {

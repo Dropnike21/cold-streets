@@ -1,9 +1,11 @@
+const logger = require('../utils/logger');
 const express = require('express');
 const pool = require('../db');
 const router = express.Router();
 const { requireOwnedPlayerParam } = require('../middleware/playerIdentity');
 const { SUPPORTED_TRACKERS } = require('../utils/achievement_engine');
 const { dbInteger } = require('../utils/economyValidation');
+const { getStateDurationProgress } = require('../utils/stateDurationTelemetry');
 
 router.param('user_id', requireOwnedPlayerParam);
 
@@ -35,7 +37,9 @@ router.get('/:user_id', async (req, res) => {
             { rows: stats },
             { rows: crimes },
             { rows: users },
-            { rows: courses }
+            { rows: courses },
+            { rows: missions },
+            { rows: discoveries }
         ] = await Promise.all([
             pool.query(achQuery, [user_id]),
             pool.query(
@@ -50,6 +54,18 @@ router.get('/:user_id', async (req, res) => {
             pool.query(
                 'SELECT COUNT(*)::bigint AS total FROM user_completed_courses WHERE user_id = $1',
                 [user_id]
+            ),
+            pool.query(
+                `SELECT COUNT(*)::bigint AS total
+                   FROM user_mission_progress
+                  WHERE user_id = $1
+                    AND status = 'completed'
+                    AND completed_at IS NOT NULL`,
+                [user_id]
+            ),
+            pool.query(
+                'SELECT COUNT(*)::bigint AS total FROM user_item_discoveries WHERE user_id = $1',
+                [user_id]
             )
         ]);
 
@@ -57,11 +73,17 @@ router.get('/:user_id', async (req, res) => {
             return res.status(404).json({ error: 'Player not found.' });
         }
 
+        const stateProgress = await getStateDurationProgress(pool, user_id);
+
         const progressByTracker = {
             gym_trains: stats[0]?.total_gym_trains ?? '0',
             crimes_successful: crimes[0]?.total_successes ?? '0',
             player_level: users[0].level ?? 1,
-            courses_completed: courses[0]?.total ?? '0'
+            courses_completed: courses[0]?.total ?? '0',
+            days_in_jail: stateProgress.days_in_jail,
+            hospital_hours: stateProgress.hospital_hours,
+            missions_completed: missions[0]?.total ?? '0',
+            unique_items_found: discoveries[0]?.total ?? '0'
         };
 
         const mappedAchievements = achievements.map(ach => {
@@ -110,7 +132,7 @@ router.get('/:user_id', async (req, res) => {
             achievements: mappedAchievements
         });
     } catch (err) {
-        console.error('Fetch Achievements Error:', err.message);
+        logger.error('achievements_fetch_failed', logger.errorFields(err));
         return res.status(500).json({ error: 'Failed to load achievements.' });
     }
 });

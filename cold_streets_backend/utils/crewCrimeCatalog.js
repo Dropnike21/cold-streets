@@ -94,22 +94,15 @@ function normalizeRule(row) {
     };
 }
 
-async function getCrewCrimeRule(client, { crimeId = null, crimeTitle = null } = {}) {
-    let predicate, value;
-    if (crimeId !== null) {
-        predicate = 'c.id = $1::bigint';
-        value = crimeId;
-    } else if (crimeTitle !== null) {
-        predicate = 'c.title = $1';
-        value = crimeTitle;
-    } else {
-        throw new Error('Crime identifier is required.');
+async function getCrewCrimeRule(client, { crimeId = null } = {}) {
+    if (crimeId === null) {
+        throw new Error('Canonical crime ID is required.');
     }
 
     const result = await client.query(
-        SELECT_RULE_SQL + ' WHERE ' + predicate +
+        SELECT_RULE_SQL + ' WHERE c.id = $1::bigint' +
         ' AND ' + ELIGIBILITY_SQL + ' LIMIT 1',
-        [value]
+        [crimeId]
     );
     if (result.rowCount !== 1) {
         throw new ActionError(

@@ -1,3 +1,4 @@
+const logger = require('../utils/logger');
 const express = require('express');
 const router = express.Router();
 // Route parameters are parsed after app-level middleware; enforce actor ownership here.
@@ -38,24 +39,144 @@ router.get('/blueprints', async (_req, res) => {
             success: true,
             catalog_status: 'source_normalized_partial',
             incorporation_available: false,
+            incorporation_currency_status: 'source_conflict',
             incorporation_blocker:
-                'Recovered supply-chain product generation conflicts with the legacy 20-row normalized product catalog.',
+                'Incorporation setup currency conflicts across recovered sources: the GDD says Clean Cash buys legitimate businesses while the legacy backend charged Dirty Cash.',
             blueprints: result.rows
         });
     } catch (err) {
-        console.error("Error fetching blueprints:", err);
+        logger.error('company_blueprint_fetch_failed', logger.errorFields(err));
         res.status(500).json({ error: "Server error fetching commercial registry." });
     }
 });
 
+// --- 2. INCORPORATION PREFLIGHT (READ ONLY) ---
+// The recovered company catalog provides an exact setup_cost, but sources
+// conflict on its denomination:
+// - GDD: Clean Cash buys legitimate businesses;
+// - legacy backend: incorporation debited Dirty Cash.
+// Do not choose a currency by inference. This endpoint reports exact source
+// readiness and both wallet balances without moving value.
+router.post('/incorporation-preflight', async (req, res) => {
+    try {
+        const actor = actorId(req);
+        const typeId = integer(req.body?.type_id, {
+            field: 'Company type ID', min: 1n, max: 9223372036854775807n
+        }).toString();
+        const companyName = typeof req.body?.company_name === 'string'
+            ? req.body.company_name.trim()
+            : '';
+        if (companyName.length < 3 || companyName.length > 80) {
+            throw new ActionError(400, 'Company name must be 3 to 80 characters.');
+        }
+
+        const [player, blueprint, employment] = await Promise.all([
+            pool.query(
+                `SELECT clean_cash, dirty_cash, current_job_id
+                   FROM users
+                  WHERE user_id = $1`,
+                [actor]
+            ),
+            pool.query(
+                `SELECT ctm.type_id, ctm.industry_type, ctm.tier,
+                        ctm.setup_cost,
+                        (SELECT COUNT(*)::bigint
+                           FROM company_positions_master p
+                          WHERE p.type_id = ctm.type_id) AS position_count,
+                        (SELECT COUNT(*)::bigint
+                           FROM company_product_rules_master r
+                          WHERE r.type_id = ctm.type_id) AS product_rule_count,
+                        (SELECT COUNT(*)::bigint
+                           FROM company_affiliations_master a
+                          WHERE a.type_id = ctm.type_id
+                            AND a.resolution_status <> 'exact')
+                          AS unresolved_affiliation_count
+                   FROM company_types_master ctm
+                  WHERE ctm.type_id = $1`,
+                [typeId]
+            ),
+            pool.query(
+                `SELECT company_id, position_role
+                   FROM company_employees
+                  WHERE employee_id = $1
+                    AND is_npc = false
+                  ORDER BY company_id`,
+                [actor]
+            )
+        ]);
+
+        if (player.rowCount !== 1) {
+            throw new ActionError(404, 'Player not found.');
+        }
+        if (blueprint.rowCount !== 1) {
+            throw new ActionError(404, 'Company blueprint not found.');
+        }
+
+        const bp = blueprint.rows[0];
+        const setupCost = dbInteger(bp.setup_cost, {
+            field: 'Company setup cost'
+        });
+        if (setupCost < 0n) {
+            throw new Error('Company setup cost cannot be negative.');
+        }
+
+        const cleanCash = dbInteger(player.rows[0].clean_cash, {
+            field: 'Player Clean Cash'
+        });
+        const dirtyCash = dbInteger(player.rows[0].dirty_cash, {
+            field: 'Player Dirty Cash'
+        });
+
+        return res.json({
+            success: true,
+            preflight_status: 'currency_conflict_fail_closed',
+            mutation_available: false,
+            actor_state: {
+                current_job_id: player.rows[0].current_job_id,
+                company_roles: employment.rows
+            },
+            proposed_company: {
+                type_id: typeId,
+                industry_type: bp.industry_type,
+                tier: bp.tier,
+                company_name: companyName,
+                setup_cost: exactJsonAmount(setupCost)
+            },
+            catalog_readiness: {
+                position_count: String(bp.position_count),
+                product_rule_count: String(bp.product_rule_count),
+                unresolved_affiliation_count:
+                    String(bp.unresolved_affiliation_count),
+                source_product_namespace_ready: true,
+                source_inventory_storage_ready: true
+            },
+            currency_reconciliation: {
+                status: 'source_conflict',
+                gdd_rule: 'Clean Cash buys legitimate businesses.',
+                legacy_backend_rule: 'Incorporation debited Dirty Cash.',
+                clean_cash_balance: exactJsonAmount(cleanCash),
+                dirty_cash_balance: exactJsonAmount(dirtyCash),
+                sufficient_if_clean_cash: cleanCash >= setupCost,
+                sufficient_if_dirty_cash: dirtyCash >= setupCost
+            },
+            blockers: [
+                'Canonical incorporation setup currency is unresolved.',
+                'No setup cost may be debited until that source conflict is adjudicated.',
+                'Production, stock ordering, sales settlement and company laundering remain separate paused mechanics.'
+            ]
+        });
+    } catch (err) {
+        return sendActionError(res, err, 'Company incorporation preflight failed:');
+    }
+});
+
 // --- 2. INCORPORATE ---
-// Positions, specials, source product rules, affiliations and upgrade costs are
-// now normalized from the recovered spreadsheet. Incorporation remains paused
-// because that source generation contains a much broader product graph than the
-// existing 20-row company_products_master catalog; do not force them together.
+// Source product identity/storage is now normalized, but setup currency remains
+// contradictory across primary project sources. Fail closed rather than
+// charging either wallet by inference.
 router.post('/incorporate', (_req, res) => {
     return res.status(503).json({
-        error: 'Company incorporation is paused because recovered supply-chain products conflict with the legacy normalized product catalog.'
+        error: 'Company incorporation is paused until the setup-cost currency conflict is resolved.'
     });
 });
 
@@ -461,7 +582,7 @@ router.post('/employment-offers/respond', async (req, res) => {
         if (transaction) {
             try { await client.query('ROLLBACK'); }
             catch (rollback) {
-                console.error('Employment offer response rollback:', rollback);
+                logger.error('employment_offer_response_rollback_failed', logger.errorFields(rollback));
             }
         }
         return sendActionError(res, err, 'Employment offer response failed:');
@@ -806,7 +927,7 @@ router.post('/apply', async (req, res) => {
     } catch (err) {
         if (transaction) {
             try { await client.query('ROLLBACK'); }
-            catch (rollback) { console.error('Company application rollback:', rollback); }
+            catch (rollback) { logger.error('company_application_rollback_failed', logger.errorFields(rollback)); }
         }
         return sendActionError(res, err, 'Company application failed:');
     } finally {

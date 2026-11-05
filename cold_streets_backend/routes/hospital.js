@@ -1,9 +1,11 @@
+const logger = require('../utils/logger');
 const express = require('express');
 const pool = require('../db');
 const router = express.Router();
 const { ActionError, integer, actorId, sendActionError } = require('../utils/economyValidation');
 const { requireIdempotencyKey, beginIdempotent, completeIdempotent } = require('../utils/idempotency');
 const { hasEducationUnlock } = require('../utils/educationEntitlements');
+const { endStateEpisode, refreshStateDurationAchievements } = require('../utils/stateDurationTelemetry');
 
 const REVIVE_ENERGY_COST = 75;
 const REVIVE_JOB_NAME = 'City Hospital';
@@ -177,11 +179,19 @@ router.post('/revive', async (req, res) => {
             throw new ActionError(409, 'Patient state changed before revival.');
         }
 
+        await endStateEpisode(client, {
+            userId: target,
+            stateType: 'hospital',
+            endReason: 'medical_revive'
+        });
+        const stateProgress = await refreshStateDurationAchievements(client, target);
+
         const response = {
             success: true,
             message: 'Successfully revived ' + revived.rows[0].username + '.',
             energy: energy.rows[0].energy,
-            revive_source: mastery.rowCount ? 'city_hospital_mastery' : 'university_revive_ally'
+            revive_source: mastery.rowCount ? 'city_hospital_mastery' : 'university_revive_ally',
+            hospital_hours_completed: stateProgress.hospital_hours
         };
         await completeIdempotent(client, idem, 200, response);
         await client.query('COMMIT');
@@ -189,7 +199,7 @@ router.post('/revive', async (req, res) => {
         return res.json(response);
     } catch (err) {
         if (transaction) {
-            try { await client.query('ROLLBACK'); } catch (rollback) { console.error('Hospital revive rollback:', rollback); }
+            try { await client.query('ROLLBACK'); } catch (rollback) { logger.error('hospital_revive_rollback_failed', logger.errorFields(rollback)); }
         }
         return sendActionError(res, err, 'Hospital revive failed:');
     } finally { if (client) client.release(); }
