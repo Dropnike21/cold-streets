@@ -15,9 +15,23 @@ const pool = new Pool({
     port: process.env.DB_PORT ? Number(process.env.DB_PORT) : 5432,
     database: process.env.DB_NAME || 'postgres',
     ssl: tlsEnabled ? { rejectUnauthorized: true } : false,
-    connectionTimeoutMillis: 10000,
+
+    // Bound pool acquisition, server execution, lock waits, and abandoned
+    // transactions independently. Statement timeout is deliberately shorter
+    // than the client-side query timeout so PostgreSQL gets the first chance
+    // to cancel work cleanly.
+    connectionTimeoutMillis: 5000,
+    statement_timeout: 15000,
+    query_timeout: 20000,
+    lock_timeout: 5000,
+    idle_in_transaction_session_timeout: 15000,
+
     idleTimeoutMillis: 30000,
     max: 10,
+    maxUses: 5000,
+    maxLifetimeSeconds: 300,
+    keepAlive: true,
+    keepAliveInitialDelayMillis: 10000,
     application_name: 'cold-streets-api'
 });
 
