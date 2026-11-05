@@ -6,7 +6,9 @@ router.param('user_id', requireOwnedPlayerParam);
 
 const pool = require('../db');
 const { randomInt } = require('node:crypto');
-const { ActionError, integer, dbInteger, actorId, sendActionError } = require('../utils/economyValidation');
+const {
+    ActionError, integer, dbInteger, exactJsonAmount, actorId, sendActionError
+} = require('../utils/economyValidation');
 const { requireIdempotencyKey, beginIdempotent, completeIdempotent } = require('../utils/idempotency');
 const { handleCrewDomainTransfer } = require('../utils/crewDomain');
 const {
@@ -481,7 +483,7 @@ router.post('/generate_board', async (req, res) => {
                 tier_id: tier,
                 barMax: meta.barMax,
                 stats,
-                price: Number(price)
+                price: exactJsonAmount(price)
             });
         }
 
