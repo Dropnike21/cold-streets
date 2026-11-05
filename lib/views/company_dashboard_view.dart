@@ -22,7 +22,7 @@ class CompanyDashboardView extends StatefulWidget {
 }
 
 class _CompanyDashboardViewState extends State<CompanyDashboardView> {
-  String get apiUrl => '\${ApiConfig.baseUrl}/companies';
+  String get apiUrl => '${ApiConfig.baseUrl}/companies';
   bool _isLoading = true;
 
   // Economic Engine Data[cite: 1]
@@ -39,7 +39,7 @@ class _CompanyDashboardViewState extends State<CompanyDashboardView> {
   int _userSalary = 0;
 
   int _selectedLogTab = 0;
-  String _chartFilter = 'All Time';
+
 
   final Color neonGreen = const Color(0xFF39FF14);
   final Color matteBlack = const Color(0xFF121212);
@@ -327,7 +327,7 @@ class _CompanyDashboardViewState extends State<CompanyDashboardView> {
                   children: [
                     _buildCompactDetail(
                       "Recorded Income:",
-                      "\${_formatNumber(dailyInc)}",
+                      "\$${_formatNumber(dailyInc)}",
                       valColor: Colors.white70,
                     ),
                     _buildCompactDetail(
