@@ -8,7 +8,9 @@ const TRACKER_FINGERPRINTS = Object.freeze({
     gym_trains: '8ee92e728cedc162e62bd7feb8d2f6f1',
     crimes_successful: '01b96511878f1afa4f88591ee99364e7',
     player_level: '333212151aba8634b4672f695298b121',
-    courses_completed: 'b057568304caf960a3f75c6f84cc963e'
+    courses_completed: 'b057568304caf960a3f75c6f84cc963e',
+    days_in_jail: '038e59981575d8ffacaf02aecd823e12',
+    hospital_hours: '4873d94c74fd540b889eba95233cd556'
 });
 
 const SUPPORTED_TRACKERS = Object.freeze(Object.keys(TRACKER_FINGERPRINTS));
