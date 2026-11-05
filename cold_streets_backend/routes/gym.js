@@ -8,9 +8,63 @@ const pool = require('../db');
 const { recordGymTrainingAchievement } = require('../utils/achievement_engine');
 const { ActionError, integer, dbInteger, actorId, sendActionError } = require('../utils/economyValidation');
 const { recordAnonymousGymTraining } = require('../utils/anonymousTutorial');
+const { requireIdempotencyKey, beginIdempotent, completeIdempotent } = require('../utils/idempotency');
 
 // The Level 1 safety net for the Hybrid Math Engine
 const GLOBAL_FLAT_RATE = 0.05;
+
+async function ensureStarterGym(userId) {
+    let client;
+    let transaction = false;
+    try {
+        client = await pool.connect();
+        await client.query('BEGIN');
+        transaction = true;
+
+        const actor = await client.query(
+            'SELECT user_id FROM users WHERE user_id = $1 FOR UPDATE',
+            [userId]
+        );
+        if (actor.rowCount !== 1) {
+            throw new ActionError(404, 'Player not found.');
+        }
+
+        await client.query(
+            `INSERT INTO user_gym_stats (
+                user_id, gym_exp, active_gym_id, daily_gym_fee
+             )
+             VALUES ($1, 0, 1, 0)
+             ON CONFLICT (user_id) DO NOTHING`,
+            [userId]
+        );
+        await client.query(
+            `INSERT INTO user_owned_gyms (user_id, gym_id)
+             VALUES ($1, 1)
+             ON CONFLICT (user_id, gym_id) DO NOTHING`,
+            [userId]
+        );
+
+        const seeded = await client.query(
+            'SELECT gym_exp, active_gym_id FROM user_gym_stats WHERE user_id = $1',
+            [userId]
+        );
+        if (seeded.rowCount !== 1) {
+            throw new Error('Starter gym provisioning failed.');
+        }
+
+        await client.query('COMMIT');
+        transaction = false;
+        return seeded;
+    } catch (err) {
+        if (transaction) {
+            try { await client.query('ROLLBACK'); }
+            catch (rollback) { console.error('Starter gym rollback:', rollback); }
+        }
+        throw err;
+    } finally {
+        if (client) client.release();
+    }
+}
 
 // --- 1. FETCH GYM DASHBOARD ---
 router.get('/:user_id', async (req, res) => {
@@ -18,11 +72,10 @@ router.get('/:user_id', async (req, res) => {
         const { user_id } = req.params;
         let gymStatsRes = await pool.query('SELECT gym_exp, active_gym_id FROM user_gym_stats WHERE user_id = $1', [user_id]);
 
-        // Auto-seed Level 1 Gym for new users
+        // Deterministic, conflict-safe provisioning for the source-backed
+        // Level 1 starter gym. Concurrent dashboard reads cannot duplicate it.
         if (gymStatsRes.rows.length === 0) {
-            await pool.query('INSERT INTO user_gym_stats (user_id, gym_exp, active_gym_id, daily_gym_fee) VALUES ($1, 0, 1, 0)', [user_id]);
-            await pool.query('INSERT INTO user_owned_gyms (user_id, gym_id) VALUES ($1, 1)', [user_id]);
-            gymStatsRes = await pool.query('SELECT gym_exp, active_gym_id FROM user_gym_stats WHERE user_id = $1', [user_id]);
+            gymStatsRes = await ensureStarterGym(user_id);
         }
 
         const { gym_exp, active_gym_id } = gymStatsRes.rows[0];
