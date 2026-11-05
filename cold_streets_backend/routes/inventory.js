@@ -5,22 +5,72 @@ const { ActionError, integer, actorId, sendActionError } = require('../utils/eco
 const { requireIdempotencyKey, beginIdempotent, completeIdempotent } = require('../utils/idempotency');
 
 const DIRECT_CONSUMABLE_EFFECTS = new Set(['energy_gain', 'energy_restore', 'nerve_gain', 'instant_heal']);
+const EXPLICIT_MEDICAL_CONSUMABLES = Object.freeze({
+    '261': Object.freeze({ hpGainPct: 10n, hospitalReductionMins: 20n }),
+    '262': Object.freeze({ hpGainPct: 20n, hospitalReductionMins: 35n }),
+    '263': Object.freeze({ hpGainPct: 30n, hospitalReductionMins: 45n })
+});
 
-function parseDirectConsumableEffects(source) {
-    if (typeof source !== 'string') throw new ActionError(503, 'Consumable effect data is unavailable.');
+function parsePositiveIntegerPseudoObject(source) {
+    if (typeof source !== 'string') {
+        throw new ActionError(503, 'Consumable effect data is unavailable.');
+    }
     const text = source.trim();
-    if (!text.startsWith('{') || !text.endsWith('}')) throw new ActionError(503, 'Consumable effect format is unsupported.');
+    if (!text.startsWith('{') || !text.endsWith('}')) {
+        throw new ActionError(503, 'Consumable effect format is unsupported.');
+    }
     const body = text.slice(1, -1).trim();
-    if (!body || body.includes('{') || body.includes('}')) throw new ActionError(503, 'Consumable mechanics are not yet implemented.');
+    if (!body || body.includes('{') || body.includes('}')) {
+        throw new ActionError(503, 'Consumable mechanics are not yet implemented.');
+    }
+
     const result = {};
     for (const part of body.split(',')) {
         const match = part.trim().match(/^([a-z_]+)\s*:\s*([0-9]+)$/);
-        if (!match || !DIRECT_CONSUMABLE_EFFECTS.has(match[1]) || Object.prototype.hasOwnProperty.call(result, match[1])) {
-            throw new ActionError(503, 'This consumable mechanic is not yet implemented on the server.');
+        if (!match || Object.prototype.hasOwnProperty.call(result, match[1])) {
+            throw new ActionError(503, 'Consumable effect data is malformed.');
         }
-        const amount = Number(match[2]);
-        if (!Number.isSafeInteger(amount) || amount < 0) throw new ActionError(503, 'Consumable effect value is unsupported.');
-        result[match[1]] = amount;
+        result[match[1]] = BigInt(match[2]);
+    }
+    return result;
+}
+
+function explicitMedicalEffects(item) {
+    const expected = EXPLICIT_MEDICAL_CONSUMABLES[String(item.item_id)];
+    if (!expected) return null;
+
+    const parsed = parsePositiveIntegerPseudoObject(item.effects);
+    const keys = Object.keys(parsed).sort();
+    if (
+        keys.length !== 2 ||
+        keys[0] !== 'hosp_reduction_mins' ||
+        keys[1] !== 'hp_gain_pct' ||
+        parsed.hp_gain_pct !== expected.hpGainPct ||
+        parsed.hosp_reduction_mins !== expected.hospitalReductionMins
+    ) {
+        throw new Error(
+            'Reconciled medical consumable catalog changed and requires review.'
+        );
+    }
+
+    return expected;
+}
+
+
+function parseDirectConsumableEffects(source) {
+    const parsed = parsePositiveIntegerPseudoObject(source);
+    const result = {};
+    for (const [key, raw] of Object.entries(parsed)) {
+        if (!DIRECT_CONSUMABLE_EFFECTS.has(key)) {
+            throw new ActionError(
+                503,
+                'This consumable mechanic is not yet implemented on the server.'
+            );
+        }
+        if (raw > BigInt(Number.MAX_SAFE_INTEGER)) {
+            throw new ActionError(503, 'Consumable effect value is unsupported.');
+        }
+        result[key] = Number(raw);
     }
     return result;
 }
@@ -70,7 +120,7 @@ router.post('/use', async (req, res) => {
         transaction = true;
 
         const userCheck = await client.query(
-            'SELECT hp, max_hp, energy, nerve, max_nerve FROM users WHERE user_id = $1 FOR UPDATE',
+            'SELECT hp, max_hp, energy, nerve, max_nerve, hospital_expires_at, jail_expires_at, state_reason FROM users WHERE user_id = $1 FOR UPDATE',
             [userId]
         );
         if (userCheck.rowCount !== 1) throw new ActionError(404, 'Player not found.');
@@ -103,7 +153,10 @@ router.post('/use', async (req, res) => {
         const item = itemRes.rows[0];
         if (item.category !== 'CONSUMABLES') throw new ActionError(400, 'This item cannot be consumed.');
 
-        const effects = parseDirectConsumableEffects(item.effects);
+        const medical = explicitMedicalEffects(item);
+        const effects = medical
+            ? null
+            : parseDirectConsumableEffects(item.effects);
         const cooldownType = item.cooldown_type;
         const cooldownSeconds = Number(item.cooldown_seconds || 0);
         if (!Number.isSafeInteger(cooldownSeconds) || cooldownSeconds < 0) {
@@ -121,23 +174,77 @@ router.post('/use', async (req, res) => {
             }
         }
 
-        const heal = effects.instant_heal || 0;
-        const energyGain = (effects.energy_gain || 0) + (effects.energy_restore || 0);
-        const nerveGain = effects.nerve_gain || 0;
-        if (heal === 0 && energyGain === 0 && nerveGain === 0) {
-            throw new ActionError(503, 'This consumable has no implemented direct effect.');
+        let updatedUser;
+        let appliedExplicitMedical = null;
+
+        if (medical) {
+            updatedUser = await client.query(
+                `UPDATE users
+                    SET hp = LEAST(
+                            max_hp,
+                            hp + (max_hp * $1::numeric / 100)
+                        ),
+                        hospital_expires_at = CASE
+                            WHEN hospital_expires_at IS NULL
+                              OR hospital_expires_at <= NOW()
+                                THEN NULL
+                            WHEN hospital_expires_at
+                                   - ($2::bigint * INTERVAL '1 minute') <= NOW()
+                                THEN NULL
+                            ELSE hospital_expires_at
+                                 - ($2::bigint * INTERVAL '1 minute')
+                        END,
+                        state_reason = CASE
+                            WHEN hospital_expires_at > NOW()
+                             AND hospital_expires_at
+                                   - ($2::bigint * INTERVAL '1 minute') <= NOW()
+                             AND NOT COALESCE(jail_expires_at > NOW(), false)
+                                THEN NULL
+                            ELSE state_reason
+                        END
+                  WHERE user_id = $3
+                  RETURNING dirty_cash, energy, nerve, max_nerve,
+                            hp, max_hp, hospital_expires_at,
+                            jail_expires_at, state_reason`,
+                [
+                    medical.hpGainPct.toString(),
+                    medical.hospitalReductionMins.toString(),
+                    userId
+                ]
+            );
+            appliedExplicitMedical = {
+                hp_gain_pct: medical.hpGainPct.toString(),
+                hosp_reduction_mins:
+                    medical.hospitalReductionMins.toString()
+            };
+        } else {
+            const heal = effects.instant_heal || 0;
+            const energyGain =
+                (effects.energy_gain || 0) + (effects.energy_restore || 0);
+            const nerveGain = effects.nerve_gain || 0;
+            if (heal === 0 && energyGain === 0 && nerveGain === 0) {
+                throw new ActionError(
+                    503,
+                    'This consumable has no implemented direct effect.'
+                );
+            }
+
+            updatedUser = await client.query(
+                `UPDATE users
+                    SET hp = LEAST(max_hp, hp + $1),
+                        energy = LEAST(100, energy + $2),
+                        nerve = LEAST(max_nerve, nerve + $3)
+                  WHERE user_id = $4
+                  RETURNING dirty_cash, energy, nerve, max_nerve,
+                            hp, max_hp, hospital_expires_at,
+                            jail_expires_at, state_reason`,
+                [heal, energyGain, nerveGain, userId]
+            );
         }
 
-        const updatedUser = await client.query(
-            `UPDATE users
-                SET hp = LEAST(max_hp, hp + $1),
-                    energy = LEAST(100, energy + $2),
-                    nerve = LEAST(max_nerve, nerve + $3)
-              WHERE user_id = $4
-              RETURNING dirty_cash, energy, nerve, max_nerve, hp, max_hp`,
-            [heal, energyGain, nerveGain, userId]
-        );
-        if (updatedUser.rowCount !== 1) throw new Error('Player disappeared during item use.');
+        if (updatedUser.rowCount !== 1) {
+            throw new Error('Player disappeared during item use.');
+        }
 
         const consumed = await client.query(
             `UPDATE user_inventory
@@ -162,6 +269,7 @@ router.post('/use', async (req, res) => {
         const response = {
             status: 'success',
             message: 'Used ' + item.name + '.',
+            applied_explicit_medical: appliedExplicitMedical,
             user: updatedUser.rows[0]
         };
         await completeIdempotent(client, idem, 200, response);
