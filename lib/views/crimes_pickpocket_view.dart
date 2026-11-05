@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:http/http.dart' as http;
+import '../services/game_http.dart' as http;
 import 'dart:convert';
 import 'dart:async';
 import 'dart:math' as math;
@@ -187,7 +187,6 @@ class _CrimesPickpocketViewState extends State<CrimesPickpocketView> {
         Uri.parse('${ApiConfig.baseUrl}/crimes/execute'),
         headers: {"Content-Type": "application/json"},
         body: jsonEncode({
-          "user_id": widget.userData['user_id'],
           "crime_id": target['id'],
           "activity_name": target['activity']['name']
         }),

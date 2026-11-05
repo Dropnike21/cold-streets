@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:http/http.dart' as http;
+import '../services/game_http.dart' as http;
 import 'dart:convert';
 import 'dart:async';
 import '../api_config.dart';
@@ -157,7 +157,7 @@ class _CrimesShopliftingViewState extends State<CrimesShopliftingView> {
       final response = await http.post(
         Uri.parse('${ApiConfig.baseUrl}/crimes/execute'),
         headers: {"Content-Type": "application/json"},
-        body: jsonEncode({"user_id": widget.userData['user_id'], "crime_id": target['id']}),
+        body: jsonEncode({"crime_id": target['id']}),
       );
 
       if (!mounted) return;

@@ -1,7 +1,7 @@
 // File Path: lib/views/market_view.dart
 
 import 'package:flutter/material.dart';
-import 'package:http/http.dart' as http;
+import '../services/game_http.dart' as http;
 import 'dart:convert';
 import '../api_config.dart';
 
@@ -34,6 +34,11 @@ class _MarketViewState extends State<MarketView> {
   List<dynamic> _filteredItems = [];
 
   final Map<int, int> _cart = {};
+  int _dailyLimit = 0;
+  int _purchasedToday = 0;
+  int _remainingToday = 0;
+  String _marketDayKey = '';
+  String _resetBoundary = 'database_calendar_day';
 
   @override
   void initState() {
@@ -92,6 +97,29 @@ class _MarketViewState extends State<MarketView> {
     return {};
   }
 
+  int _intValue(dynamic value, {int fallback = 0}) {
+    if (value is int) return value;
+    return int.tryParse(value?.toString() ?? '') ?? fallback;
+  }
+
+  int get _cartQuantity =>
+      _cart.values.fold<int>(0, (sum, qty) => sum + qty);
+
+  Future<void> _fetchDailyStatus() async {
+    final response = await http.get(Uri.parse('$apiUrl/status'));
+    if (response.statusCode != 200) return;
+    final data = jsonDecode(response.body);
+    if (!mounted || data is! Map) return;
+    setState(() {
+      _dailyLimit = _intValue(data['daily_item_limit']);
+      _purchasedToday = _intValue(data['purchased_today']);
+      _remainingToday = _intValue(data['remaining_today']);
+      _marketDayKey = data['day_key']?.toString() ?? '';
+      _resetBoundary =
+          data['reset_boundary']?.toString() ?? 'database_calendar_day';
+    });
+  }
+
   Future<void> _fetchMarket() async {
     try {
       final response = await http.get(Uri.parse('$apiUrl/list'));
@@ -104,6 +132,7 @@ class _MarketViewState extends State<MarketView> {
             _cart.clear();
             _applyFilters();
           });
+          await _fetchDailyStatus();
         }
       } else {
         if (mounted) setState(() => _isLoading = false);
@@ -154,7 +183,7 @@ class _MarketViewState extends State<MarketView> {
   int _getMaxAllowed(Map<String, dynamic> currentItem) {
     int itemId = currentItem['item_id'];
     int itemPrice = int.tryParse(currentItem['base_value'].toString()) ?? 0;
-    int currentStock = currentItem['stock'] ?? 0;
+    int currentStock = _intValue(currentItem['stock']);
 
     int costOfOtherItems = 0;
     _cart.forEach((id, qty) {
@@ -166,11 +195,24 @@ class _MarketViewState extends State<MarketView> {
       }
     });
 
-    int remainingCash = widget.userData['dirty_cash'] - costOfOtherItems;
+    int remainingCash =
+        _intValue(widget.userData['dirty_cash']) - costOfOtherItems;
     if (remainingCash < 0) remainingCash = 0;
 
-    int affordableQty = itemPrice > 0 ? remainingCash ~/ itemPrice : currentStock;
-    return affordableQty < currentStock ? affordableQty : currentStock;
+    int affordableQty =
+        itemPrice > 0 ? remainingCash ~/ itemPrice : currentStock;
+
+    int otherCartQty = 0;
+    _cart.forEach((id, qty) {
+      if (id != itemId) otherCartQty += qty;
+    });
+    final dailyAllowed =
+        (_remainingToday - otherCartQty).clamp(0, _dailyLimit).toInt();
+
+    int maxAllowed = currentStock;
+    if (affordableQty < maxAllowed) maxAllowed = affordableQty;
+    if (dailyAllowed < maxAllowed) maxAllowed = dailyAllowed;
+    return maxAllowed;
   }
 
   Future<void> _processPurchase({Map<String, dynamic>? singleItem, int? singleQty}) async {
@@ -189,7 +231,23 @@ class _MarketViewState extends State<MarketView> {
 
     if (payloadCart.isEmpty) return;
 
-    if (widget.userData['dirty_cash'] < expectedCost) {
+    final requestedQty = payloadCart.fold<int>(
+      0,
+      (sum, line) => sum + _intValue(line['quantity']),
+    );
+    if (requestedQty > _remainingToday) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            "City market daily limit: $_remainingToday item(s) remain.",
+          ),
+          backgroundColor: Colors.orangeAccent,
+        ),
+      );
+      return;
+    }
+
+    if (_intValue(widget.userData['dirty_cash']) < expectedCost) {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Not enough Dirty Cash!"), backgroundColor: Colors.orangeAccent));
       return;
     }
@@ -204,10 +262,7 @@ class _MarketViewState extends State<MarketView> {
       final response = await http.post(
         Uri.parse('$apiUrl/buy-bulk'),
         headers: {"Content-Type": "application/json"},
-        body: jsonEncode({
-          "user_id": widget.userData['user_id'],
-          "cart": payloadCart
-        }),
+        body: jsonEncode({"cart": payloadCart}),
       );
 
       if (!mounted) return;
@@ -217,6 +272,14 @@ class _MarketViewState extends State<MarketView> {
 
       if (response.statusCode == 200) {
         if (result['user'] != null) widget.onStateChange(result['user']);
+        if (mounted) {
+          setState(() {
+            _purchasedToday =
+                _intValue(result['purchased_today'], fallback: _purchasedToday);
+            _remainingToday =
+                _intValue(result['remaining_today'], fallback: _remainingToday);
+          });
+        }
         _fetchMarket();
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(result['message']), backgroundColor: Colors.greenAccent));
       } else {
@@ -297,7 +360,8 @@ class _MarketViewState extends State<MarketView> {
 
   @override
   Widget build(BuildContext context) {
-    bool hasItemsInCart = _cartTotal > 0;
+    bool hasItemsInCart =
+        _cartTotal > 0 && _cartQuantity <= _remainingToday;
 
     return LayoutBuilder(
       builder: (context, constraints) {
@@ -357,6 +421,61 @@ class _MarketViewState extends State<MarketView> {
                                 const SizedBox(height: 12),
                               ],
 
+                              Container(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 10,
+                                  vertical: 8,
+                                ),
+                                decoration: BoxDecoration(
+                                  color: const Color(0xFF1A1A1A),
+                                  border: Border.all(
+                                    color: _remainingToday > 0
+                                        ? const Color(0xFF39FF14)
+                                            .withValues(alpha: 0.25)
+                                        : Colors.redAccent
+                                            .withValues(alpha: 0.45),
+                                  ),
+                                  borderRadius: BorderRadius.circular(4),
+                                ),
+                                child: Row(
+                                  children: [
+                                    const Icon(
+                                      Icons.shopping_bag_outlined,
+                                      color: Colors.white54,
+                                      size: 16,
+                                    ),
+                                    const SizedBox(width: 8),
+                                    Expanded(
+                                      child: Text(
+                                        "CITY NPC MARKET DAILY LIMIT  •  "
+                                        "$_purchasedToday / $_dailyLimit PURCHASED  •  "
+                                        "$_remainingToday REMAIN",
+                                        style: TextStyle(
+                                          color: _remainingToday > 0
+                                              ? Colors.white70
+                                              : Colors.redAccent,
+                                          fontSize: 9,
+                                          fontWeight: FontWeight.bold,
+                                        ),
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                              const SizedBox(height: 8),
+                              if (_marketDayKey.isNotEmpty)
+                                Padding(
+                                  padding: const EdgeInsets.only(bottom: 8),
+                                  child: Text(
+                                    "Ledger day: $_marketDayKey • "
+                                    "${_resetBoundary.replaceAll('_', ' ')} • "
+                                    "Player Bazaar remains unlimited by source.",
+                                    style: const TextStyle(
+                                      color: Colors.white24,
+                                      fontSize: 8,
+                                    ),
+                                  ),
+                                ),
                               // Search Bar & Mobile Filter Icon Row
                               Row(
                                 children: [

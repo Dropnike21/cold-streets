@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:http/http.dart' as http;
+import '../services/game_http.dart' as http;
 import 'dart:convert';
 import 'dart:async';
 import '../api_config.dart';
@@ -69,15 +69,6 @@ class _JailViewState extends State<JailView> {
         backgroundColor: isError ? Colors.redAccent.shade700 : neonGreen.withOpacity(0.8)));
   }
 
-  int _calculateBail(int initialSeconds) {
-    int minutes = (initialSeconds / 60).ceil();
-    return minutes * 100;
-  }
-
-  String _formatCash(int amount) {
-    return '\$${amount.toString().replaceAllMapped(RegExp(r'(\d{1,3})(?=(\d{3})+(?!\d))'), (Match m) => '${m[1]},')}';
-  }
-
   // Returns formatted time OR null if the timer has expired
   String? _getTimeRemaining(String expiresAt) {
     DateTime expiry = DateTime.parse(expiresAt).toLocal();
@@ -93,25 +84,15 @@ class _JailViewState extends State<JailView> {
     return "${m}m ${s}s";
   }
 
-  Future<void> _processAction(String endpoint, Map<String, dynamic> payload) async {
-    setState(() => _isProcessing = true);
-    try {
-      final res = await http.post(Uri.parse('$apiUrl/$endpoint'),
-          headers: {"Content-Type": "application/json"}, body: jsonEncode(payload));
-      final data = jsonDecode(res.body);
-
-      _showSnackbar(data['message'] ?? data['error'], isError: res.statusCode != 200);
-
-      if (data['user'] != null && widget.onStateChange != null) {
-        widget.onStateChange!(data['user']);
-      }
-
-      await _fetchInmates();
-    } catch (e) {
-      _showSnackbar("Network error.", isError: true);
-    } finally {
-      if (mounted) setState(() => _isProcessing = false);
-    }
+  void _showPausedMechanic() {
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text(
+          'Jail bail, breakout and prison-yard training are paused pending source-reconciled mechanics.',
+        ),
+        backgroundColor: Colors.white24,
+      ),
+    );
   }
 
   @override
@@ -152,9 +133,9 @@ class _JailViewState extends State<JailView> {
                         ),
                       ),
                       ElevatedButton(
-                        onPressed: () => _processAction('gym/train', {"user_id": widget.userData['user_id'], "energy_spent": 10}),
-                        style: ElevatedButton.styleFrom(backgroundColor: matteBlack, side: const BorderSide(color: Colors.orangeAccent)),
-                        child: const Text("WORKOUT (-10 EN)", style: TextStyle(color: Colors.orangeAccent, fontSize: 10, fontWeight: FontWeight.bold)),
+                        onPressed: null,
+                        style: ElevatedButton.styleFrom(backgroundColor: matteBlack, side: const BorderSide(color: Colors.white24)),
+                        child: const Text("YARD PAUSED", style: TextStyle(color: Colors.white38, fontSize: 10, fontWeight: FontWeight.bold)),
                       )
                     ],
                   ),
@@ -182,12 +163,13 @@ class _JailViewState extends State<JailView> {
                     var inmate = _inmates[index];
                     bool isMe = inmate['user_id'].toString() == widget.userData['user_id'].toString();
 
-                    int bailCost = _calculateBail(inmate['jail_initial_seconds'] ?? 0);
                     String? timeLeft = _getTimeRemaining(inmate['jail_expires_at']);
                     bool isReleased = timeLeft == null;
 
-                    // Mock Reason (Until you add it to the DB)
-                    String arrestReason = inmate['reason'] ?? "Arrested by the authorities for illegal street activities.";
+                    String arrestReason =
+                        inmate['reason']?.toString().trim().isNotEmpty == true
+                            ? inmate['reason'].toString()
+                            : "Reason unavailable.";
 
                     return Container(
                       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
@@ -242,15 +224,15 @@ class _JailViewState extends State<JailView> {
                                 SizedBox(
                                   width: 120, height: 26,
                                   child: ElevatedButton(
-                                    onPressed: isReleased ? null : () => _processAction('bail', {"user_id": widget.userData['user_id'], "target_id": inmate['user_id']}),
+                                    onPressed: null,
                                     style: ElevatedButton.styleFrom(
                                         backgroundColor: isMe ? Colors.transparent : Colors.green.withOpacity(0.1),
                                         side: BorderSide(color: isMe ? Colors.white24 : Colors.green),
                                         padding: EdgeInsets.zero
                                     ),
-                                    child: Text(
-                                        isMe ? "PAY BAIL (${_formatCash(bailCost)})" : "BAIL (${_formatCash(bailCost)})",
-                                        style: TextStyle(color: isReleased ? Colors.white24 : (isMe ? Colors.white : Colors.green), fontSize: 9, fontWeight: FontWeight.bold)
+                                    child: const Text(
+                                        "BAIL PAUSED",
+                                        style: TextStyle(color: Colors.white38, fontSize: 9, fontWeight: FontWeight.bold)
                                     ),
                                   ),
                                 ),
@@ -258,15 +240,15 @@ class _JailViewState extends State<JailView> {
                                 SizedBox(
                                   width: 120, height: 26,
                                   child: ElevatedButton(
-                                    onPressed: isReleased ? null : () => _processAction('breakout', {"user_id": widget.userData['user_id'], "target_id": inmate['user_id']}),
+                                    onPressed: null,
                                     style: ElevatedButton.styleFrom(
                                         backgroundColor: Colors.redAccent.withOpacity(0.1),
                                         side: const BorderSide(color: Colors.redAccent),
                                         padding: EdgeInsets.zero
                                     ),
-                                    child: Text(
-                                        isMe ? "ESCAPE (5 Nerve)" : "BUST OUT (5 Nerve)",
-                                        style: TextStyle(color: isReleased ? Colors.redAccent.withOpacity(0.3) : Colors.redAccent, fontSize: 9, fontWeight: FontWeight.bold)
+                                    child: const Text(
+                                        "BREAKOUT PAUSED",
+                                        style: TextStyle(color: Colors.white38, fontSize: 9, fontWeight: FontWeight.bold)
                                     ),
                                   ),
                                 ),
