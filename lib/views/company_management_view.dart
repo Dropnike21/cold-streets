@@ -1265,8 +1265,6 @@ class _CompanyManagementViewState extends State<CompanyManagementView> {
                       'funds',
                       {
                         'amount': _fundsAmountController.text,
-                        'action_type': 'deposit',
-                        'currency_type': 'dirty',
                       },
                     )
                 : null,
