@@ -160,7 +160,8 @@ async function execute(client, user, crime, req, res) {
                         nerveCost: crime.nerve_cost,
                         heatGen: penaltyRule.heatGen,
                         hospitalSeconds: penaltyRule.hospitalSeconds,
-                        reason: textHosp
+                        reason: textHosp,
+                        sourceRef: String(crime.id)
                     })]
                 };
                 return commitCrimeOutcome(client, req, res, {
@@ -180,7 +181,8 @@ async function execute(client, user, crime, req, res) {
                         nerveCost: crime.nerve_cost,
                         heatGen: penaltyRule.heatGen,
                         jailSeconds: penaltyRule.jailSeconds,
-                        reason: textJail
+                        reason: textJail,
+                        sourceRef: String(crime.id)
                     })]
                 };
                 return commitCrimeOutcome(client, req, res, {
