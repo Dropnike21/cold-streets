@@ -395,14 +395,27 @@ router.post('/interview/submit', async (req, res) => {
             );
         }
 
-        const normalized = answers.map(answer => ({
-            questionId: integer(answer?.question_id, {
-                field: 'Question ID',
-                min: 1n,
-                max: 9223372036854775807n
-            }).toString(),
-            selectedIndex: Number(answer?.selected_index)
-        }));
+        const normalized = answers.map(answer => {
+            if (!answer || typeof answer !== 'object' || Array.isArray(answer)) {
+                throw new ActionError(400, 'Invalid interview answer.');
+            }
+            const keys = Object.keys(answer);
+            if (keys.some(key =>
+                key !== 'question_id' && key !== 'selected_index')) {
+                throw new ActionError(
+                    400,
+                    'Interview answers accept only question_id and selected_index.'
+                );
+            }
+            return {
+                questionId: integer(answer.question_id, {
+                    field: 'Question ID',
+                    min: 1n,
+                    max: 9223372036854775807n
+                }).toString(),
+                selectedIndex: Number(answer.selected_index)
+            };
+        });
 
         if (normalized.some(answer =>
             !Number.isInteger(answer.selectedIndex) ||
