@@ -1,3 +1,4 @@
+const logger = require('../utils/logger');
 const express = require('express');
 const router = express.Router();
 // Route parameters are parsed after app-level middleware; enforce actor ownership here.
@@ -208,7 +209,7 @@ router.post('/funds', async (req, res) => {
             try {
                 await client.query('ROLLBACK');
             } catch (rollback) {
-                console.error('Company Dirty Cash funding rollback:', rollback);
+                logger.error('company_funding_rollback_failed', logger.errorFields(rollback));
             }
         }
         return sendActionError(res, err, 'Company cash funding failed:');
@@ -282,7 +283,7 @@ router.post('/update-profile', async (req, res) => {
     } catch (err) {
         if (transaction) {
             try { await client.query('ROLLBACK'); }
-            catch (rollback) { console.error('Company profile rollback:', rollback); }
+            catch (rollback) { logger.error('company_profile_rollback_failed', logger.errorFields(rollback)); }
         }
         return sendActionError(res, err, 'Company profile update failed:');
     } finally {
@@ -669,7 +670,7 @@ router.post('/assign-crew', async (req, res) => {
         if (transaction) {
             try { await client.query('ROLLBACK'); }
             catch (rollback) {
-                console.error('Company recruit assignment rollback:', rollback);
+                logger.error('company_crew_assign_rollback_failed', logger.errorFields(rollback));
             }
         }
         return sendActionError(res, err, 'Company recruit assignment failed:');
@@ -786,7 +787,7 @@ router.post('/recall-crew', async (req, res) => {
         if (transaction) {
             try { await client.query('ROLLBACK'); }
             catch (rollback) {
-                console.error('Company recruit recall rollback:', rollback);
+                logger.error('company_crew_recall_rollback_failed', logger.errorFields(rollback));
             }
         }
         return sendActionError(res, err, 'Company recruit recall failed:');
@@ -998,7 +999,7 @@ router.post('/employment-offer', async (req, res) => {
         if (transaction) {
             try { await client.query('ROLLBACK'); }
             catch (rollback) {
-                console.error('Employment offer create rollback:', rollback);
+                logger.error('employment_offer_create_rollback_failed', logger.errorFields(rollback));
             }
         }
         return sendActionError(res, err, 'Employment offer failed:');
@@ -1097,7 +1098,7 @@ router.post('/employment-offer/withdraw', async (req, res) => {
         if (transaction) {
             try { await client.query('ROLLBACK'); }
             catch (rollback) {
-                console.error('Employment offer withdraw rollback:', rollback);
+                logger.error('employment_offer_withdraw_rollback_failed', logger.errorFields(rollback));
             }
         }
         return sendActionError(res, err, 'Employment offer withdrawal failed:');
@@ -1225,7 +1226,7 @@ router.post('/manage-applicant', async (req, res) => {
         if (transaction) {
             try { await client.query('ROLLBACK'); }
             catch (rollback) {
-                console.error('Applicant rejection rollback:', rollback);
+                logger.error('applicant_rejection_rollback_failed', logger.errorFields(rollback));
             }
         }
         return sendActionError(res, err, 'Applicant management failed:');
