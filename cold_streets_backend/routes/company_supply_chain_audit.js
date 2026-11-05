@@ -14,7 +14,7 @@ router.get('/:type_id', async (req, res) => {
         }).toString();
 
         const company = await pool.query(
-            `SELECT type_id, company_name, tier
+            `SELECT type_id, industry_type, tier
                FROM company_types_master
               WHERE type_id = $1`,
             [typeId]
