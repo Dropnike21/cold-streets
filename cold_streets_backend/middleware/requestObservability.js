@@ -28,10 +28,18 @@ function requestObservability(req, res, next) {
     res.once('finish', () => {
         const elapsedNs = process.hrtime.bigint() - started;
         const durationMs = Number(elapsedNs / 1000000n);
+        const path = safePath(req);
+
+        // Successful orchestrator probes are intentionally quiet. Failed
+        // readiness remains logged so operational degradation is visible.
+        if ((path === '/healthz' || path === '/readyz') && res.statusCode < 400) {
+            return;
+        }
+
         const fields = {
             request_id: req.requestId,
             method: req.method,
-            path: safePath(req),
+            path,
             status: res.statusCode,
             duration_ms: durationMs,
             authenticated_player: Boolean(req.player)
