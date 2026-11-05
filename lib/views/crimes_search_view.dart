@@ -137,7 +137,7 @@ class _SearchingCrimesViewState extends State<CrimesSearchView> {
       final response = await http.post(
         Uri.parse('${ApiConfig.baseUrl}/crimes/execute'),
         headers: {"Content-Type": "application/json"},
-        body: jsonEncode({"user_id": widget.userData['user_id'], "crime_id": crime['id']}),
+        body: jsonEncode({"crime_id": crime['id']}),
       );
 
       if (!mounted) return;
