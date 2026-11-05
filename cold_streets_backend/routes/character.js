@@ -1,3 +1,4 @@
+const logger = require('../utils/logger');
 const express = require('express');
 const pool = require('../db');
 const router = express.Router();
@@ -93,7 +94,7 @@ router.post('/level-up', async (req, res) => {
     } catch (err) {
         if (transaction) {
             try { await client.query('ROLLBACK'); }
-            catch (rollback) { console.error('Level-up rollback:', rollback); }
+            catch (rollback) { logger.error('level_up_rollback_failed', logger.errorFields(rollback)); }
         }
         return sendActionError(res, err, 'Character progression failed:');
     } finally {
