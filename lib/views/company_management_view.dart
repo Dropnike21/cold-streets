@@ -203,10 +203,13 @@ class _CompanyManagementViewState extends State<CompanyManagementView> {
   void _showAssignCrewModal() async {
     // 1. Fetch available crew first
     List<dynamic> activeCrew = [];
+    List<dynamic> sourcePositions = [];
     try {
       final response = await http.get(Uri.parse('${ApiConfig.baseUrl}/company-management/${widget.companyId}/available-crew/${widget.userData['user_id']}'));
       if (response.statusCode == 200) {
-        activeCrew = jsonDecode(response.body)['crew'] ?? [];
+        final data = jsonDecode(response.body);
+        activeCrew = data['crew'] ?? [];
+        sourcePositions = data['positions'] ?? [];
       }
     } catch (e) {
       debugPrint("Fetch Crew Error: $e");
@@ -246,8 +249,12 @@ class _CompanyManagementViewState extends State<CompanyManagementView> {
                     itemCount: activeCrew.length,
                     itemBuilder: (context, index) {
                       var npc = activeCrew[index];
-                      bool isAssignedHere = npc['assignment'] == 'Company: ${widget.companyId}';
-                      bool isAssignedElsewhere = npc['assignment'] != 'Idle' && !isAssignedHere;
+                      bool isAssignedHere =
+                          npc['assigned_to_this_company'] == true;
+                      bool isCrimeScheduled =
+                          npc['scheduled_crime_id'] != null;
+                      bool canAssign =
+                          npc['assignment_available'] == true;
 
                       return Container(
                         margin: const EdgeInsets.only(bottom: 8),
@@ -266,28 +273,89 @@ class _CompanyManagementViewState extends State<CompanyManagementView> {
                                 Text(npc['npc_name'].toString().toUpperCase(), style: TextStyle(color: isAssignedHere ? Colors.cyanAccent : Colors.white, fontSize: 13, fontWeight: FontWeight.bold)),
                                 const SizedBox(height: 2),
                                 Text("TIER: ${npc['tier'].toString().toUpperCase()}", style: const TextStyle(color: Colors.white54, fontSize: 9, fontWeight: FontWeight.bold)),
-                                if (isAssignedElsewhere)
+                                if (isCrimeScheduled)
+                                  const Padding(
+                                    padding: EdgeInsets.only(top: 4.0),
+                                    child: Text(
+                                      "CRIME AUTOMATION ACTIVE",
+                                      style: TextStyle(
+                                        color: Colors.redAccent,
+                                        fontSize: 9,
+                                        fontWeight: FontWeight.bold,
+                                      ),
+                                    ),
+                                  )
+                                else if (isAssignedHere)
                                   Padding(
                                     padding: const EdgeInsets.only(top: 4.0),
-                                    child: Text("CURRENT: ${npc['assignment']}", style: const TextStyle(color: Colors.redAccent, fontSize: 9, fontWeight: FontWeight.bold)),
+                                    child: Text(
+                                      "ROLE: ${npc['company_position_role']}",
+                                      style: const TextStyle(
+                                        color: Colors.cyanAccent,
+                                        fontSize: 9,
+                                        fontWeight: FontWeight.bold,
+                                      ),
+                                    ),
+                                  )
+                                else if (!canAssign)
+                                  const Padding(
+                                    padding: EdgeInsets.only(top: 4.0),
+                                    child: Text(
+                                      "NO ELIGIBLE SOURCE POSITION",
+                                      style: TextStyle(
+                                        color: Colors.amber,
+                                        fontSize: 9,
+                                        fontWeight: FontWeight.bold,
+                                      ),
+                                    ),
                                   )
                               ],
                             ),
                             ElevatedButton(
-                              onPressed: () {
-                                if (isAssignedHere) {
-                                  _submitAction('recall-crew', {'crew_id': npc['crew_id']});
-                                } else {
-                                  _submitAction('assign-crew', {'crew_id': npc['crew_id']});
-                                }
-                                if (!context.mounted) return;
-                                Navigator.pop(context);
-                              },
+                              onPressed: isAssignedHere
+                                  ? () {
+                                      _submitAction(
+                                        'recall-crew',
+                                        {'crew_id': npc['crew_id']},
+                                      );
+                                      if (!context.mounted) return;
+                                      Navigator.pop(context);
+                                    }
+                                  : canAssign
+                                      ? () {
+                                          Navigator.pop(context);
+                                          _showNpcPositionDialog(
+                                            npc,
+                                            sourcePositions,
+                                          );
+                                        }
+                                      : null,
                               style: ElevatedButton.styleFrom(
-                                backgroundColor: isAssignedHere ? Colors.redAccent.withValues(alpha: 0.1) : neonGreen.withValues(alpha: 0.1),
-                                side: BorderSide(color: isAssignedHere ? Colors.redAccent : neonGreen),
+                                backgroundColor: isAssignedHere
+                                    ? Colors.redAccent.withValues(alpha: 0.1)
+                                    : neonGreen.withValues(alpha: 0.1),
+                                side: BorderSide(
+                                  color: isAssignedHere
+                                      ? Colors.redAccent
+                                      : neonGreen,
+                                ),
                               ),
-                              child: Text(isAssignedHere ? "RECALL" : (isAssignedElsewhere ? "SWAP HERE" : "ASSIGN"), style: TextStyle(color: isAssignedHere ? Colors.redAccent : neonGreen, fontSize: 10, fontWeight: FontWeight.bold)),
+                              child: Text(
+                                isAssignedHere
+                                    ? "RECALL"
+                                    : canAssign
+                                        ? "ASSIGN"
+                                        : "BLOCKED",
+                                style: TextStyle(
+                                  color: isAssignedHere
+                                      ? Colors.redAccent
+                                      : canAssign
+                                          ? neonGreen
+                                          : Colors.white24,
+                                  fontSize: 10,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
                             )
                           ],
                         ),
@@ -297,6 +365,96 @@ class _CompanyManagementViewState extends State<CompanyManagementView> {
                 )
             ],
           ),
+        );
+      },
+    );
+  }
+
+  void _showNpcPositionDialog(
+    dynamic npc,
+    List<dynamic> sourcePositions,
+  ) {
+    final eligibleIds = (npc['eligible_position_ids'] is List)
+        ? Set<String>.from(
+            (npc['eligible_position_ids'] as List).map((e) => e.toString()),
+          )
+        : <String>{};
+    final eligible = sourcePositions
+        .where((p) => eligibleIds.contains(p['position_id'].toString()))
+        .toList();
+
+    showDialog(
+      context: context,
+      builder: (dialogContext) {
+        return AlertDialog(
+          backgroundColor: matteBlack,
+          title: Text(
+            "ASSIGN NPC POSITION",
+            style: TextStyle(
+              color: neonGreen,
+              fontWeight: FontWeight.bold,
+              fontSize: 14,
+            ),
+          ),
+          content: SizedBox(
+            width: double.maxFinite,
+            child: eligible.isEmpty
+                ? const Text(
+                    "No source position currently matches this recruit's Working Stats.",
+                    style: TextStyle(color: Colors.amber, fontSize: 11),
+                  )
+                : ListView(
+                    shrinkWrap: true,
+                    children: eligible.map((pos) {
+                      final role = pos['role_key']
+                          .toString()
+                          .replaceAll('_', ' ')
+                          .toUpperCase();
+                      return ListTile(
+                        dense: true,
+                        title: Text(
+                          role,
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 11,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                        subtitle: Text(
+                          "Requires ${pos['req_stat_primary'].toString().toUpperCase()} ${pos['req_amount_primary']} + ${pos['req_stat_secondary'].toString().toUpperCase()} ${pos['req_amount_secondary']} • Salary: \$0",
+                          style: const TextStyle(
+                            color: Colors.white54,
+                            fontSize: 9,
+                          ),
+                        ),
+                        trailing: Icon(
+                          Icons.arrow_forward,
+                          color: neonGreen,
+                          size: 16,
+                        ),
+                        onTap: () {
+                          Navigator.pop(dialogContext);
+                          _submitAction(
+                            'assign-crew',
+                            {
+                              'crew_id': npc['crew_id'],
+                              'position_id': pos['position_id'],
+                            },
+                          );
+                        },
+                      );
+                    }).toList(),
+                  ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext),
+              child: const Text(
+                "CANCEL",
+                style: TextStyle(color: Colors.white54),
+              ),
+            ),
+          ],
         );
       },
     );
