@@ -217,7 +217,7 @@ router.post('/train', async (req, res) => {
         // Contract "gym" means one successful server-side training action,
         // independent of how much energy was spent in that action.
         await incrementKevinProgress(client, userId, 'gym', 1);
-        await recordAnonymousGymTraining(client, userId, statType, energySpent);
+        await recordAnonymousGymTraining(client, userId, statType, energySpent.toString());
         await client.query('COMMIT');
         transaction = false;
 
