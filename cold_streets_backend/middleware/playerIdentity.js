@@ -2,6 +2,7 @@
 // All protected routes MUST run requireAuthenticatedPlayer before their handlers.
 // Never trust a client-supplied user_id / userId to establish identity.
 const pool = require('../db');
+const logger = require('../utils/logger');
 
 const AUTH_TIMEOUT_MS = 10000;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -82,7 +83,10 @@ async function requireSupabaseIdentity(req, res, next) {
         };
         return next();
     } catch (err) {
-        console.error('Supabase Auth verification failed:', err.message);
+        logger.error('auth_verification_failed', {
+            request_id: req.requestId,
+            ...logger.errorFields(err)
+        });
         return res.status(503).json({ error: 'Authentication service unavailable.' });
     }
 }
@@ -114,7 +118,10 @@ async function requireAuthenticatedPlayer(req, res, next) {
             }
             return next();
         } catch (err) {
-            console.error('Player identity lookup failed:', err.message);
+            logger.error('player_identity_lookup_failed', {
+                request_id: req.requestId,
+                ...logger.errorFields(err)
+            });
             return res.status(503).json({ error: 'Unable to resolve player identity.' });
         }
     });
