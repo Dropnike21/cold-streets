@@ -493,7 +493,7 @@ class _TradeNetworkViewState extends State<TradeNetworkView> {
               ),
               const SizedBox(height: 4),
               Text(
-                'BASE REF \${_formatIntegerLike(item['base_value_reference'])}',
+                'BASE REF \$${_formatIntegerLike(item['base_value_reference'])}',
                 style: const TextStyle(color: Colors.white38, fontSize: 9),
               ),
               const SizedBox(height: 5),
