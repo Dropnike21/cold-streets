@@ -38,8 +38,17 @@ if (
     errors.push('DB_SSL must be exactly true or false when set.');
 }
 
-if (process.env.ENABLE_UNSAFE_LEGACY_TIMERS === 'true') {
-    errors.push('ENABLE_UNSAFE_LEGACY_TIMERS is retired and must not be enabled.');
+if (process.env.ENABLE_UNSAFE_LEGACY_TIMERS !== undefined) {
+    errors.push(
+        'ENABLE_UNSAFE_LEGACY_TIMERS is retired and must not be configured.'
+    );
+}
+
+if (
+    process.env.ENABLE_GAMEPLAY_API !== undefined &&
+    !['true', 'false'].includes(process.env.ENABLE_GAMEPLAY_API)
+) {
+    errors.push('ENABLE_GAMEPLAY_API must be exactly true or false when set.');
 }
 
 const origins = (process.env.CORS_ALLOWED_ORIGINS || '')
@@ -60,7 +69,8 @@ for (const origin of origins) {
             parsed.pathname !== '/' ||
             parsed.search ||
             parsed.hash ||
-            normalizedOrigin !== origin
+            normalizedOrigin !== origin ||
+            (nodeEnv === 'production' && parsed.protocol !== 'https:')
         ) {
             errors.push(
                 'Each CORS_ALLOWED_ORIGINS entry must be a bare http(s) origin.'
@@ -93,8 +103,17 @@ if (gameplayEnabled) {
     } catch (_) {
         errors.push('SUPABASE_URL must be a valid URL.');
     }
-    if (parsed && parsed.protocol !== 'https:') {
-        errors.push('SUPABASE_URL must use HTTPS.');
+    if (parsed && (
+        parsed.protocol !== 'https:' ||
+        parsed.username ||
+        parsed.password ||
+        (parsed.pathname !== '/' && parsed.pathname !== '') ||
+        parsed.search ||
+        parsed.hash
+    )) {
+        errors.push(
+            'SUPABASE_URL must be a bare HTTPS project origin without credentials, path, query, or fragment.'
+        );
     }
 
     const publishable = process.env.SUPABASE_PUBLISHABLE_KEY || '';
