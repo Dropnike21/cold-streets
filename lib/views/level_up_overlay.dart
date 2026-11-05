@@ -41,7 +41,6 @@ class _LevelUpOverlayState extends State<LevelUpOverlay> {
         Uri.parse('${ApiConfig.baseUrl}/character/level-up'),
         headers: {"Content-Type": "application/json"},
         body: jsonEncode({
-          "user_id": widget.userData['user_id'],
           "action": action
         }),
       );
