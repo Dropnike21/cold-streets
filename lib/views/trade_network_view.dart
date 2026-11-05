@@ -32,8 +32,10 @@ class _TradeNetworkViewState extends State<TradeNetworkView> {
   String _networkStatus = 'reconciliation_paused';
   String _currencyStatus = 'unresolved';
   String _bazaarStatus = 'unresolved';
+  String _escrowStatus = 'not_created';
   bool _hasBazaarFlag = false;
   List<dynamic> _inventory = [];
+  List<dynamic> _sellerListings = [];
   List<dynamic> _blockers = [];
 
   @override
@@ -78,9 +80,14 @@ class _TradeNetworkViewState extends State<TradeNetworkView> {
             data['settlement_currency_status']?.toString() ?? 'unresolved';
         _bazaarStatus =
             data['bazaar_access_status']?.toString() ?? 'unresolved';
+        _escrowStatus =
+            data['escrow_status']?.toString() ?? 'not_created';
         _hasBazaarFlag = data['has_bazaar_flag'] == true;
         _inventory = data['tradable_inventory'] is List
             ? List<dynamic>.from(data['tradable_inventory'])
+            : <dynamic>[];
+        _sellerListings = data['seller_listings'] is List
+            ? List<dynamic>.from(data['seller_listings'])
             : <dynamic>[];
         _blockers = data['blockers'] is List
             ? List<dynamic>.from(data['blockers'])
@@ -161,6 +168,10 @@ class _TradeNetworkViewState extends State<TradeNetworkView> {
                     padding: const EdgeInsets.all(16),
                     children: [
                       _buildStatusCard(),
+                      if (_sellerListings.isNotEmpty) ...[
+                        const SizedBox(height: 12),
+                        _buildSellerListings(),
+                      ],
                       const SizedBox(height: 12),
                       _buildSearch(),
                       const SizedBox(height: 12),
@@ -243,7 +254,7 @@ class _TradeNetworkViewState extends State<TradeNetworkView> {
           ),
           const SizedBox(height: 10),
           const Text(
-            'Your real tradable inventory is shown below. Listing, buying, cancellation, and escrow remain disabled until the project sources establish the P2P settlement currency and transaction rules.',
+            'Your real tradable inventory is shown below. The escrow/listing schema now exists, but listing, buying and cancellation remain disabled until settlement currency, fees, partial-fill and expiry rules are reconciled.',
             style: TextStyle(color: Colors.white70, fontSize: 11, height: 1.45),
           ),
           const SizedBox(height: 10),
@@ -253,6 +264,7 @@ class _TradeNetworkViewState extends State<TradeNetworkView> {
             children: [
               _statusChip('NETWORK', _networkStatus),
               _statusChip('CURRENCY', _currencyStatus),
+              _statusChip('ESCROW', _escrowStatus),
               _statusChip('BAZAAR ACCESS', _bazaarStatus),
               _statusChip(
                 'HAS_BAZAAR FLAG',
@@ -287,6 +299,86 @@ class _TradeNetworkViewState extends State<TradeNetworkView> {
           fontSize: 8,
           fontWeight: FontWeight.bold,
         ),
+      ),
+    );
+  }
+
+  Widget _buildSellerListings() {
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: cPanel,
+        border: Border.all(color: Colors.white12),
+        borderRadius: BorderRadius.circular(5),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            'RECORDED SELLER LISTINGS',
+            style: TextStyle(
+              color: Colors.white70,
+              fontSize: 10,
+              fontWeight: FontWeight.bold,
+              letterSpacing: 1,
+            ),
+          ),
+          const SizedBox(height: 8),
+          ..._sellerListings.map((raw) {
+            final row = raw is Map<String, dynamic>
+                ? raw
+                : Map<String, dynamic>.from(raw as Map);
+            final price = row['asking_price'];
+            final currency = row['settlement_currency'];
+            return Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Icon(
+                    Icons.inventory_2_outlined,
+                    color: Colors.white38,
+                    size: 16,
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          row['name']?.toString() ?? 'Unknown item',
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 10,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                        Text(
+                          'QTY ${_formatIntegerLike(row['quantity_remaining'])} / ${_formatIntegerLike(row['quantity_total'])} • ${(row['status'] ?? 'unknown').toString().toUpperCase()}',
+                          style: const TextStyle(
+                            color: Colors.white38,
+                            fontSize: 9,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Text(
+                    price == null
+                        ? 'PRICE UNRESOLVED'
+                        : '\$${_formatIntegerLike(price)} ${currency?.toString().toUpperCase() ?? ''}',
+                    style: const TextStyle(
+                      color: Colors.amber,
+                      fontSize: 9,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ],
+              ),
+            );
+          }),
+        ],
       ),
     );
   }
