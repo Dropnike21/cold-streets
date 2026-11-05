@@ -88,7 +88,7 @@ The backend/container continues to default:
 
 With gameplay disabled:
 
-- only `/healthz` is available;
+- `/healthz` and `/readyz` remain available as health surfaces;
 - gameplay workers do not start;
 - authenticated gameplay routes remain 503.
 
@@ -160,3 +160,15 @@ fail-closed registry for future mutation endpoints.
 
 These additions were reviewed statically only; the preflight and server were not
 executed.
+
+## Final static closeout
+
+The no-runtime-test stabilization phase is now closed. Final closure references:
+
+- `docs/REPOSITORY_ROUTE_CLOSURE_AUDIT_20261105.md`;
+- `docs/ECONOMY_RESOURCE_CONSERVATION_AUDIT_20261105.md`;
+- `docs/CLIENT_SCHEMA_CATALOG_CLOSURE_20261105.md`;
+- `docs/STABILIZATION_MASTER_CLOSEOUT_20261105.md`;
+- `docs/MECHANICS_DECISIONS_REQUIRED_20261105.md`.
+
+Source-conflicted recruit, crew-automation and City Job resignation settlement are disabled in the final candidate rather than treated as release-ready behavior.
