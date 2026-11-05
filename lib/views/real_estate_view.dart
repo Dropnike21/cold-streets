@@ -31,7 +31,11 @@ class _RealEstateViewState extends State<RealEstateView> {
 
   List<Map<String, dynamic>> properties = [];
   List<Map<String, dynamic>> playerListings = [];
-  Map<int, int> ownedCounts = {}; // NEW: Tracks how many of each property the player owns
+  Map<int, int> ownedCounts = {};
+  String marketStatus = "read_only_settlement_paused";
+  String catalogSemanticsStatus = "unknown";
+  String bonusStatus = "unknown";
+  String upkeepStatus = "unknown";
 
   int _parseSafeInt(dynamic value) {
     if (value == null) return 0;
@@ -67,12 +71,18 @@ class _RealEstateViewState extends State<RealEstateView> {
     try {
       final catRes = await http.get(Uri.parse('${ApiConfig.baseUrl}/real-estate/catalog'));
       if (catRes.statusCode == 200) {
-        properties = List<Map<String, dynamic>>.from(jsonDecode(catRes.body)['catalog']);
+        final catData = jsonDecode(catRes.body);
+        properties = List<Map<String, dynamic>>.from(catData['catalog']);
+        catalogSemanticsStatus = catData['catalog_semantics_status']?.toString() ?? "unknown";
+        bonusStatus = catData['bonus_status']?.toString() ?? "unknown";
+        upkeepStatus = catData['upkeep_status']?.toString() ?? "unknown";
       }
 
       final mktRes = await http.get(Uri.parse('${ApiConfig.baseUrl}/real-estate/market'));
       if (mktRes.statusCode == 200) {
-        playerListings = List<Map<String, dynamic>>.from(jsonDecode(mktRes.body)['listings']);
+        final marketData = jsonDecode(mktRes.body);
+        playerListings = List<Map<String, dynamic>>.from(marketData['listings']);
+        marketStatus = marketData['market_status']?.toString() ?? "read_only_settlement_paused";
       }
 
       // NEW: Fetch portfolio just to get the ownership counts for the badges
@@ -102,8 +112,8 @@ class _RealEstateViewState extends State<RealEstateView> {
   double _calculateUpkeep(Map<String, dynamic> prop) {
     double cost = _parseSafeDouble(prop['cost']);
     double val = _parseSafeDouble(prop['upkeep_val']);
-    if (prop['upkeep_type'] == 'flat') return val;
-    return cost * val;
+    if (prop['upkeep_type'] == 'daily_cash' || prop['upkeep_type'] == 'flat') return val;
+    return 0;
   }
 
   // --- NEW PURCHASE PROMPT ---
@@ -141,9 +151,8 @@ class _RealEstateViewState extends State<RealEstateView> {
         Uri.parse('${ApiConfig.baseUrl}/real-estate/buy-agency'),
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode({
-          'userId': userId,
           'propertyTypeId': prop['id'],
-          'autoMoveIn': autoMoveIn // NEW API ARGUMENT
+          'autoMoveIn': autoMoveIn
         }),
       );
 
@@ -152,7 +161,7 @@ class _RealEstateViewState extends State<RealEstateView> {
 
       if (response.statusCode == 200) {
         setState(() {
-          cleanCash -= propCost;
+          cleanCash = _parseSafeInt(data['clean_cash']);
           widget.userData['clean_cash'] = cleanCash;
 
           // Increment local badge count
@@ -262,11 +271,11 @@ class _RealEstateViewState extends State<RealEstateView> {
               const SizedBox(height: 24),
               Row(
                 children: [
-                  Expanded(child: _buildStatBox("BASE UPKEEP", _formatCash(dailyUpkeep), Colors.redAccent)),
+                  Expanded(child: _buildStatBox("BASE UPKEEP REF", _formatCash(dailyUpkeep), Colors.redAccent)),
                   const SizedBox(width: 12),
-                  Expanded(child: _buildStatBox("MAX HP BONUS", "+${_parseSafeInt(prop['hp_bonus'])}%", const Color(0xFF39FF14))),
+                  Expanded(child: _buildStatBox("HP SOURCE VALUE", "${_parseSafeInt(prop['hp_bonus'])}", const Color(0xFF39FF14))),
                   const SizedBox(width: 12),
-                  Expanded(child: _buildStatBox("GYM BONUS", "+${_parseSafeDouble(prop['gym_bonus'])}%", Colors.blueAccent)),
+                  Expanded(child: _buildStatBox("GYM SOURCE VALUE", "${_parseSafeDouble(prop['gym_bonus'])}", Colors.blueAccent)),
                 ],
               ),
               const SizedBox(height: 24),
@@ -278,10 +287,13 @@ class _RealEstateViewState extends State<RealEstateView> {
                     foregroundColor: canAfford ? Colors.black : Colors.white54,
                     shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(6)),
                   ),
-                  // Users can always buy properties now!
-                  onPressed: canAfford ? () => _promptPurchaseOptions(prop) : null,
+                  onPressed: canAfford && prop['ownership_purchase_available'] == true
+                      ? () => _promptPurchaseOptions(prop)
+                      : null,
                   child: Text(
-                    canAfford ? "PURCHASE PROPERTY" : "INSUFFICIENT BANK FUNDS",
+                    prop['ownership_purchase_available'] != true
+                        ? "STARTER PROPERTY"
+                        : (canAfford ? "PURCHASE PROPERTY" : "INSUFFICIENT CLEAN CASH"),
                     style: const TextStyle(fontWeight: FontWeight.bold, letterSpacing: 1),
                   ),
                 ),
@@ -386,6 +398,15 @@ class _RealEstateViewState extends State<RealEstateView> {
     return Column(
       children: [
         Container(
+          width: double.infinity,
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
+          color: Colors.amber.withOpacity(0.08),
+          child: Text(
+            "PLAYER MARKET: ${marketStatus.replaceAll('_', ' ').toUpperCase()} — settlement, lease, and cancellation actions are paused.",
+            style: const TextStyle(color: Colors.amber, fontSize: 9, fontWeight: FontWeight.bold),
+          ),
+        ),
+        Container(
           height: 36, padding: const EdgeInsets.symmetric(horizontal: 12),
           decoration: BoxDecoration(color: const Color(0xFF1A1A1A), border: Border(bottom: BorderSide(color: Colors.white.withOpacity(0.05)))),
           child: Row(
@@ -416,7 +437,9 @@ class _RealEstateViewState extends State<RealEstateView> {
               var listing = currentPageItems[index];
               bool isSale = listing['listing_type'] == 'SALE';
               Color badgeColor = isSale ? const Color(0xFF39FF14) : Colors.cyanAccent;
-              int upgradeCount = listing['upgrades'] != null ? (listing['upgrades'] as Map).length : 0;
+              int upgradeCount = listing['installed_upgrade_ids'] is List
+                  ? (listing['installed_upgrade_ids'] as List).length
+                  : 0;
 
               return Container(
                 padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8), color: index % 2 == 0 ? Colors.transparent : Colors.white.withOpacity(0.02),
@@ -424,7 +447,7 @@ class _RealEstateViewState extends State<RealEstateView> {
                   children: [
                     Expanded(flex: 3, child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [Row(children: [Text(listing['prop_name'].toString().toUpperCase(), style: const TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.bold)), if (upgradeCount > 0) ...[const SizedBox(width: 6), const Icon(Icons.build, color: Colors.amberAccent, size: 10), Text("+$upgradeCount", style: const TextStyle(color: Colors.amberAccent, fontSize: 9, fontWeight: FontWeight.bold))]]), const SizedBox(height: 2), Text("Owner: ${listing['owner_name']}", style: const TextStyle(color: Colors.grey, fontSize: 9))])),
                     Expanded(flex: 2, child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [Text(listing['listing_type'], style: TextStyle(color: badgeColor, fontSize: 8, fontWeight: FontWeight.bold, letterSpacing: 1)), const SizedBox(height: 2), Text(isSale ? _formatCash(_parseSafeInt(listing['asking_price'])) : "${_formatCash(_parseSafeInt(listing['asking_price']))}/day", style: const TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.w600))])),
-                    Expanded(flex: 1, child: Container(alignment: Alignment.centerRight, child: SizedBox(height: 26, child: ElevatedButton(style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF1A1A1A), foregroundColor: badgeColor, side: BorderSide(color: badgeColor), padding: const EdgeInsets.symmetric(horizontal: 10)), onPressed: () {}, child: Text(isSale ? "BUY" : "RENT", style: const TextStyle(fontSize: 9, fontWeight: FontWeight.bold)))))),
+                    Expanded(flex: 1, child: Container(alignment: Alignment.centerRight, child: SizedBox(height: 26, child: ElevatedButton(style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF1A1A1A), foregroundColor: Colors.white24, side: const BorderSide(color: Colors.white12), padding: const EdgeInsets.symmetric(horizontal: 10)), onPressed: null, child: const Text("PAUSED", style: TextStyle(fontSize: 9, fontWeight: FontWeight.bold)))))),
                   ],
                 ),
               );
