@@ -273,84 +273,13 @@ class _JobsViewState extends State<JobsView> {
     );
   }
 
-  void _openSpecialExchangeSheet(Map<String, dynamic> special, int currentIncentives) {
-    if (special['is_passive'] == true) return;
-    final TextEditingController amountController = TextEditingController(text: "1");
-
-    showModalBottomSheet(
-      context: context,
-      isScrollControlled: true,
-      backgroundColor: darkSurface,
-      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(12)), side: BorderSide(color: Color(0xFF39FF14), width: 1)),
-      builder: (BuildContext ctx) {
-        return Padding(
-          padding: EdgeInsets.only(bottom: MediaQuery.of(ctx).viewInsets.bottom, left: 16, right: 16, top: 24),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text("JOB SPECIAL: ${special['name'].toUpperCase()}", style: TextStyle(color: neonGreen, fontSize: 16, fontWeight: FontWeight.bold)),
-              const SizedBox(height: 8),
-              Text("How many job points would you like to exchange for ${special['effect']}?", style: const TextStyle(color: Colors.white, fontSize: 12)),
-              const SizedBox(height: 16),
-              Row(
-                children: [
-                  Expanded(
-                    flex: 2,
-                    child: Container(
-                      height: 40,
-                      decoration: BoxDecoration(color: matteBlack, border: Border.all(color: Colors.white24), borderRadius: BorderRadius.circular(4)),
-                      child: TextField(
-                        controller: amountController,
-                        keyboardType: TextInputType.number,
-                        textAlign: TextAlign.center,
-                        style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
-                        decoration: const InputDecoration(border: InputBorder.none, isDense: true, contentPadding: EdgeInsets.only(top: 10)),
-                      ),
-                    ),
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    flex: 3,
-                    child: SizedBox(
-                      height: 40,
-                      child: ElevatedButton(
-                        style: ElevatedButton.styleFrom(backgroundColor: neonGreen.withOpacity(0.1), side: BorderSide(color: neonGreen)),
-                        onPressed: () async {
-                          int amount = int.tryParse(amountController.text) ?? 0;
-                          int totalCost = amount * (special['cost'] as int);
-
-                          if (amount <= 0) { Navigator.pop(ctx); _showSnackbar("Invalid amount.", isError: true); return; }
-                          if (currentIncentives < totalCost) { Navigator.pop(ctx); _showSnackbar("You need $totalCost Job Points.", isError: true); return; }
-
-                          Navigator.pop(ctx);
-                          setState(() => _isProcessing = true);
-                          try {
-                            final response = await http.post(Uri.parse('$apiUrl/exchange'),
-                                headers: {"Content-Type": "application/json"},
-                                body: jsonEncode({"user_id": widget.userData['user_id'], "amount": amount}));
-                            final data = jsonDecode(response.body);
-                            if (response.statusCode == 200) {
-                              _showSnackbar(data['message']);
-                              await _fetchJobsDashboard();
-                              widget.onStateChange(widget.userData);
-                            } else {
-                              _showSnackbar(data['error'], isError: true);
-                            }
-                          } catch (e) { _showSnackbar("Network error.", isError: true); }
-                          finally { setState(() => _isProcessing = false); }
-                        },
-                        child: Text("EXCHANGE", style: TextStyle(color: neonGreen, fontWeight: FontWeight.bold, letterSpacing: 1)),
-                      ),
-                    ),
-                  )
-                ],
-              ),
-              const SizedBox(height: 24),
-            ],
-          ),
-        );
-      },
+  void _openSpecialExchangeSheet(
+    Map<String, dynamic> special,
+    int currentIncentives,
+  ) {
+    _showSnackbar(
+      'Legacy Job Point exchange is paused. Only source-reconciled mastery actives may mutate rewards.',
+      isError: true,
     );
   }
 
@@ -759,7 +688,7 @@ class _JobsViewState extends State<JobsView> {
                   bool isPassive = special['is_passive'] ?? false;
 
                   return InkWell(
-                    onTap: (isUnlocked && !isPassive) ? () => _openSpecialExchangeSheet(special, incentiveBalance) : null,
+                    onTap: null,
                     child: Container(
                       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
                       decoration: const BoxDecoration(border: Border(top: BorderSide(color: Color(0xFF333333)))),
@@ -787,7 +716,7 @@ class _JobsViewState extends State<JobsView> {
                                 ),
                                 const SizedBox(height: 4),
                                 Text(
-                                    isPassive ? "Passive" : "Cost: ${special['cost']} Inc",
+                                    isPassive ? "Passive" : "Active paused",
                                     style: TextStyle(color: isUnlocked ? Colors.amberAccent : Colors.white24, fontSize: 9, fontWeight: FontWeight.bold)
                                 ),
                               ],
