@@ -171,6 +171,21 @@ Therefore external Bank-interest perk application remains unresolved and is not 
 
 ## Pending checks
 
+### Product clarification — external payout instrument
+
+The project direction clarified on 2026-11-05 is that a Bank check is not necessarily created by the Bank itself.
+
+It can act as a **deferred payout / clearing instrument** issued by another authoritative system. Candidate issuers include:
+
+- Casino lottery / large jackpot settlement;
+- auction proceeds;
+- Trade Network settlement;
+- other server-authoritative rewards that should be collected through the Bank.
+
+This changes the interpretation of the existing `pending_checks` table: the Bank is the redemption surface, while another subsystem is the issuer.
+
+The current implemented Casino token games do not use `pending_checks`; they settle through their existing Casino paths. The clarified check model is therefore for future or separately reconciled payout flows, not a retroactive rewrite of those current token settlements.
+
 The physical `pending_checks` table contains:
 
 - id;
@@ -189,13 +204,19 @@ Historical Bank code claims:
 
 The Flutter UI also claimed expired funds would automatically liquidate into the player's street wallet.
 
-However:
+However, no **issuer contract** is implemented yet. A safe issuer must establish at least:
 
-- no authoritative backend producer for `pending_checks` was recovered;
-- no backend writer outside the Bank route was found;
-- no auto-liquidation worker was recovered;
-- no source defines whether expired checks become Dirty Cash, Clean Cash, another balance, or are forfeited;
-- the 24-hour duration is historical code/UI behavior, not recovered master data.
+- which subsystem issued the check;
+- an immutable source/reference ID so the same payout cannot be issued twice;
+- payout denomination/currency;
+- exact amount;
+- issuance timestamp;
+- expiry rule, if any;
+- expired-check fallback behavior;
+- whether the check is transferable;
+- whether Bank redemption is the only settlement path.
+
+No auto-liquidation worker was recovered, and the historical 24-hour duration remains code/UI behavior rather than recovered master data.
 
 Therefore:
 
@@ -234,7 +255,7 @@ Key status fields include:
 - `time_deposit_terms_status: historical_code_only`
 - `payout_currency_status: unresolved`
 - `dirty_to_clean_conversion_status: conflicts_with_gdd_laundering_model`
-- `pending_check_creation_status: producer_unrecovered`
+- `pending_check_creation_status: external_issuer_contract_unimplemented`
 - `pending_check_expiry_status: auto_liquidation_unrecovered`
 
 ## Database integrity
@@ -320,11 +341,13 @@ A canonical Bank design needs at least:
 9. one active deposit vs multiple deposits;
 10. early withdrawal/cancellation semantics;
 11. University/external interest bonus stacking;
-12. pending-check producers;
-13. pending-check destination currency;
-14. expiry duration;
-15. expired-check settlement behavior;
-16. immutable financial settlement/audit ledger requirements.
+12. authoritative check issuer interface;
+13. issuer type + immutable source/reference identity;
+14. pending-check destination currency;
+15. expiry duration;
+16. expired-check settlement behavior;
+17. whether checks can be transferred;
+18. immutable issuance/redemption audit requirements.
 
 Until those rules are explicit, reopening settlement would risk minting or converting value incorrectly.
 
