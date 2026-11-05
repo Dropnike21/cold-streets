@@ -121,7 +121,10 @@ mixin MainHubLogic on State<MainHub> {
     checkIntroStatus();
 
     tutState.load(userId).then((_) {
-      if (mounted) setState(() {});
+      if (mounted) {
+        setState(() {});
+        syncTutorialProgress();
+      }
     });
 
     startTelemetrySync();
@@ -154,6 +157,71 @@ mixin MainHubLogic on State<MainHub> {
 
   void customStateUpdate(Map<String, dynamic> updatedStats) {
     updateUserStats(updatedStats);
+  }
+
+  void _applyTutorialProgress(Map<String, dynamic> progress) {
+    final visitsRaw = progress['visits'];
+    final visits = visitsRaw is Map ? Map<String, dynamic>.from(visitsRaw) : <String, dynamic>{};
+    final energyRaw = progress['energy_by_stat'];
+    final energyByStat = energyRaw is Map ? Map<String, dynamic>.from(energyRaw) : <String, dynamic>{};
+    final rep = getAnonExp();
+    setState(() {
+      if (rep == 1) {
+        tutState.tut1Vitals = visits['vitals'] == true;
+        tutState.tut1Assets = visits['assets'] == true;
+      } else if (rep == 2) {
+        tutState.tut2Inv = visits['inventory'] == true;
+        tutState.tut2Prop = visits['properties'] == true;
+        tutState.tut2Ach = visits['achievements'] == true;
+      } else if (rep == 3) {
+        tutState.tut3Search = visits['crime_searching'] == true;
+        tutState.tut3Shop = visits['crime_shoplifting'] == true;
+        tutState.tut3Pick = visits['crime_pickpocketing'] == true;
+        tutState.tut3CrimesDoneCount = parseSafeInt(progress['successful_crimes']);
+      } else if (rep == 4) {
+        tutState.tut4Gym = visits['gym'] == true;
+        tutState.tut4EnergyStr = parseSafeInt(energyByStat['str']);
+        tutState.tut4EnergyDef = parseSafeInt(energyByStat['def']);
+        tutState.tut4EnergyDex = parseSafeInt(energyByStat['dex']);
+        tutState.tut4EnergySpd = parseSafeInt(energyByStat['spd']);
+      } else if (rep == 5) {
+        tutState.tut5Bank = visits['bank'] == true;
+        tutState.tut5Estate = visits['real_estate'] == true;
+      } else if (rep == 6) {
+        tutState.tut6Broker = visits['credit_broker'] == true;
+        tutState.tut6Casino = visits['casino'] == true;
+      }
+    });
+  }
+
+  Future<void> syncTutorialProgress() async {
+    try {
+      final response = await http.get(Uri.parse('${ApiConfig.baseUrl}/missions/details/$userId/anonymous'));
+      if (response.statusCode != 200 || !mounted) return;
+      final data = jsonDecode(response.body);
+      if (data['progress'] is Map) {
+        _applyTutorialProgress(Map<String, dynamic>.from(data['progress']));
+      }
+    } catch (_) {
+      debugPrint('Tutorial progress sync unavailable.');
+    }
+  }
+
+  Future<void> recordTutorialVisit(String visit) async {
+    try {
+      final response = await http.post(
+        Uri.parse('${ApiConfig.baseUrl}/missions/tutorial/visit'),
+        headers: const {'Content-Type': 'application/json'},
+        body: jsonEncode({'visit': visit}),
+      );
+      if (response.statusCode != 200 || !mounted) return;
+      final data = jsonDecode(response.body);
+      if (data['progress'] is Map) {
+        _applyTutorialProgress(Map<String, dynamic>.from(data['progress']));
+      }
+    } catch (_) {
+      debugPrint('Tutorial visit could not be recorded.');
+    }
   }
 
   void startTelemetrySync() {
@@ -226,42 +294,14 @@ mixin MainHubLogic on State<MainHub> {
       exp = parseSafeInt(updatedStats['exp'] ?? exp);
       if (updatedStats.containsKey('level_holding')) levelHolding = updatedStats['level_holding'] == true;
 
-      // --- TASK 4 STAT WATCHER ---
-      double oldStr = parseDouble(widget.userData['stat_str']);
-      double liveStr = parseDouble(updatedStats['stat_str'] ?? widget.userData['stat_str']);
-      double oldDef = parseDouble(widget.userData['stat_def']);
-      double liveDef = parseDouble(updatedStats['stat_def'] ?? widget.userData['stat_def']);
-      double oldDex = parseDouble(widget.userData['stat_dex']);
-      double liveDex = parseDouble(updatedStats['stat_dex'] ?? widget.userData['stat_dex']);
-      double oldSpd = parseDouble(widget.userData['stat_spd']);
-      double liveSpd = parseDouble(updatedStats['stat_spd'] ?? widget.userData['stat_spd']);
-
-      int prevEnergy = parseSafeInt(widget.userData['energy']);
-      int newEnergy = parseSafeInt(updatedStats['energy'] ?? prevEnergy);
-
-      if (getAnonExp() == 4 && prevEnergy > newEnergy) {
-        int energySpent = prevEnergy - newEnergy;
-        if (liveStr > oldStr) { tutState.tut4EnergyStr += energySpent; tutState.saveInt(userId, 'tut4EnergyStr', tutState.tut4EnergyStr); }
-        else if (liveDef > oldDef) { tutState.tut4EnergyDef += energySpent; tutState.saveInt(userId, 'tut4EnergyDef', tutState.tut4EnergyDef); }
-        else if (liveDex > oldDex) { tutState.tut4EnergyDex += energySpent; tutState.saveInt(userId, 'tut4EnergyDex', tutState.tut4EnergyDex); }
-        else if (liveSpd > oldSpd) { tutState.tut4EnergySpd += energySpent; tutState.saveInt(userId, 'tut4EnergySpd', tutState.tut4EnergySpd); }
-      }
-
-      energy = newEnergy;
+      energy = parseSafeInt(updatedStats['energy'] ?? energy);
       maxEnergy = parseSafeInt(updatedStats['max_energy'] ?? maxEnergy);
       nerve = parseSafeInt(updatedStats['nerve'] ?? nerve);
       maxNerve = parseSafeInt(updatedStats['max_nerve'] ?? maxNerve);
       hp = parseSafeInt(updatedStats['hp'] ?? hp);
       maxHp = parseSafeInt(updatedStats['max_hp'] ?? maxHp);
       heat = parseDouble(updatedStats['heat'] ?? heat);
-
-      int oldCrimeExp = parseSafeInt(widget.userData['crime_exp']);
       int liveCrimeExp = parseSafeInt(updatedStats['crime_exp'] ?? widget.userData['crime_exp']);
-
-      if (liveCrimeExp > oldCrimeExp && getAnonExp() == 3) {
-        tutState.tut3CrimesDoneCount++;
-        tutState.saveInt(userId, 'tut3Crimes', tutState.tut3CrimesDoneCount);
-      }
 
       if (updatedStats.containsKey('contact_exp')) {
         widget.userData['contact_exp'] = updatedStats['contact_exp'];
@@ -359,21 +399,17 @@ mixin MainHubLogic on State<MainHub> {
     setState(() {
       selectedIndex = index;
 
-      if (index == 4) tutState.tut2Inv = true;
-      if (index == 19) tutState.tut2Prop = true;
-      if (index == 9) tutState.tut2Ach = true;
-
-      if (index == 26 && !tutState.tut3Search) { tutState.tut3Search = true; tutState.saveBool(userId, 'tut3Search', true); }
-      if (index == 27 && !tutState.tut3Shop) { tutState.tut3Shop = true; tutState.saveBool(userId, 'tut3Shop', true); }
-      if (index == 28 && !tutState.tut3Pick) { tutState.tut3Pick = true; tutState.saveBool(userId, 'tut3Pick', true); }
-      if (index == 5 && !tutState.tut4Gym) { tutState.tut4Gym = true; tutState.saveBool(userId, 'tut4Gym', true); }
-
-      // 🚨 TASK 5 & 6 Triggers
-      if (index == 17 && !tutState.tut5Bank) { tutState.tut5Bank = true; tutState.saveBool(userId, 'tut5Bank', true); }
-      if (index == 18 && !tutState.tut5Estate) { tutState.tut5Estate = true; tutState.saveBool(userId, 'tut5Estate', true); }
-      if (index == 6 && !tutState.tut6Broker) { tutState.tut6Broker = true; tutState.saveBool(userId, 'tut6Broker', true); }
-      if (index == 20 && !tutState.tut6Casino) { tutState.tut6Casino = true; tutState.saveBool(userId, 'tut6Casino', true); }
+      // Server-owned tutorial progress; local flags mirror backend state.
     });
+
+    const tutorialVisits = <int, String>{
+      4: 'inventory', 19: 'properties', 9: 'achievements',
+      26: 'crime_searching', 27: 'crime_shoplifting', 28: 'crime_pickpocketing',
+      5: 'gym', 17: 'bank', 18: 'real_estate',
+      6: 'credit_broker', 20: 'casino',
+    };
+    final visit = tutorialVisits[index];
+    if (visit != null) recordTutorialVisit(visit);
 
     // 🚨 RESTORED: Trigger universal intel pop-up
     checkAndShowIntel('nav_$index');
