@@ -1,6 +1,5 @@
 // crimes/pickpocketing.js
 const { unlockAchievementsForValue } = require('../../utils/achievement_engine');
-const { incrementKevinProgress } = require('../../utils/missionProgress');
 const { recordAnonymousCrimeSuccess } = require('../../utils/anonymousTutorial');
 const { randomPercent, randomInclusive, randomText, commitCrimeOutcome } = require('../../utils/crimeSettlement');
 const {
@@ -99,7 +98,6 @@ async function execute(client, user, crime, req, res) {
                 [user.user_id]
             );
             if (crimeTotals.rowCount !== 1) throw new Error('Crime statistics row missing.');
-            await incrementKevinProgress(client, user.user_id, 'crimes', 1);
             await recordAnonymousCrimeSuccess(client, user.user_id, crime.sub_category);
             await unlockAchievementsForValue(
                 client, user.user_id, 'crimes_successful',
