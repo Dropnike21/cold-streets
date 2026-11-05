@@ -6,10 +6,13 @@ const warnings = [];
 const gameplayEnabled = process.env.ENABLE_GAMEPLAY_API === 'true';
 const nodeEnv = process.env.NODE_ENV || 'development';
 
-const nodeMajor = Number(process.versions.node.split('.')[0]);
-if (nodeMajor !== 24) {
+const [nodeMajor, nodeMinor] = process.versions.node
+    .split('.')
+    .slice(0, 2)
+    .map(Number);
+if (nodeMajor !== 24 || !Number.isInteger(nodeMinor) || nodeMinor < 6) {
     errors.push(
-        'Node 24.x is required by the reviewed HTTP/runtime configuration.'
+        'Node >=24.6 <25 is required by the reviewed HTTP/runtime configuration.'
     );
 }
 

@@ -1,4 +1,8 @@
 const logger = require('./logger');
+const {
+  classifyOperationalError,
+  applyOperationalResponse
+} = require('./operationalErrors');
 // Shared money validation for server-authoritative transactions.
 // node-postgres returns NUMERIC as strings; avoid JS Number for ledger math.
 class ActionError extends Error {
@@ -40,6 +44,18 @@ function actorId(req) {
 }
 function sendActionError(res, error, context) {
   if (error instanceof ActionError) return res.status(error.status).json({ error: error.message });
+
+  const operational = classifyOperationalError(error);
+  if (operational) {
+    logger.warn('action_operational_failure', {
+      request_id: res.req?.requestId,
+      context,
+      operational_kind: operational.kind,
+      ...logger.errorFields(error)
+    });
+    return applyOperationalResponse(res, operational);
+  }
+
   logger.error('action_failed', {
     request_id: res.req?.requestId,
     context,

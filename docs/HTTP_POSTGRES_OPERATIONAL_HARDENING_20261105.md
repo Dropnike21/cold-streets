@@ -12,11 +12,11 @@ Flutter build/analyze, deployment, or production change was performed.
 
 The backend now declares:
 
-`node >=24 <25`
+`node >=24.6 <25`
 
 The container already tracks the Node 24 Bookworm-slim line.
 
-The release preflight now fails when executed under a Node major other than 24.
+The release preflight now fails below Node 24.6 or on a Node major other than 24.
 
 ## HTTP parser / socket boundaries
 
@@ -31,7 +31,11 @@ Configured boundaries:
 - complete request receive timeout: 20 seconds;
 - socket inactivity timeout: 30 seconds;
 - keep-alive idle timeout: 5 seconds;
+- keep-alive timeout buffer: 1 second;
+- TCP keepalive enabled with a 10-second initial delay;
 - maximum requests per socket: 500;
+- maximum accepted connections: 256;
+- strict HTTP parser explicitly retained;
 - HTTP/1.1 Host header required.
 
 The JSON parser remains capped at 64 KiB and now explicitly accepts only JSON
@@ -50,7 +54,11 @@ Responses set:
 
 - `Cache-Control: no-store`;
 - `Pragma: no-cache`;
+- `Expires: 0`;
 - `X-Content-Type-Options: nosniff`;
+- `X-DNS-Prefetch-Control: off`;
+- `X-Permitted-Cross-Domain-Policies: none`;
+- `Cross-Origin-Opener-Policy: same-origin`;
 - `X-Frame-Options: DENY`;
 - `Referrer-Policy: no-referrer`;
 - restrictive Content-Security-Policy;
@@ -100,6 +108,11 @@ transaction with tighter local settings:
 
 A failed acquisition/probe marks database readiness false.
 
+When the PostgreSQL pool already has at least 20 queued waiters, readiness now
+fails immediately instead of enqueueing another probe. That saturation result
+makes the current readiness response 503 without falsely treating the database
+itself as permanently failed.
+
 The probe no longer relies on an unsupported per-query `query_timeout` field.
 
 ## Pool backpressure
@@ -115,11 +128,38 @@ Response:
 
 - HTTP 503;
 - `Retry-After: 1`;
+- `Connection: close`;
 - generic busy message.
 
 The structured log records only pool counts and request correlation ID.
 
-Health/readiness endpoints remain outside this gameplay backpressure middleware.
+`/healthz` remains independent of PostgreSQL. `/readyz` stays outside the
+middleware but performs the same saturation check before attempting a DB
+connection.
+
+## Retryable PostgreSQL / network failure classification
+
+Transient infrastructure errors are now classified centrally rather than being
+returned as undifferentiated transaction failures.
+
+The shared classifier recognizes:
+
+- PostgreSQL connection-class SQLSTATEs;
+- too-many-connections/configuration-limit failures;
+- lock timeout/contention;
+- statement/query cancellation;
+- serialization failures and deadlocks;
+- PostgreSQL shutdown/cannot-connect states;
+- common TCP reset/refused/timeout/unreachable errors;
+- narrow node-postgres acquisition/query timeout messages.
+
+Authoritative handlers that use `sendActionError`, plus the final Express error
+boundary, now return HTTP 503 with `Retry-After: 1` and a generic retry message
+for those transient failures. SQL text, host information, relation names,
+credentials, and stack details remain server-side.
+
+Business-rule failures and non-transient programming/data-integrity failures are
+not converted into retryable 503s.
 
 ## Graceful shutdown alignment
 
@@ -132,7 +172,7 @@ Normal shutdown still:
 
 1. marks readiness false;
 2. stops workers;
-3. closes the listener;
+3. closes the listener and explicitly closes idle keep-alive connections;
 4. drains/closes the DB pool;
 5. exits.
 
@@ -140,7 +180,7 @@ Normal shutdown still:
 
 The non-network release preflight now validates:
 
-- Node major 24;
+- Node >=24.6 and <25;
 - PORT and DB_PORT integer range 1..65535;
 - DB_SSL is exactly true/false when supplied;
 - every CORS entry is a bare http(s) origin;
@@ -162,6 +202,8 @@ The backend now has bounded behavior for:
 - lock waits;
 - abandoned transactions;
 - stale pooled connections;
-- saturated DB request queues.
+- saturated DB request queues;
+- transient PostgreSQL/network failures with explicit retry semantics;
+- excessive accepted TCP connections.
 
 These boundaries are independent from unresolved gameplay mechanics.

@@ -24,8 +24,10 @@ function requestObservability(req, res, next) {
 
     res.setHeader('X-Request-Id', req.requestId);
     const started = process.hrtime.bigint();
+    let completed = false;
 
     res.once('finish', () => {
+        completed = true;
         const elapsedNs = process.hrtime.bigint() - started;
         const durationMs = Number(elapsedNs / 1000000n);
         const path = safePath(req);
@@ -47,6 +49,18 @@ function requestObservability(req, res, next) {
         if (res.statusCode >= 500) logger.error('http_request', fields);
         else if (res.statusCode >= 400) logger.warn('http_request', fields);
         else logger.info('http_request', fields);
+    });
+
+    res.once('close', () => {
+        if (completed || res.writableEnded) return;
+        const elapsedNs = process.hrtime.bigint() - started;
+        logger.warn('http_request_aborted', {
+            request_id: req.requestId,
+            method: req.method,
+            path: safePath(req),
+            duration_ms: Number(elapsedNs / 1000000n),
+            authenticated_player: Boolean(req.player)
+        });
     });
 
     next();

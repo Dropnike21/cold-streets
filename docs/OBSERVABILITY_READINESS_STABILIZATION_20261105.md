@@ -80,8 +80,8 @@ When `ENABLE_GAMEPLAY_API=false`:
 When gameplay is enabled:
 
 - PostgreSQL must answer a bounded `SELECT 1` readiness probe;
-- the Crew Crime worker must be started and healthy;
-- the State Duration worker must be started and healthy;
+- every currently enabled authoritative worker must be started and healthy;
+- at the current stabilization head that means the State Duration worker;
 - shutdown state immediately makes readiness false.
 
 The public readiness response is deliberately minimal:
@@ -97,7 +97,9 @@ messages are not exposed by the readiness endpoint.
 
 ## Worker health
 
-Both persisted workers now report health through `runtimeHealth`.
+The currently enabled State Duration worker reports health through
+`runtimeHealth`. Crew Crime automation is intentionally paused and is not a
+readiness dependency at this stabilization head.
 
 On start:
 
@@ -109,8 +111,8 @@ On each poll:
 - failure marks that worker unhealthy;
 - a later successful poll restores health.
 
-If a worker fails while gameplay is enabled, `/readyz` returns 503 until that
-worker completes a successful subsequent poll.
+If the required worker fails while gameplay is enabled, `/readyz` returns 503
+until that worker completes a successful subsequent poll.
 
 Only nonzero settled batches emit informational batch logs.
 
@@ -144,7 +146,7 @@ SIGTERM/SIGINT and fatal process errors now use the same shutdown path:
 4. close the PostgreSQL pool;
 5. exit.
 
-A 10-second forced-exit guard prevents indefinite shutdown hangs.
+A 25-second forced-exit guard prevents indefinite shutdown hangs and remains above the current 20-second client query timeout.
 
 ## Central error boundary
 

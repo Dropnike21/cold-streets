@@ -53,6 +53,10 @@ async function requireSupabaseIdentity(req, res, next) {
     if (!match || match[1].length > 8192) {
         return res.status(401).json({ error: 'A Supabase access token is required.' });
     }
+    const requestAbort = new AbortController();
+    const abortUpstream = () => requestAbort.abort();
+    req.once('aborted', abortUpstream);
+
     try {
         const response = await fetch(config.endpoint, {
             method: 'GET',
@@ -60,7 +64,10 @@ async function requireSupabaseIdentity(req, res, next) {
                 apikey: config.key,
                 Authorization: `Bearer ${match[1]}`
             },
-            signal: AbortSignal.timeout(AUTH_TIMEOUT_MS)
+            signal: AbortSignal.any([
+                AbortSignal.timeout(AUTH_TIMEOUT_MS),
+                requestAbort.signal
+            ])
         });
 
         if (response.status === 401 || response.status === 403 || response.status === 400) {
@@ -83,11 +90,16 @@ async function requireSupabaseIdentity(req, res, next) {
         };
         return next();
     } catch (err) {
+        if (req.aborted || requestAbort.signal.aborted && err?.name === 'AbortError') {
+            return;
+        }
         logger.error('auth_verification_failed', {
             request_id: req.requestId,
             ...logger.errorFields(err)
         });
         return res.status(503).json({ error: 'Authentication service unavailable.' });
+    } finally {
+        req.removeListener('aborted', abortUpstream);
     }
 }
 
