@@ -1,4 +1,5 @@
 // routes/crimes.js
+const logger = require('../utils/logger');
 const express = require('express');
 const pool = require('../db');
 const router = express.Router();
@@ -31,7 +32,7 @@ router.get('/list', async (req, res) => {
         const crimes = await pool.query("SELECT * FROM crimes_master ORDER BY req_skill_level ASC, id ASC");
         res.json(crimes.rows);
     } catch (err) {
-        console.error("Fetch Crimes Error:", err.message);
+        logger.error('crimes_fetch_failed', logger.errorFields(err));
         res.status(500).json({ error: "Failed to load Job Board." });
     }
 });
