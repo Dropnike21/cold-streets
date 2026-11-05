@@ -26,10 +26,12 @@ class _CompanyDashboardViewState extends State<CompanyDashboardView> {
   bool _isLoading = true;
 
   // Economic Engine Data[cite: 1]
-  double _runway = 99.9;
+  double _runway = 0.0;
+  bool _runwayAvailable = false;
   int _totalCosts = 0;
 
   Map<String, dynamic> _company = {};
+  Map<String, dynamic> _cashFlow = {};
   List<dynamic> _roster = [];
   List<dynamic> _logs = [];
   List<dynamic> _specials = [];
@@ -63,10 +65,14 @@ class _CompanyDashboardViewState extends State<CompanyDashboardView> {
             _logs = data['logs'] ?? [];
             _specials = data['specials'] ?? [];
             _userRole = data['user_role'] ?? 'Employee';
+            _cashFlow = data['cash_flow'] is Map
+                ? Map<String, dynamic>.from(data['cash_flow'])
+                : <String, dynamic>{};
 
-            // Economic Logic: Calculate Runway and Burn Rate[cite: 1, 2]
-            _runway = double.tryParse(data['runway_days'].toString()) ?? 99.9;
-            _totalCosts = data['total_daily_costs'] ?? 0;
+            final runwayRaw = data['runway_days'];
+            _runwayAvailable = runwayRaw != null;
+            _runway = double.tryParse(runwayRaw?.toString() ?? '') ?? 0.0;
+            _totalCosts = _safeInt(data['total_daily_costs']);
 
             final myData = _roster.firstWhere((emp) => emp['username'] == widget.userData['username'], orElse: () => <String, dynamic>{});
             _userSalary = _safeInt(myData['daily_salary']);
@@ -229,45 +235,64 @@ class _CompanyDashboardViewState extends State<CompanyDashboardView> {
   }
 
   Widget _buildRunwayInfo() {
-    // Hide completely if there are more than 7 days left.
-    if (_runway > 7.0) {
+    if (!_runwayAvailable) {
       return const SizedBox.shrink();
     }
 
-    // GDD SEC 4.B: Visualizes the 2.0-day fail-safe[cite: 1]
-    Color runwayColor = _runway < 2.0 ? Colors.redAccent : (_runway < 5.0 ? Colors.orangeAccent : neonGreen);
+    final Color runwayColor =
+        _runway < 2.0 ? Colors.redAccent : Colors.amber;
 
     return Container(
       width: double.infinity,
       margin: const EdgeInsets.only(top: 16),
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
-        color: runwayColor.withOpacity(0.05),
-        border: Border.all(color: runwayColor.withOpacity(0.3)),
+        color: runwayColor.withValues(alpha: 0.05),
+        border: Border.all(color: runwayColor.withValues(alpha: 0.3)),
         borderRadius: BorderRadius.circular(4),
       ),
       child: Column(
         children: [
-          const Text("BANKRUPTCY RUNWAY", style: TextStyle(color: Colors.white54, fontSize: 8, fontWeight: FontWeight.bold)),
-          Text("${_runway} DAYS", style: TextStyle(color: runwayColor, fontSize: 20, fontWeight: FontWeight.w900)),
-          Text("Daily Burn Rate: \$${_formatNumber(_totalCosts)}", style: const TextStyle(color: Colors.white38, fontSize: 9)),
+          const Text(
+            "RUNWAY REFERENCE ONLY",
+            style: TextStyle(
+              color: Colors.white54,
+              fontSize: 8,
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+          Text(
+            "${_runway.toStringAsFixed(1)} DAYS",
+            style: TextStyle(
+              color: runwayColor,
+              fontSize: 20,
+              fontWeight: FontWeight.w900,
+            ),
+          ),
+          Text(
+            "Salaries + upkeep reference: \$${_formatNumber(_totalCosts)} / day",
+            style: const TextStyle(color: Colors.white38, fontSize: 9),
+          ),
+          const SizedBox(height: 4),
+          const Text(
+            "Automatic bankruptcy and severance settlement are paused.",
+            style: TextStyle(color: Colors.white38, fontSize: 8),
+          ),
         ],
       ),
     );
   }
 
   Widget _buildCompanyDetailsGrid() {
-    int dailyInc = _safeInt(_company['daily_income'], fallback: 67481250);
-    int weeklyInc = _safeInt(_company['weekly_income'], fallback: 462605700);
-    int dailyCust = _safeInt(_company['daily_customers'], fallback: 3);
-    int weeklyCust = _safeInt(_company['weekly_customers'], fallback: 22);
-    int age = _safeInt(_company['age_days'], fallback: 14);
-    int trains = _safeInt(_company['trains_available'], fallback: 0);
-    int maxTrains = 20;
-    int stars = _safeInt(_company['star_rating'], fallback: 0);
-    int maxEmps = _safeInt(_company['max_employees'], fallback: 4);
+    int dailyInc = _safeInt(_company['daily_income']);
+    int age = _safeInt(_company['age_days']);
+    int stars = _safeInt(_company['star_rating']);
+    int maxEmps = _safeInt(_company['max_employees']);
+    final salesStatus =
+        _cashFlow['sales_settlement_available'] == true ? "ACTIVE" : "PAUSED";
+    final payrollStatus =
+        _cashFlow['payroll_settlement_available'] == true ? "ACTIVE" : "PAUSED";
 
-    // Completely bypasses the roster scan and pulls directly from the company data!
     String director = (_company['owner_name'] ?? "Unknown").toString();
 
     return Container(
@@ -300,11 +325,26 @@ class _CompanyDashboardViewState extends State<CompanyDashboardView> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    _buildCompactDetail("Daily Income:", "\$${_formatNumber(dailyInc)}", valColor: Colors.greenAccent),
-                    _buildCompactDetail("Daily Cust.:", _formatNumber(dailyCust)),
+                    _buildCompactDetail(
+                      "Recorded Income:",
+                      "\${_formatNumber(dailyInc)}",
+                      valColor: Colors.white70,
+                    ),
+                    _buildCompactDetail(
+                      "Sales Settlement:",
+                      salesStatus,
+                      valColor: salesStatus == "ACTIVE"
+                          ? Colors.greenAccent
+                          : Colors.amber,
+                    ),
                     const SizedBox(height: 6),
-                    _buildCompactDetail("Weekly Income:", "\$${_formatNumber(weeklyInc)}", valColor: Colors.greenAccent),
-                    _buildCompactDetail("Weekly Cust.:", _formatNumber(weeklyCust)),
+                    _buildCompactDetail(
+                      "Payroll Settlement:",
+                      payrollStatus,
+                      valColor: payrollStatus == "ACTIVE"
+                          ? Colors.greenAccent
+                          : Colors.amber,
+                    ),
                   ],
                 ),
               ),
@@ -315,14 +355,27 @@ class _CompanyDashboardViewState extends State<CompanyDashboardView> {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     _buildCompactDetail("Age:", "$age Days"),
-                    _buildCompactDetail("Trains:", "$trains / $maxTrains", valColor: Colors.cyanAccent),
                     const SizedBox(height: 6),
-                    const Text("Rating:", style: TextStyle(color: Colors.white54, fontSize: 9)),
+                    const Text(
+                      "Rating:",
+                      style: TextStyle(color: Colors.white54, fontSize: 9),
+                    ),
                     Row(
                       children: [
-                        Icon(stars > 0 ? Icons.star : Icons.star_border, color: Colors.amberAccent, size: 12),
+                        Icon(
+                          stars > 0 ? Icons.star : Icons.star_border,
+                          color: Colors.amberAccent,
+                          size: 12,
+                        ),
                         const SizedBox(width: 4),
-                        Text("$stars / 10", style: const TextStyle(color: Colors.amberAccent, fontSize: 10, fontWeight: FontWeight.bold)),
+                        Text(
+                          "$stars / 10",
+                          style: const TextStyle(
+                            color: Colors.amberAccent,
+                            fontSize: 10,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
                       ],
                     )
                   ],
@@ -415,29 +468,30 @@ class _CompanyDashboardViewState extends State<CompanyDashboardView> {
   Widget _buildIncomeChartView() {
     return Container(
       padding: const EdgeInsets.all(12.0),
-      decoration: BoxDecoration(color: darkSurface, border: Border.all(color: const Color(0xFF333333)), borderRadius: BorderRadius.circular(4)),
-      child: Column(
+      decoration: BoxDecoration(
+        color: darkSurface,
+        border: Border.all(color: const Color(0xFF333333)),
+        borderRadius: BorderRadius.circular(4),
+      ),
+      child: const Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              const Text("REVENUE HISTORY", style: TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.bold)),
-              DropdownButton<String>(
-                value: _chartFilter,
-                dropdownColor: matteBlack,
-                style: TextStyle(color: neonGreen, fontSize: 10, fontWeight: FontWeight.bold),
-                underline: const SizedBox(),
-                items: ['1 Month', '1 Year', 'All Time'].map((f) => DropdownMenuItem(value: f, child: Text(f))).toList(),
-                onChanged: (val) => setState(() => _chartFilter = val!),
-              )
-            ],
+          Text(
+            "CASH-FLOW SETTLEMENT",
+            style: TextStyle(
+              color: Colors.white,
+              fontSize: 11,
+              fontWeight: FontWeight.bold,
+            ),
           ),
-          const SizedBox(height: 8),
-          Container(
-            height: 120, width: double.infinity,
-            decoration: BoxDecoration(color: matteBlack, borderRadius: BorderRadius.circular(4)),
-            child: const Center(child: Text("Live Charting Module Coming Soon", style: TextStyle(color: Colors.white24, fontSize: 10))),
+          SizedBox(height: 8),
+          Text(
+            "Revenue history is not authoritative yet. Tier-3 clean-ratio sales, payroll conversion, laundering tax/ACU effects, advertising spend, and bankruptcy settlement are paused until their daily settlement rules are reconciled.",
+            style: TextStyle(
+              color: Colors.amber,
+              fontSize: 10,
+              height: 1.45,
+            ),
           ),
         ],
       ),
