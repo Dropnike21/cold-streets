@@ -10,7 +10,8 @@ const TRACKER_FINGERPRINTS = Object.freeze({
     player_level: '333212151aba8634b4672f695298b121',
     courses_completed: 'b057568304caf960a3f75c6f84cc963e',
     days_in_jail: '038e59981575d8ffacaf02aecd823e12',
-    hospital_hours: '4873d94c74fd540b889eba95233cd556'
+    hospital_hours: '4873d94c74fd540b889eba95233cd556',
+    missions_completed: '48a32b3e9c2ba831ffb9ad45b019d02c'
 });
 
 const SUPPORTED_TRACKERS = Object.freeze(Object.keys(TRACKER_FINGERPRINTS));
@@ -130,8 +131,31 @@ async function recordGymTrainingAchievement(client, userId, energySpent) {
     return totals.rows[0];
 }
 
+async function recordMissionCompletionAchievement(client, userId) {
+    const total = await client.query(
+        `SELECT COUNT(*)::bigint AS total
+           FROM user_mission_progress
+          WHERE user_id = $1
+            AND status = 'completed'
+            AND completed_at IS NOT NULL`,
+        [userId]
+    );
+    if (total.rowCount !== 1) {
+        throw new Error('Mission achievement telemetry could not be resolved.');
+    }
+
+    await unlockAchievementsForValue(
+        client,
+        userId,
+        'missions_completed',
+        total.rows[0].total
+    );
+    return total.rows[0].total;
+}
+
 module.exports = {
     SUPPORTED_TRACKERS,
     unlockAchievementsForValue,
-    recordGymTrainingAchievement
+    recordGymTrainingAchievement,
+    recordMissionCompletionAchievement
 };
