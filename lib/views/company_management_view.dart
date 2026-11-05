@@ -1046,7 +1046,7 @@ class _CompanyManagementViewState extends State<CompanyManagementView> {
         ...inputProducts.map((prod) {
           int id = prod['item_id'];
           int inStock = _safeInt(prod['quantity']);
-          int cost = _safeInt(prod['price_per_unit'], fallback: 2500);
+          final cost = int.tryParse(prod['price_per_unit']?.toString() ?? '');
           int orderTotal = _dynamicOrderTotals[id] ?? 0;
 
           return Container(
@@ -1064,7 +1064,10 @@ class _CompanyManagementViewState extends State<CompanyManagementView> {
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
                       const Text("Recorded Unit Price:", style: TextStyle(color: Colors.white54, fontSize: 11)),
-                      Text("\$${_formatNumber(cost)}", style: const TextStyle(color: Colors.white70, fontSize: 11, fontWeight: FontWeight.bold))
+                      Text(
+                        cost == null ? "UNRESOLVED" : "\${_formatNumber(cost)}",
+                        style: const TextStyle(color: Colors.white70, fontSize: 11, fontWeight: FontWeight.bold),
+                      )
                     ]
                 ),
                 const SizedBox(height: 16),
