@@ -120,6 +120,25 @@ multipliers.
 Therefore the client/backend recruit settlement is paused pending an explicit
 canonical decision.
 
+## Database trigger closure
+
+Final public trigger inventory contains four non-internal triggers:
+
+- immutable Casino Token spend ledger: UPDATE blocker;
+- immutable Casino Token spend ledger: DELETE blocker;
+- item-discovery record on positive inventory INSERT;
+- item-discovery record on positive inventory quantity UPDATE.
+
+The two trigger functions are SECURITY INVOKER, use an empty search_path, and
+are not directly executable by client roles.
+
+The discovery trigger only inserts the actor/item lifetime pair with
+ON CONFLICT DO NOTHING; it does not issue cash/items or infer historical
+discoveries.
+
+No hidden database trigger performs regeneration, payouts, market restocking or
+other gameplay settlement.
+
 ## Result
 
 The current Flutter surface no longer represents unresolved catalog economics
