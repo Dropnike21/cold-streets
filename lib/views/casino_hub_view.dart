@@ -1,199 +1,179 @@
+import 'dart:convert';
 import 'package:flutter/material.dart';
-import 'cas_perya.dart';
+import '../api_config.dart';
+import '../services/game_http.dart' as http;
 
 class CasinoHubView extends StatefulWidget {
   final Map<String, dynamic> userData;
   final Function(Map<String, dynamic>) onStateChange;
   final Function(int) onNavigate;
-  const CasinoHubView({super.key, required this.userData, required this.onStateChange, required this.onNavigate});
+
+  const CasinoHubView({
+    super.key,
+    required this.userData,
+    required this.onStateChange,
+    required this.onNavigate,
+  });
 
   @override
   State<CasinoHubView> createState() => _CasinoHubViewState();
 }
 
 class _CasinoHubViewState extends State<CasinoHubView> {
-  late int casinoTokens;
+  bool _loading = true;
+  String? _error;
+  Map<String, dynamic> _status = const {};
 
-  // --- MODULAR GAME CATALOGS ---
-  final List<Map<String, dynamic>> tokenGames = [
-    {'id': 'perya', 'name': 'Perya Color Game', 'icon': Icons.casino},
-    {'id': 'slots', 'name': 'Syndicate Slots', 'icon': Icons.games},
-    {'id': 'high_low', 'name': 'High-Low', 'icon': Icons.swap_vert},
-    {'id': 'blackjack_npc', 'name': 'Blackjack 21', 'icon': Icons.style},
-    {'id': 'scratchers', 'name': 'Scratchers', 'icon': Icons.receipt},
-  ];
-
-  final List<Map<String, dynamic>> vipGames = [
-    {'id': 'poker', 'name': 'Texas Hold\'em', 'icon': Icons.view_carousel},
-    {'id': 'roulette', 'name': 'Russian Roulette', 'icon': Icons.warning},
-    {'id': 'wager_board', 'name': 'Wager Board', 'icon': Icons.format_list_numbered},
-    {'id': 'liars_dice', 'name': 'Liar\'s Dice', 'icon': Icons.grid_view},
-    {'id': 'death_race', 'name': 'Chicken Race', 'icon': Icons.directions_car},
-    {'id': 'sabong', 'name': 'Pit Derby', 'icon': Icons.pets},
-    {'id': 'blackjack_pvp', 'name': 'Player Banked 21', 'icon': Icons.monetization_on},
-    {'id': 'baccarat', 'name': 'Baccarat', 'icon': Icons.account_balance},
-  ];
-
-  int _parseSafeInt(dynamic value) {
-    if (value == null) return 0;
-    if (value is int) return value;
-    if (value is double) return value.toInt();
-    if (value is String) return int.tryParse(value) ?? 0;
-    return 0;
-  }
+  int _intValue(dynamic value) =>
+      value is int ? value : int.tryParse(value?.toString() ?? '') ?? 0;
 
   @override
   void initState() {
     super.initState();
-    _syncState();
+    _fetchStatus();
   }
 
-  void _syncState() {
-    casinoTokens = _parseSafeInt(widget.userData['casino_tokens']);
-    if (casinoTokens == 0) casinoTokens = 100; // Default daily mock
-  }
-
-  void _openGameModule(String gameId, String gameName) {
-    if (gameId == 'perya') {
-      widget.onNavigate(21); // This seamlessly swaps the view while keeping the top HUD!
-    } else if (gameId == 'slots') {
-      widget.onNavigate(22); // 👈 ADD THIS
-    } else if (gameId == 'high_low') {
-      widget.onNavigate(23); // 👈 ADD THIS
-    }else {
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("$gameName is still under construction."), backgroundColor: Colors.white24));
+  Future<void> _fetchStatus() async {
+    try {
+      final response = await http.get(
+        Uri.parse('${ApiConfig.baseUrl}/casino/status'),
+      );
+      final data = Map<String, dynamic>.from(jsonDecode(response.body) as Map);
+      if (!mounted) return;
+      if (response.statusCode == 200) {
+        setState(() {
+          _status = data;
+          _error = null;
+          _loading = false;
+        });
+      } else {
+        setState(() {
+          _error = data['error']?.toString() ?? 'Casino status unavailable.';
+          _loading = false;
+        });
+      }
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _error = 'Casino status unavailable.';
+        _loading = false;
+      });
     }
   }
 
   @override
   Widget build(BuildContext context) {
+    final balance = _intValue(_status['token_balance']);
+    final cap = _intValue(_status['effective_daily_token_spend_cap']);
+    final spent = _intValue(_status['spent_today']);
+    final remaining = _intValue(_status['remaining_daily_spend']);
+    final vip = _status['vip_benefits_active'] == true;
+    final subscriber = _status['subscriber_active'] == true;
+
     return Scaffold(
       backgroundColor: const Color(0xFF121212),
       appBar: AppBar(
-        backgroundColor: Colors.black, elevation: 0, titleSpacing: 16, centerTitle: false,
-        title: const Text("THE UNDERGROUND", style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, letterSpacing: 1.5, fontSize: 16)),
-        iconTheme: const IconThemeData(color: Color(0xFF39FF14)),
-        actions: [
-          Padding(
-            padding: const EdgeInsets.only(right: 16.0, top: 12, bottom: 12),
-            child: _buildWalletBadge("DAILY TOKENS", "$casinoTokens / 100", Colors.cyanAccent),
-          )
-        ],
-      ),
-      body: SingleChildScrollView(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            _buildCategorySection(
-              title: "PVS (PLAYER VS SYSTEM)",
-              subtitle: "SYSTEM BANKED. BET TOKENS OR DIRTY CASH, WIN CLEAN CASH.",
-              accentColor: Colors.cyanAccent,
-              games: tokenGames,
-            ),
-            const SizedBox(height: 32),
-            _buildCategorySection(
-              title: "PVP (PLAYER VS PLAYER)",
-              subtitle: "HIGH STAKES PvP. 1% TAX UNDER \$10M. 3% TAX ON \$10M+.",
-              accentColor: Colors.redAccent,
-              games: vipGames,
-            ),
-            const SizedBox(height: 40),
-          ],
-        ),
-      ),
-    );
-  }
-
-  // --- UI COMPONENTS ---
-  Widget _buildWalletBadge(String label, String value, Color color) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 0),
-      decoration: BoxDecoration(
-          color: const Color(0xFF1A1A1A),
-          borderRadius: BorderRadius.circular(6),
-          border: Border.all(color: color.withOpacity(0.3))
-      ),
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Text(label, style: TextStyle(color: color.withOpacity(0.7), fontSize: 8, fontWeight: FontWeight.bold, letterSpacing: 1)),
-          const SizedBox(height: 2),
-          Text(value, style: TextStyle(color: color, fontSize: 12, fontWeight: FontWeight.w900)),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildCategorySection({required String title, required String subtitle, required Color accentColor, required List<Map<String, dynamic>> games}) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Row(
-          children: [
-            Icon(Icons.stop, color: accentColor, size: 16),
-            const SizedBox(width: 8),
-            Text(title, style: const TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.w900, letterSpacing: 2)),
-          ],
-        ),
-        Padding(
-          padding: const EdgeInsets.only(left: 24.0, top: 2, bottom: 16),
-          child: Text(subtitle, style: TextStyle(color: Colors.grey[600], fontSize: 9, fontWeight: FontWeight.bold, letterSpacing: 1)),
-        ),
-
-        GridView.builder(
-          shrinkWrap: true,
-          physics: const NeverScrollableScrollPhysics(),
-          gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-            crossAxisCount: 3,
-            crossAxisSpacing: 12,
-            mainAxisSpacing: 12,
-            childAspectRatio: 1.0,
+        backgroundColor: Colors.black,
+        elevation: 0,
+        titleSpacing: 16,
+        centerTitle: false,
+        title: const Text(
+          'THE UNDERGROUND',
+          style: TextStyle(
+            color: Colors.white,
+            fontWeight: FontWeight.bold,
+            letterSpacing: 1.5,
+            fontSize: 16,
           ),
-          itemCount: games.length,
-          itemBuilder: (context, index) {
-            var game = games[index];
-            return _buildGridCard(game, accentColor);
-          },
         ),
-      ],
+        actions: [
+          IconButton(
+            onPressed: _loading ? null : _fetchStatus,
+            icon: const Icon(Icons.refresh, color: Colors.cyanAccent),
+          ),
+        ],
+      ),
+      body: _loading
+          ? const Center(
+              child: CircularProgressIndicator(color: Colors.cyanAccent),
+            )
+          : SingleChildScrollView(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  if (_error != null)
+                    _panel(
+                      'CASINO STATUS',
+                      _error!,
+                      Colors.redAccent,
+                    )
+                  else ...[
+                    _panel(
+                      'CASINO TOKENS',
+                      '$balance available • $spent spent today • $remaining remaining of $cap',
+                      Colors.cyanAccent,
+                    ),
+                    const SizedBox(height: 12),
+                    _panel(
+                      'PREMIUM STATUS',
+                      subscriber
+                          ? 'Subscriber active. VIP-level Casino cap applies.'
+                          : vip
+                              ? 'VIP-level Casino benefits active.'
+                              : 'Standard Casino daily spend cap applies.',
+                      Colors.amberAccent,
+                    ),
+                  ],
+                  const SizedBox(height: 24),
+                  _panel(
+                    'PLAYER VS SYSTEM — PAUSED',
+                    'Perya Color Game, Syndicate Slots and High-Low are recognized Token Games, but gameplay remains disabled until their paytables, issuance and settlement rules are fully reconciled.',
+                    Colors.white54,
+                  ),
+                  const SizedBox(height: 12),
+                  _panel(
+                    'PLAYER VS PLAYER — PAUSED',
+                    'PvP Casino settlement remains disabled until authoritative escrow, matchmaking, payout and rake interactions are complete.',
+                    Colors.white54,
+                  ),
+                ],
+              ),
+            ),
     );
   }
 
-  Widget _buildGridCard(Map<String, dynamic> game, Color accentColor) {
+  Widget _panel(String title, String body, Color accent) {
     return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
         color: const Color(0xFF1A1A1A),
-        border: Border.all(color: Colors.white12),
+        border: Border.all(color: accent.withValues(alpha: 0.45)),
         borderRadius: BorderRadius.circular(8),
       ),
-      child: Material(
-        color: Colors.transparent,
-        child: InkWell(
-          borderRadius: BorderRadius.circular(8),
-          onTap: () => _openGameModule(game['id'], game['name']),
-          child: Padding(
-            padding: const EdgeInsets.all(12.0),
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              crossAxisAlignment: CrossAxisAlignment.center,
-              children: [
-                Container(
-                  padding: const EdgeInsets.all(12),
-                  decoration: BoxDecoration(color: const Color(0xFF121212), shape: BoxShape.circle, border: Border.all(color: accentColor.withOpacity(0.3))),
-                  child: Icon(game['icon'], color: accentColor, size: 24),
-                ),
-                const SizedBox(height: 12),
-                Text(
-                  game['name'].toString().toUpperCase(),
-                  textAlign: TextAlign.center,
-                  style: const TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.w900, letterSpacing: 0.5),
-                  maxLines: 2, overflow: TextOverflow.ellipsis,
-                ),
-              ],
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            title,
+            style: TextStyle(
+              color: accent,
+              fontSize: 11,
+              fontWeight: FontWeight.w900,
+              letterSpacing: 1,
             ),
           ),
-        ),
+          const SizedBox(height: 8),
+          Text(
+            body,
+            style: const TextStyle(
+              color: Colors.white70,
+              fontSize: 11,
+              height: 1.45,
+            ),
+          ),
+        ],
       ),
     );
   }
