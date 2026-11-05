@@ -450,7 +450,7 @@ mixin MainHubLogic on State<MainHub> {
         icon = Icons.house; break;
       case 'nav_9':
         title = "ACHIEVEMENTS";
-        body = "Your street cred. Hit major milestones in crimes, combat, and wealth to earn permanent stat boosts and unique titles.";
+        body = "Lifetime milestones across the city. Progress is shown only for achievement categories backed by authoritative server telemetry.";
         icon = Icons.military_tech; break;
       case 'nav_24':
         title = "CITY MAP";
@@ -470,7 +470,7 @@ mixin MainHubLogic on State<MainHub> {
         icon = Icons.gavel; break;
       case 'nav_6':
         title = "CREDIT BROKER";
-        body = "The underground market. Trade premium Credits with other players, buy restricted items, and check the fluctuating market rates.";
+        body = "A recovered long-term progression catalog. Cred balance and upgrade definitions are visible, but earning rules, pricing, and upgrade effects are still being reconciled, so purchases are paused.";
         icon = Icons.diamond; break;
       case 'nav_3':
         title = "THE SYNDICATE";
