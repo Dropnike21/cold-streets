@@ -23,7 +23,7 @@ async function getPremiumStatus(client, userId) {
             ),
             client.query(
                 `SELECT subscription_tier, status, current_period_start,
-                        current_period_end, cancel_at_period_end, source_ref,
+                        current_period_end, cancel_at_period_end,
                         (
                           status = 'active'
                           AND current_period_start <= NOW()
@@ -34,7 +34,7 @@ async function getPremiumStatus(client, userId) {
                 [userId]
             ),
             client.query(
-                `SELECT benefit_tier, starts_at, ends_at, source_type, source_ref
+                `SELECT benefit_tier, starts_at, ends_at, source_type
                    FROM user_premium_entitlements
                   WHERE user_id = $1
                     AND starts_at <= NOW()
