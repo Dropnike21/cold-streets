@@ -6,7 +6,7 @@ const { requireIdempotencyKey, beginIdempotent, completeIdempotent } = require('
 const { refreshUniqueItemDiscoveryAchievements } = require('../utils/achievement_engine');
 const {
     BASE_CITY_MARKET_DAILY_ITEM_LIMIT,
-    SUBSCRIBER_CITY_MARKET_BONUS_PERCENT,
+    SUBSCRIBER_CITY_MARKET_BONUS_ITEMS,
     SUBSCRIBER_CITY_MARKET_DAILY_ITEM_LIMIT,
     getPremiumStatus
 } = require('../utils/premiumEntitlements');
@@ -44,7 +44,7 @@ function fixMalformedEffects(str) {
 
 // --- CITY NPC MARKET DAILY USAGE ---
 // The recovered source defines a 100-item base daily cap for city NPC markets.
-// User-defined Subscriber semantics add +20%, producing a 120-item effective
+// User-defined Subscriber semantics add +20 items, producing a 120-item effective
 // cap while the subscription period is active. CURRENT_DATE remains the
 // deterministic database calendar-day boundary.
 router.get('/status', async (req, res) => {
@@ -77,8 +77,8 @@ router.get('/status', async (req, res) => {
             reset_boundary: 'database_calendar_day',
             base_daily_item_limit:
                 exactJsonAmount(BASE_CITY_MARKET_DAILY_ITEM_LIMIT),
-            subscriber_bonus_percent:
-                exactJsonAmount(SUBSCRIBER_CITY_MARKET_BONUS_PERCENT),
+            subscriber_bonus_items:
+                exactJsonAmount(SUBSCRIBER_CITY_MARKET_BONUS_ITEMS),
             subscriber_active: premium.subscriberActive,
             daily_item_limit: exactJsonAmount(dailyLimit),
             purchased_today: exactJsonAmount(purchased),
@@ -291,8 +291,8 @@ router.post('/buy-bulk', async (req, res) => {
             total_cost: exactJsonAmount(totalCost),
             base_daily_item_limit:
                 exactJsonAmount(BASE_CITY_MARKET_DAILY_ITEM_LIMIT),
-            subscriber_bonus_percent:
-                exactJsonAmount(SUBSCRIBER_CITY_MARKET_BONUS_PERCENT),
+            subscriber_bonus_items:
+                exactJsonAmount(SUBSCRIBER_CITY_MARKET_BONUS_ITEMS),
             subscriber_active: premium.subscriberActive,
             daily_item_limit: exactJsonAmount(dailyLimit),
             purchased_today: exactJsonAmount(purchasedToday + totalQty),
