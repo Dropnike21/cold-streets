@@ -295,6 +295,35 @@ if (gameplayEnabled) {
         throw new Error('Remote staging requires encrypted database connections.');
     }
 
+    let authProjectUrl;
+    try {
+        authProjectUrl = new URL(process.env.SUPABASE_URL);
+    } catch {
+        throw new Error('SUPABASE_URL must be a valid HTTPS project origin.');
+    }
+    if (
+        authProjectUrl.protocol !== 'https:' ||
+        authProjectUrl.username ||
+        authProjectUrl.password ||
+        (authProjectUrl.pathname !== '/' && authProjectUrl.pathname !== '') ||
+        authProjectUrl.search ||
+        authProjectUrl.hash
+    ) {
+        throw new Error(
+            'SUPABASE_URL must be a bare HTTPS project origin.'
+        );
+    }
+
+    const publishableKey = process.env.SUPABASE_PUBLISHABLE_KEY;
+    if (
+        publishableKey.startsWith('sb_secret_') ||
+        publishableKey.toLowerCase().includes('service_role')
+    ) {
+        throw new Error(
+            'SUPABASE_PUBLISHABLE_KEY must not contain a secret/service-role key.'
+        );
+    }
+
     void bootstrapGameplayRuntime();
 }
 
