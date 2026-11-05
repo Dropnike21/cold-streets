@@ -266,86 +266,191 @@ router.post('/interview/submit', async (req, res) => {
     let client, transaction = false;
     try {
         const userId = actorId(req);
+        const idempotencyKey = requireIdempotencyKey(req);
         const interviewId = req.body?.interview_id;
         if (typeof interviewId !== 'string' ||
             !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(interviewId)) {
             throw new ActionError(400, 'Invalid interview session.');
         }
+
         const answers = req.body?.answers;
         if (!Array.isArray(answers) || answers.length !== 5) {
-            throw new ActionError(400, 'Exactly five interview answers are required.');
+            throw new ActionError(
+                400,
+                'Exactly five interview answers are required.'
+            );
         }
+
         const normalized = answers.map(answer => ({
             questionId: integer(answer?.question_id, {
-                field: 'Question ID', min: 1n, max: 9223372036854775807n
+                field: 'Question ID',
+                min: 1n,
+                max: 9223372036854775807n
             }).toString(),
             selectedIndex: Number(answer?.selected_index)
         }));
-        if (normalized.some(a => !Number.isInteger(a.selectedIndex) || a.selectedIndex < 0 || a.selectedIndex > 3)) {
+
+        if (normalized.some(answer =>
+            !Number.isInteger(answer.selectedIndex) ||
+            answer.selectedIndex < 0 ||
+            answer.selectedIndex > 3)) {
             throw new ActionError(400, 'Invalid interview answer index.');
         }
-        if (new Set(normalized.map(a => a.questionId)).size !== 5) {
-            throw new ActionError(400, 'Interview questions must be answered once each.');
+        if (new Set(normalized.map(answer => answer.questionId)).size !== 5) {
+            throw new ActionError(
+                400,
+                'Interview questions must be answered once each.'
+            );
         }
+
+        const canonicalAnswers = [...normalized].sort((a, b) => {
+            const aId = BigInt(a.questionId);
+            const bId = BigInt(b.questionId);
+            return aId < bId ? -1 : aId > bId ? 1 : 0;
+        });
 
         client = await pool.connect();
         await client.query('BEGIN');
         transaction = true;
+
+        // Replay must be resolved before employment/session-state checks,
+        // otherwise a successful retry would look already employed/consumed.
         const player = await client.query(
-            'SELECT current_job_id FROM users WHERE user_id = $1 FOR UPDATE', [userId]
-        );
-        if (player.rowCount !== 1) throw new ActionError(404, 'Player not found.');
-        if (player.rows[0].current_job_id !== null) {
-            throw new ActionError(409, 'You are already employed in a City Job.');
-        }
-        const company = await client.query(
-            'SELECT 1 FROM company_employees WHERE employee_id = $1 AND is_npc = false LIMIT 1',
+            'SELECT current_job_id FROM users WHERE user_id = $1 FOR UPDATE',
             [userId]
         );
-        if (company.rowCount) throw new ActionError(409, 'You are already employed in the private sector.');
+        if (player.rowCount !== 1) {
+            throw new ActionError(404, 'Player not found.');
+        }
+
+        const idem = await beginIdempotent(
+            client,
+            userId,
+            'jobs.interview_submit',
+            idempotencyKey,
+            {
+                interviewId: interviewId.toLowerCase(),
+                answers: canonicalAnswers
+            }
+        );
+        if (idem.replay) {
+            await client.query('COMMIT');
+            transaction = false;
+            return res.status(idem.status).json(idem.response);
+        }
+
+        if (player.rows[0].current_job_id !== null) {
+            throw new ActionError(
+                409,
+                'You are already employed in a City Job.'
+            );
+        }
+
+        const company = await client.query(
+            `SELECT 1
+               FROM company_employees
+              WHERE employee_id = $1
+                AND is_npc = false
+              LIMIT 1`,
+            [userId]
+        );
+        if (company.rowCount) {
+            throw new ActionError(
+                409,
+                'You are already employed in the private sector.'
+            );
+        }
 
         const session = await client.query(
             `SELECT job_id, question_ids
                FROM job_interview_sessions
-              WHERE interview_id = $1::uuid AND user_id = $2
-                AND consumed_at IS NULL AND expires_at > NOW()
+              WHERE interview_id = $1::uuid
+                AND user_id = $2
+                AND consumed_at IS NULL
+                AND expires_at > NOW()
               FOR UPDATE`,
             [interviewId, userId]
         );
         if (session.rowCount !== 1) {
-            throw new ActionError(409, 'Interview session expired or already submitted.');
+            throw new ActionError(
+                409,
+                'Interview session expired or already submitted.'
+            );
         }
+
         const jobId = String(session.rows[0].job_id);
-        const issued = new Set((session.rows[0].question_ids || []).map(String));
-        if (issued.size !== 5 || normalized.some(a => !issued.has(a.questionId))) {
-            throw new ActionError(400, 'Answers do not match the issued interview.');
+        const issued = new Set(
+            (session.rows[0].question_ids || []).map(String)
+        );
+        if (issued.size !== 5 ||
+            normalized.some(answer => !issued.has(answer.questionId))) {
+            throw new ActionError(
+                400,
+                'Answers do not match the issued interview.'
+            );
         }
 
         const questions = await client.query(
             `SELECT question_id, correct_index
                FROM job_interviews
-              WHERE job_id = $1 AND question_id = ANY($2::bigint[])`,
+              WHERE job_id = $1
+                AND question_id = ANY($2::bigint[])`,
             [jobId, [...issued]]
         );
-        if (questions.rowCount !== 5) throw new Error('Interview catalog changed during session.');
-        const correct = new Map(questions.rows.map(row => [String(row.question_id), Number(row.correct_index)]));
+        if (questions.rowCount !== 5) {
+            throw new Error('Interview catalog changed during session.');
+        }
+
+        const correct = new Map(
+            questions.rows.map(row => [
+                String(row.question_id),
+                Number(row.correct_index)
+            ])
+        );
         const correctCount = normalized.reduce(
-            (score, answer) => score + (correct.get(answer.questionId) === answer.selectedIndex ? 1 : 0),
+            (score, answer) =>
+                score +
+                (correct.get(answer.questionId) === answer.selectedIndex ? 1 : 0),
             0
         );
         const passed = correctCount >= 4;
 
-        await client.query(
-            'UPDATE job_interview_sessions SET consumed_at = NOW() WHERE interview_id = $1::uuid',
-            [interviewId]
+        const consumed = await client.query(
+            `UPDATE job_interview_sessions
+                SET consumed_at = NOW()
+              WHERE interview_id = $1::uuid
+                AND user_id = $2
+                AND consumed_at IS NULL
+              RETURNING consumed_at`,
+            [interviewId, userId]
         );
+        if (consumed.rowCount !== 1) {
+            throw new ActionError(
+                409,
+                'Interview session changed before settlement.'
+            );
+        }
+
         if (passed) {
-            await client.query(
-                'UPDATE users SET current_job_id = $1 WHERE user_id = $2',
+            const employed = await client.query(
+                `UPDATE users
+                    SET current_job_id = $1
+                  WHERE user_id = $2
+                    AND current_job_id IS NULL
+                  RETURNING current_job_id`,
                 [jobId, userId]
             );
+            if (employed.rowCount !== 1) {
+                throw new ActionError(
+                    409,
+                    'Employment state changed before interview settlement.'
+                );
+            }
+
             await client.query(
-                `INSERT INTO user_job_data (user_id, job_id, current_rank, ban_expiry)
+                `INSERT INTO user_job_data (
+                    user_id, job_id, current_rank, ban_expiry
+                 )
                  VALUES ($1, $2, 1, NULL)
                  ON CONFLICT (user_id, job_id)
                  DO UPDATE SET ban_expiry = NULL`,
@@ -360,22 +465,31 @@ router.post('/interview/submit', async (req, res) => {
                 [userId, jobId]
             );
         }
-        await client.query('COMMIT');
-        transaction = false;
-        return res.json({
+
+        const response = {
             success: true,
             passed,
             score: correctCount,
             message: passed
                 ? "Welcome to the team. Don't be late."
                 : 'We went with another candidate. Try again in 24 hours.'
-        });
+        };
+
+        await completeIdempotent(client, idem, 200, response);
+        await client.query('COMMIT');
+        transaction = false;
+        return res.status(200).json(response);
     } catch (err) {
         if (transaction) {
-            try { await client.query('ROLLBACK'); } catch (rollback) { console.error('Interview submit rollback:', rollback); }
+            try { await client.query('ROLLBACK'); }
+            catch (rollback) {
+                console.error('Interview submit rollback:', rollback);
+            }
         }
         return sendActionError(res, err, 'Interview submission failed:');
-    } finally { if (client) client.release(); }
+    } finally {
+        if (client) client.release();
+    }
 });
 
 // --- 4. CLAIM DAILY CITY JOB PAY ---
