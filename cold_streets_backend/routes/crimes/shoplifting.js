@@ -1,5 +1,6 @@
 const { trackAndCheckAchievement } = require('../../utils/achievement_engine');
 const { incrementKevinProgress } = require('../../utils/missionProgress');
+const { recordAnonymousCrimeSuccess } = require('../../utils/anonymousTutorial');
 const { randomPercent, randomInclusive, randomText, commitCrimeOutcome } = require('../../utils/crimeSettlement');
 const {
     getCrimePenaltyRule,
@@ -112,6 +113,7 @@ async function execute(client, user, crime, req, res) {
 
             await client.query("UPDATE user_crime_records SET total_crimes = total_crimes + 1, total_successes = total_successes + 1 WHERE user_id = $1", [user.user_id]);
             await incrementKevinProgress(client, user.user_id, 'crimes', 1);
+            await recordAnonymousCrimeSuccess(client, user.user_id, crime.sub_category);
             const response = {
                 status: "success",
                 message: getRandomText(flavor.success),
