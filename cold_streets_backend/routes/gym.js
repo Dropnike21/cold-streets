@@ -116,75 +116,193 @@ router.post('/purchase', async (req, res) => {
     let client, transaction = false;
     try {
         const userId = actorId(req);
-        const gymId = integer(req.body?.gym_id, { field: 'Gym ID', min: 1n, max: 9223372036854775807n }).toString();
+        const idempotencyKey = requireIdempotencyKey(req);
+        const gymId = integer(req.body?.gym_id, {
+            field: 'Gym ID', min: 1n, max: 9223372036854775807n
+        }).toString();
+
         client = await pool.connect();
         await client.query('BEGIN');
         transaction = true;
 
-        // User-first lock order matches bank, market, property and casino routes.
+        // Global mutation lock order: actor -> idempotency -> action resources.
         const user = await client.query(
-            'SELECT dirty_cash FROM users WHERE user_id = $1 FOR UPDATE', [userId]
+            'SELECT dirty_cash FROM users WHERE user_id = $1 FOR UPDATE',
+            [userId]
         );
-        if (user.rowCount !== 1) throw new ActionError(404, 'Player not found.');
+        if (user.rowCount !== 1) {
+            throw new ActionError(404, 'Player not found.');
+        }
+
+        const idem = await beginIdempotent(
+            client,
+            userId,
+            'gym.purchase',
+            idempotencyKey,
+            { gymId }
+        );
+        if (idem.replay) {
+            await client.query('COMMIT');
+            transaction = false;
+            return res.status(idem.status).json(idem.response);
+        }
+
         const owned = await client.query(
             'SELECT 1 FROM user_owned_gyms WHERE user_id = $1 AND gym_id = $2',
             [userId, gymId]
         );
-        if (owned.rowCount) throw new ActionError(409, 'Gym already owned.');
+        if (owned.rowCount) {
+            throw new ActionError(409, 'Gym already owned.');
+        }
 
         const gym = await client.query(
-            'SELECT unlock_cost FROM gyms_master WHERE gym_id = $1', [gymId]
+            'SELECT unlock_cost FROM gyms_master WHERE gym_id = $1',
+            [gymId]
         );
-        if (gym.rowCount !== 1) throw new ActionError(404, 'Gym not found.');
-        const cost = dbInteger(gym.rows[0].unlock_cost ?? 0, { field: 'Gym unlock cost' });
-        if (cost < 0n) throw new Error('Gym catalog has negative unlock cost.');
-        if (dbInteger(user.rows[0].dirty_cash) < cost) throw new ActionError(409, 'Insufficient Dirty Cash.');
+        if (gym.rowCount !== 1) {
+            throw new ActionError(404, 'Gym not found.');
+        }
+
+        const cost = dbInteger(gym.rows[0].unlock_cost ?? 0, {
+            field: 'Gym unlock cost'
+        });
+        if (cost < 0n) {
+            throw new Error('Gym catalog has negative unlock cost.');
+        }
+        if (dbInteger(user.rows[0].dirty_cash) < cost) {
+            throw new ActionError(409, 'Insufficient Dirty Cash.');
+        }
 
         const debit = await client.query(
-            'UPDATE users SET dirty_cash = dirty_cash - $1::numeric WHERE user_id = $2 AND dirty_cash >= $1::numeric RETURNING *',
+            `UPDATE users
+                SET dirty_cash = dirty_cash - $1::numeric
+              WHERE user_id = $2
+                AND dirty_cash >= $1::numeric
+              RETURNING *`,
             [cost.toString(), userId]
         );
-        if (debit.rowCount !== 1) throw new ActionError(409, 'Wallet changed before gym purchase.');
+        if (debit.rowCount !== 1) {
+            throw new ActionError(409, 'Wallet changed before gym purchase.');
+        }
+
         await client.query(
             'INSERT INTO user_owned_gyms (user_id, gym_id) VALUES ($1, $2)',
             [userId, gymId]
         );
-        await client.query(
-            'UPDATE user_gym_stats SET active_gym_id = $1 WHERE user_id = $2',
+
+        const activated = await client.query(
+            `UPDATE user_gym_stats
+                SET active_gym_id = $1
+              WHERE user_id = $2
+              RETURNING active_gym_id`,
             [gymId, userId]
         );
+        if (activated.rowCount !== 1) {
+            throw new Error('Gym statistics row missing.');
+        }
 
+        const response = {
+            success: true,
+            message: 'Membership activated!',
+            active_gym_id: activated.rows[0].active_gym_id,
+            user: debit.rows[0]
+        };
+
+        await completeIdempotent(client, idem, 200, response);
         await client.query('COMMIT');
         transaction = false;
-        return res.json({ success: true, message: 'Membership activated!', user: debit.rows[0] });
+        return res.status(200).json(response);
     } catch (err) {
         if (transaction) {
-            try { await client.query('ROLLBACK'); } catch (rollback) { console.error('Gym purchase rollback:', rollback); }
+            try { await client.query('ROLLBACK'); }
+            catch (rollback) { console.error('Gym purchase rollback:', rollback); }
         }
         return sendActionError(res, err, 'Gym purchase failed:');
-    } finally { if (client) client.release(); }
+    } finally {
+        if (client) client.release();
+    }
 });
 
 // --- 3. ACTIVATE AN OWNED GYM ---
 router.post('/activate', async (req, res) => {
+    let client, transaction = false;
     try {
         const userId = actorId(req);
+        const idempotencyKey = requireIdempotencyKey(req);
         const gymId = integer(req.body?.gym_id, {
             field: 'Gym ID', min: 1n, max: 9223372036854775807n
         }).toString();
-        const owned = await pool.query(
+
+        client = await pool.connect();
+        await client.query('BEGIN');
+        transaction = true;
+
+        const actor = await client.query(
+            'SELECT user_id FROM users WHERE user_id = $1 FOR UPDATE',
+            [userId]
+        );
+        if (actor.rowCount !== 1) {
+            throw new ActionError(404, 'Player not found.');
+        }
+
+        const idem = await beginIdempotent(
+            client,
+            userId,
+            'gym.activate',
+            idempotencyKey,
+            { gymId }
+        );
+        if (idem.replay) {
+            await client.query('COMMIT');
+            transaction = false;
+            return res.status(idem.status).json(idem.response);
+        }
+
+        const gymState = await client.query(
+            'SELECT active_gym_id FROM user_gym_stats WHERE user_id = $1 FOR UPDATE',
+            [userId]
+        );
+        if (gymState.rowCount !== 1) {
+            throw new Error('Gym statistics row missing.');
+        }
+
+        const owned = await client.query(
             'SELECT 1 FROM user_owned_gyms WHERE user_id = $1 AND gym_id = $2',
             [userId, gymId]
         );
-        if (!owned.rowCount) throw new ActionError(403, 'You do not own this gym.');
-        const updated = await pool.query(
-            'UPDATE user_gym_stats SET active_gym_id = $1 WHERE user_id = $2 RETURNING active_gym_id',
+        if (!owned.rowCount) {
+            throw new ActionError(403, 'You do not own this gym.');
+        }
+
+        const updated = await client.query(
+            `UPDATE user_gym_stats
+                SET active_gym_id = $1
+              WHERE user_id = $2
+              RETURNING active_gym_id`,
             [gymId, userId]
         );
-        if (updated.rowCount !== 1) throw new Error('Gym statistics row missing.');
-        return res.json({ success: true, message: 'Active gym switched.', active_gym_id: updated.rows[0].active_gym_id });
+        if (updated.rowCount !== 1) {
+            throw new Error('Gym statistics row missing.');
+        }
+
+        const response = {
+            success: true,
+            message: 'Active gym switched.',
+            active_gym_id: updated.rows[0].active_gym_id
+        };
+
+        await completeIdempotent(client, idem, 200, response);
+        await client.query('COMMIT');
+        transaction = false;
+        return res.status(200).json(response);
     } catch (err) {
+        if (transaction) {
+            try { await client.query('ROLLBACK'); }
+            catch (rollback) { console.error('Gym activation rollback:', rollback); }
+        }
         return sendActionError(res, err, 'Gym activation failed:');
+    } finally {
+        if (client) client.release();
     }
 });
 
@@ -192,13 +310,15 @@ router.post('/activate', async (req, res) => {
 router.post('/train', async (req, res) => {
     const validStats = ['str', 'def', 'dex', 'spd'];
     const statType = req.body?.stat_type;
-    if (!validStats.includes(statType)) return res.status(400).json({ error: 'Invalid stat.' });
+    if (!validStats.includes(statType)) {
+        return res.status(400).json({ error: 'Invalid stat.' });
+    }
 
     let client, transaction = false;
-    let userId, energySpent;
     try {
-        userId = actorId(req);
-        energySpent = integer(req.body?.energy_spent, {
+        const userId = actorId(req);
+        const idempotencyKey = requireIdempotencyKey(req);
+        const energySpent = integer(req.body?.energy_spent, {
             field: 'Energy spent', min: 1n, max: 10000n
         });
         const gymId = integer(req.body?.gym_id, {
@@ -210,41 +330,72 @@ router.post('/train', async (req, res) => {
         client = await pool.connect();
         await client.query('BEGIN');
         transaction = true;
+
         const user = await client.query(
-            'SELECT energy, exp, ' + statColumn + ' FROM users WHERE user_id = $1 FOR UPDATE',
+            'SELECT energy, exp, ' + statColumn +
+                ' FROM users WHERE user_id = $1 FOR UPDATE',
             [userId]
         );
-        if (user.rowCount !== 1) throw new ActionError(404, 'Player not found.');
+        if (user.rowCount !== 1) {
+            throw new ActionError(404, 'Player not found.');
+        }
+
+        const idem = await beginIdempotent(
+            client,
+            userId,
+            'gym.train',
+            idempotencyKey,
+            {
+                gymId,
+                statType,
+                energySpent: energySpent.toString()
+            }
+        );
+        if (idem.replay) {
+            await client.query('COMMIT');
+            transaction = false;
+            return res.status(idem.status).json(idem.response);
+        }
 
         const gymState = await client.query(
             'SELECT active_gym_id FROM user_gym_stats WHERE user_id = $1 FOR UPDATE',
             [userId]
         );
-        if (gymState.rowCount !== 1 || String(gymState.rows[0].active_gym_id) !== gymId) {
+        if (gymState.rowCount !== 1 ||
+            String(gymState.rows[0].active_gym_id) !== gymId) {
             throw new ActionError(409, 'Train only at your active gym.');
         }
+
         const owned = await client.query(
             'SELECT 1 FROM user_owned_gyms WHERE user_id = $1 AND gym_id = $2',
             [userId, gymId]
         );
-        if (!owned.rowCount) throw new ActionError(403, 'You do not own this gym membership.');
+        if (!owned.rowCount) {
+            throw new ActionError(403, 'You do not own this gym membership.');
+        }
 
         const energy = Number(user.rows[0].energy);
         const energyNumber = Number(energySpent);
         if (!Number.isFinite(energy) || energy < energyNumber) {
             throw new ActionError(409, 'Not enough energy.');
         }
+
         const gym = await client.query(
             'SELECT ' + percentColumn + ' FROM gyms_master WHERE gym_id = $1',
             [gymId]
         );
-        if (gym.rowCount !== 1) throw new ActionError(404, 'Gym catalog row missing.');
+        if (gym.rowCount !== 1) {
+            throw new ActionError(404, 'Gym catalog row missing.');
+        }
 
         const currentStat = Number(user.rows[0][statColumn]);
         const gymRate = Number(gym.rows[0][percentColumn] ?? 0);
-        if (!Number.isFinite(currentStat) || !Number.isFinite(gymRate) || gymRate < 0) {
+        if (!Number.isFinite(currentStat) ||
+            !Number.isFinite(gymRate) ||
+            gymRate < 0) {
             throw new Error('Gym catalog or player stat is invalid.');
         }
+
         const baseGain = (currentStat * gymRate) + GLOBAL_FLAT_RATE;
         const totalStatGain = Number((baseGain * energyNumber).toFixed(2));
         const playerExpGain = 5 * energyNumber;
@@ -259,29 +410,57 @@ router.post('/train', async (req, res) => {
              RETURNING *`,
             [energyNumber, playerExpGain, totalStatGain, userId]
         );
-        if (updatedUser.rowCount !== 1) throw new ActionError(409, 'Energy changed before training.');
+        if (updatedUser.rowCount !== 1) {
+            throw new ActionError(409, 'Energy changed before training.');
+        }
+
         const exp = await client.query(
-            'UPDATE user_gym_stats SET gym_exp = gym_exp + $1 WHERE user_id = $2 RETURNING gym_exp',
+            `UPDATE user_gym_stats
+                SET gym_exp = gym_exp + $1
+              WHERE user_id = $2
+              RETURNING gym_exp`,
             [gymExpGain, userId]
         );
-        if (exp.rowCount !== 1) throw new Error('Gym statistics row missing.');
+        if (exp.rowCount !== 1) {
+            throw new Error('Gym statistics row missing.');
+        }
 
         // Contract "gym" means one successful server-side training action,
         // independent of how much energy was spent in that action.
-        await recordAnonymousGymTraining(client, userId, statType, energySpent.toString());
-        await recordGymTrainingAchievement(client, userId, energySpent.toString());
+        await recordAnonymousGymTraining(
+            client,
+            userId,
+            statType,
+            energySpent.toString()
+        );
+        await recordGymTrainingAchievement(
+            client,
+            userId,
+            energySpent.toString()
+        );
+
+        const response = {
+            success: true,
+            gained: totalStatGain.toFixed(2),
+            user: {
+                ...updatedUser.rows[0],
+                gym_exp: exp.rows[0].gym_exp
+            }
+        };
+
+        await completeIdempotent(client, idem, 200, response);
         await client.query('COMMIT');
         transaction = false;
-
-        const payload = updatedUser.rows[0];
-        payload.gym_exp = exp.rows[0].gym_exp;
-        return res.json({ success: true, gained: totalStatGain.toFixed(2), user: payload });
+        return res.status(200).json(response);
     } catch (err) {
         if (transaction) {
-            try { await client.query('ROLLBACK'); } catch (rollback) { console.error('Gym train rollback:', rollback); }
+            try { await client.query('ROLLBACK'); }
+            catch (rollback) { console.error('Gym train rollback:', rollback); }
         }
         return sendActionError(res, err, 'Gym training failed:');
-    } finally { if (client) client.release(); }
+    } finally {
+        if (client) client.release();
+    }
 });
 
 module.exports = router;
