@@ -3,130 +3,130 @@
 ## Scope
 
 This pass advances the Player Bazaar / Trade Network to an authenticated,
-read-only listing preflight.
+read-only listing preflight for two canonical asset namespaces:
 
-It does **not** reserve inventory, create a listing, choose a settlement
-currency, charge a fee, transfer an item, or issue seller proceeds.
+- ordinary recovered items;
+- premium packs.
+
+It does **not** reserve inventory, create a listing, choose settlement currency,
+charge a fee, transfer an asset, or issue seller proceeds.
 
 No runtime/gameplay/build tests or deployment were performed.
 
-## Source-backed facts
+## Source / owner-defined facts
 
 Recovered project sources establish:
 
-- `items_master.is_tradable` is the canonical per-item participation flag;
+- `items_master.is_tradable` controls normal item participation;
 - the Player Bazaar exists;
-- the NPC city-market 100-item daily purchase limit does **not** apply to the
-  Player Bazaar.
+- the city NPC market daily purchase cap does not apply to the Player Bazaar.
 
-Recovered sources do not establish:
+The project owner further established:
 
-- whether Bazaar settlement uses Dirty Cash or Clean Cash;
-- listing fee/tax;
-- partial-fill rules;
-- listing expiry;
-- seller proceeds timing;
-- whether `users.has_bazaar` is a hard access gate;
-- whether an equipped item can be listed.
+- VIP Pack is a tradable premium asset;
+- Kingpin Pack is a separate tradable premium asset;
+- a player may hold/sell a pack instead of consuming it.
 
-Those unresolved mechanics remain fail-closed.
+Premium packs use `premium_pack_catalog.is_tradable` and
+`user_premium_pack_inventory`; they are not mapped onto legacy numeric
+`items_master` IDs.
 
-## Existing escrow foundation
+## Asset-aware escrow schema
 
-The existing `trade_listings` table already supports:
+Migration:
 
-- seller and item foreign keys;
-- positive total quantity;
-- bounded remaining quantity;
-- optional exact-integer asking price;
-- optional Dirty/Clean settlement currency;
-- draft/open/reserved/closed/cancelled/voided lifecycle;
-- open/reserved rows requiring both price and currency.
+`20261105090121_trade_asset_namespace_20261105.sql`
 
-Direct client access remains disabled:
+extends `trade_listings` with:
 
-- RLS enabled;
-- anon SELECT: false;
-- authenticated SELECT: false;
-- authenticated INSERT: false.
+- `asset_namespace` = `item` or `premium_pack`;
+- nullable `item_id`;
+- nullable `premium_pack_key`;
+- a database check requiring exactly the identity appropriate to the namespace.
 
-Development state at reconciliation: 0 listing rows.
+Existing ordinary item listings remain compatible through the default
+`asset_namespace = 'item'`.
 
-The schema is therefore a future escrow substrate, not an active marketplace.
+The development table was empty when this migration was applied.
+
+The listing/event tables remain server-only with RLS/direct-access protections.
+
+## Trade read model
+
+The Trade Network now returns:
+
+- tradable ordinary inventory;
+- tradable premium-pack inventory;
+- owned quantity;
+- premium-pack reserved quantity;
+- existing seller listings from either namespace;
+- explicit paused settlement state.
+
+VIP Pack and Kingpin Pack can therefore be represented as Bazaar assets without
+pretending they are recovered ordinary items.
 
 ## Listing preflight
 
 `POST /trade-network/listing-preflight`
 
-Accepted client intent is limited to:
+### Regular item intent
 
+Accepted shape:
+
+- optional/default `asset_namespace = item`;
 - `item_id`;
 - `quantity`.
 
-The authenticated actor comes from the verified session.
+Checks:
 
-The endpoint reads:
+- item is owned;
+- quantity is sufficient;
+- `items_master.is_tradable = true`;
+- item is not currently equipped.
 
-- current owned quantity;
-- canonical item identity and metadata;
-- `is_tradable`;
-- current equipment state;
-- current nonterminal listing rows for the same item;
-- the existing `has_bazaar` flag.
+### Premium pack intent
 
-It returns an inventory snapshot and explicit blockers.
+Accepted shape:
 
-### Fail-closed checks
+- `asset_namespace = premium_pack`;
+- `pack_key`;
+- `quantity`.
 
-The inventory snapshot is considered ready only when:
+Checks:
 
-1. the item is in the actor's inventory;
-2. quantity is positive and sufficient;
-3. the canonical catalog marks the item tradable;
-4. the item is not currently equipped.
+- pack is owned;
+- requested quantity does not exceed
+  `quantity - reserved_quantity`;
+- `premium_pack_catalog.is_tradable = true`.
 
-Equipped items are blocked because source semantics for equipped-item listing are
-not explicit.
+No ordinary item ID is accepted for premium-pack intent and no premium pack key
+is accepted for ordinary-item intent.
 
 ## Existing listing rows
 
-The preflight reports existing draft/open/reserved quantity but does **not**
-subtract it from owned inventory or call it reserved.
+Preflight reports nonterminal draft/open/reserved listing rows for the exact
+asset namespace + identity.
 
-The current escrow design says a future authoritative listing mutation should
-atomically debit/reserve inventory. Until that mutation exists, treating a
-listing row itself as physical reservation would invent semantics.
+It does not treat those rows as inventory reservation. A future mutation must
+atomically reserve/debit the relevant inventory namespace.
+
+Premium pack inventory already contains a `reserved_quantity` field so future
+market escrow can reserve packs without consuming them.
 
 ## Bazaar access flag
 
-`users.has_bazaar` is returned as diagnostic state only.
+`users.has_bazaar` remains diagnostic only.
 
-The source confirms the Player Bazaar exists and is unlimited by the NPC market
-daily cap, but does not define when/how `has_bazaar` becomes true or whether it
-must gate listing/buying.
+Recovered sources do not define how the flag is acquired or whether it must
+hard-gate listing/buying. It therefore neither authorizes nor rejects
+settlement in the preflight.
 
-Therefore:
+## Settlement remains fail-closed
 
-- `has_bazaar = false` does not create a fabricated authorization failure in
-  preflight;
-- `has_bazaar = true` does not authorize settlement;
-- actual listing/purchase mutations remain unavailable.
+Actual listing, purchase and cancellation stay 503 because the project still
+does not establish:
 
-## Snapshot boundary
-
-Preflight is intentionally non-locking and non-reserving.
-
-Inventory may change after the response. A future listing mutation must re-lock
-the authenticated player/inventory, revalidate all catalog/equipment state,
-reserve inventory atomically, and use persistent idempotency.
-
-The preflight response must never be treated as an authorization token.
-
-## Still blocked
-
-Before listing creation can open, project sources must resolve:
-
-1. settlement currency;
+1. Dirty Cash vs Clean Cash settlement;
 2. listing fee/tax;
 3. partial-fill semantics;
 4. listing expiry;
@@ -134,22 +134,38 @@ Before listing creation can open, project sources must resolve:
 6. Bazaar access semantics;
 7. equipped-item listing semantics.
 
-Purchase and cancellation remain paused as well.
+The generic deferred-payout contract remains available for future seller
+proceeds once these rules are reconciled.
+
+## Snapshot boundary
+
+Preflight is non-locking and non-reserving. A successful preflight is not an
+authorization token.
+
+A future listing mutation must:
+
+- authenticate the actor;
+- lock the correct inventory namespace;
+- revalidate catalog/tradability/equipment state;
+- reserve inventory atomically;
+- persist idempotency;
+- use exact integer quantities/prices;
+- create the listing/event rows in the same transaction.
 
 ## Verification boundary
 
 Performed:
 
-- recovered Bazaar source reconciliation;
-- trade listing schema/constraint inspection;
-- direct-access/RLS readback;
+- Bazaar and premium-pack rule reconciliation;
+- development asset-namespace schema update/readback;
+- direct-access/RLS review;
 - static backend readback.
 
 Not performed by instruction:
 
-- listing runtime tests;
-- inventory race/concurrency tests;
-- escrow integration tests;
-- Flutter analyze/build/widget tests;
+- listing/runtime tests;
+- escrow concurrency tests;
+- premium pack trading integration tests;
+- Flutter build/analyze tests;
 - deployment;
 - production changes.
