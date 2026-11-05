@@ -17,11 +17,6 @@ const { refreshUniqueItemDiscoveryAchievements } = require('../utils/achievement
 // from its recovered mastery definition.
 const JOB_SPECIALS = {};
 
-const CLEAN_EXIT_RETENTION_PERCENT = 50;
-const HEIST_PAYOUT_PER_RANK = 10000n;
-const HEIST_HEAT = 100;
-const HEIST_BAN_DAYS = 30n;
-
 // Only source/catalog tuples that completed this reconciliation pass may run.
 // The hashes bind the private recovered rule values to the catalog metadata
 // without copying the recovered payloads into the public repository.
@@ -165,9 +160,6 @@ router.get('/:user_id', async (req, res) => {
                 };
             });
 
-            const mappedRank = uData
-                ? dbInteger(uData.current_rank, { field: 'Job rank' })
-                : 1n;
             const isCurrent = user.current_job_id === job.job_id;
 
             return {
@@ -179,11 +171,10 @@ router.get('/:user_id', async (req, res) => {
                 is_current: isCurrent,
                 current_rank: uData ? uData.current_rank : 1,
                 resignation_preview: isCurrent ? {
-                    clean_exit_retention_percent: CLEAN_EXIT_RETENTION_PERCENT,
-                    heist_payout_dirty_cash:
-                        exactJsonAmount(mappedRank * HEIST_PAYOUT_PER_RANK),
-                    heist_heat: HEIST_HEAT,
-                    heist_ban_days: exactJsonAmount(HEIST_BAN_DAYS)
+                    settlement_available: false,
+                    status: 'paused_source_missing',
+                    reason:
+                        'City Job resignation retention, heist payout, Heat, and ban semantics are not defined by the recovered City Job source.'
                 } : null,
                 incentive_balance: uData ? uData.incentive_balance : 0,
                 is_mastered: uData ? uData.is_mastered : false,
@@ -846,101 +837,11 @@ router.post('/promote', async (req, res) => {
 
 // --- 5. RESIGN FROM JOB (CLEAN EXIT VS HEIST) ---
 
-router.post('/quit', async (req, res) => {
-    let client, transaction = false;
-    try {
-        const userId = actorId(req);
-        const idempotencyKey = requireIdempotencyKey(req);
-        const exitType = req.body?.exit_type;
-        if (!['clean', 'heist'].includes(exitType)) throw new ActionError(400, 'Invalid exit strategy.');
-
-        client = await pool.connect();
-        await client.query('BEGIN');
-        transaction = true;
-        const userRes = await client.query(
-            'SELECT current_job_id FROM users WHERE user_id = $1 FOR UPDATE', [userId]
-        );
-        if (userRes.rowCount !== 1) throw new ActionError(404, 'Player not found.');
-        const jobId = userRes.rows[0].current_job_id;
-        if (!jobId) throw new ActionError(409, 'You are already unemployed.');
-
-        const idem = await beginIdempotent(
-            client, userId, 'jobs.quit', idempotencyKey,
-            { jobId: String(jobId), exitType }
-        );
-        if (idem.replay) {
-            await client.query('COMMIT');
-            transaction = false;
-            return res.status(idem.status).json(idem.response);
-        }
-
-        const jobDataRes = await client.query(
-            `SELECT current_rank, incentive_balance
-               FROM user_job_data
-              WHERE user_id = $1 AND job_id = $2
-              FOR UPDATE`,
-            [userId, jobId]
-        );
-        if (jobDataRes.rowCount !== 1) throw new Error('Job progress row missing.');
-        const jobData = jobDataRes.rows[0];
-        let response;
-
-        if (exitType === 'clean') {
-            await client.query(
-                `UPDATE user_job_data
-                    SET incentive_balance = FLOOR(incentive_balance / 2)
-                  WHERE user_id = $1 AND job_id = $2`,
-                [userId, jobId]
-            );
-            await client.query(
-                'UPDATE users SET current_job_id = NULL WHERE user_id = $1',
-                [userId]
-            );
-            response = {
-                success: true,
-                message: 'Clean exit completed. 50% of Job Points were retained.'
-            };
-        } else {
-            const rank = integer(jobData.current_rank, {
-                field: 'Job rank', min: 1n, max: 100n
-            });
-            const payout = rank * HEIST_PAYOUT_PER_RANK;
-            await client.query(
-                `UPDATE user_job_data
-                    SET incentive_balance = 0,
-                        ban_expiry = NOW() +
-                            ($3::bigint * INTERVAL '1 day')
-                  WHERE user_id = $1 AND job_id = $2`,
-                [userId, jobId, HEIST_BAN_DAYS.toString()]
-            );
-            const wallet = await client.query(
-                `UPDATE users
-                    SET current_job_id = NULL,
-                        dirty_cash = dirty_cash + $1::numeric,
-                        heat = $2
-                  WHERE user_id = $3
-                  RETURNING dirty_cash, heat`,
-                [payout.toString(), HEIST_HEAT, userId]
-            );
-            response = {
-                success: true,
-                message: 'Heist resignation completed. Maximum heat and 30-day job ban applied.',
-                payout: exactJsonAmount(payout),
-                dirty_cash: wallet.rows[0].dirty_cash,
-                heat: wallet.rows[0].heat,
-                ban_days: exactJsonAmount(HEIST_BAN_DAYS)
-            };
-        }
-        await completeIdempotent(client, idem, 200, response);
-        await client.query('COMMIT');
-        transaction = false;
-        return res.json(response);
-    } catch (err) {
-        if (transaction) {
-            try { await client.query('ROLLBACK'); } catch (rollback) { console.error('Job resignation rollback:', rollback); }
-        }
-        return sendActionError(res, err, 'Job resignation failed:');
-    } finally { if (client) client.release(); }
+router.post('/quit', (_req, res) => {
+    return res.status(503).json({
+        error:
+            'City Job resignation is paused until clean-exit retention and Final Heist payout/Heat/ban semantics are selected canonically.'
+    });
 });
 
 // --- 6. CAREER MASTERY ACTIVE ---
