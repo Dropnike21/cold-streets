@@ -27,6 +27,23 @@ The development schema already enforces:
 
 No replacement balance constraint was added.
 
+## VIP status boundary
+
+The source establishes the gameplay effect of VIP Status (+50 to the Casino Token
+daily spend limit), but the current project has no canonical VIP purchase,
+subscription, grant, expiry, or revocation workflow.
+
+This pass adds only a server-owned `users.vip_status_active` boolean with a
+default of `false`.
+
+- direct client UPDATE access to `users` is already revoked;
+- no API route may activate VIP;
+- no payment or account state is inferred as VIP;
+- future monetization/account work must explicitly own activation semantics.
+
+Therefore the 150/day cap is available only when authoritative server-side VIP
+state exists; otherwise the effective cap is 100/day.
+
 ## Immutable spend ledger
 
 Migration:
