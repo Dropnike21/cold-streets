@@ -1,3 +1,4 @@
+const logger = require('../utils/logger');
 const express = require('express');
 const pool = require('../db');
 const {
@@ -203,7 +204,7 @@ router.post('/tutorial/visit', async (req, res) => {
     } catch (error) {
         if (transaction) {
             try { await client.query('ROLLBACK'); }
-            catch (rollback) { console.error('Tutorial visit rollback failed:', rollback); }
+            catch (rollback) { logger.error('tutorial_visit_rollback_failed', logger.errorFields(rollback)); }
         }
         return sendActionError(res, error, 'Tutorial visit failed:');
     } finally {
@@ -349,7 +350,7 @@ router.post('/action', async (req, res) => {
     } catch (error) {
         if (transaction) {
             try { await client.query('ROLLBACK'); }
-            catch (rollback) { console.error('Mission rollback failed:', rollback); }
+            catch (rollback) { logger.error('mission_rollback_failed', logger.errorFields(rollback)); }
         }
         return sendActionError(res, error, 'Mission action failure:');
     } finally {
