@@ -153,74 +153,18 @@ class _CrimesPickpocketViewState extends State<CrimesPickpocketView> {
   }
 
   Future<void> _executeCrime(Map<String, dynamic> target) async {
-    if (_isExecuting) return;
-
-    setState(() {
-      _executingTarget = target; // Lock onto them for the terminal UI
-      _isExecuting = true;
-      _lastResult = null;
-    });
-
-    if (widget.userData['nerve'] < target['nerve_cost']) {
-      setState(() => _isExecuting = false);
-      _lastResult = {'status': 'ERROR', 'color': Colors.purpleAccent, 'message': 'Insufficient Nerve.', 'data': 'Abort operation.'};
-      return;
-    }
-
-    await Future.delayed(const Duration(milliseconds: 800));
     if (!mounted) return;
-
-    int targetIndex = _activeTargets.indexWhere((t) => t['instance_id'] == target['instance_id']);
-
-    if (targetIndex == -1) {
-      setState(() {
-        _isExecuting = false;
-        _lastResult = {'status': 'MISSED', 'color': Colors.grey, 'message': 'Target blended into the crowd.', 'data': 'You were too slow.'};
-      });
-      return;
-    }
-
-    _removeTargetWithAnimation(targetIndex);
-
-    try {
-      final response = await http.post(
-        Uri.parse('${ApiConfig.baseUrl}/crimes/execute'),
-        headers: {"Content-Type": "application/json"},
-        body: jsonEncode({
-          "crime_id": target['id'],
-          "activity_name": target['activity']['name']
-        }),
-      );
-
-      if (!mounted) return;
-      final result = jsonDecode(response.body);
-
-      if (result['user'] != null) widget.onStateChange(result['user']);
-
-      setState(() {
-        _isExecuting = false;
-        if (response.statusCode == 200) {
-          if (result['arrested'] == true) {
-            _lastResult = {'status': 'BUSTED', 'color': Colors.redAccent, 'message': '100% HEAT REACHED.', 'data': result['message']};
-          } else {
-            switch (result['status']) {
-              case "success": _lastResult = {'status': 'SUCCESS', 'color': const Color(0xFF39FF14), 'message': result['message'], 'data': '+\$${result['gained_cash'].toString().replaceAllMapped(RegExp(r'(\d{1,3})(?=(\d{3})+(?!\d))'), (Match m) => '${m[1]},')} DIRTY CASH'}; break;
-              case "escaped": _lastResult = {'status': 'ESCAPED', 'color': Colors.yellowAccent, 'message': 'Target checked their pockets. You aborted.', 'data': result['message']}; break;
-              case "hospitalized": _lastResult = {'status': 'HOSPITALIZED', 'color': Colors.orangeAccent, 'message': 'Target fought back violently.', 'data': result['message']}; break;
-              case "jailed": _lastResult = {'status': 'BUSTED', 'color': Colors.redAccent, 'message': 'You were caught red-handed.', 'data': result['message']}; break;
-            }
-          }
-        } else {
-          _lastResult = {'status': 'ERROR', 'color': Colors.redAccent, 'message': 'System failure.', 'data': result['error'] ?? "Unknown error."};
-        }
-      });
-    } catch (e) {
-      if (!mounted) return;
-      setState(() {
-        _isExecuting = false;
-        _lastResult = {'status': 'CONNECTION LOST', 'color': Colors.redAccent, 'message': 'Server timeout.', 'data': 'Check your connection.'};
-      });
-    }
+    setState(() {
+      _executingTarget = null;
+      _isExecuting = false;
+      _lastResult = {
+        'status': 'PAUSED',
+        'color': Colors.amber,
+        'message': 'Pickpocket execution is temporarily disabled.',
+        'data':
+            'Target activity must be issued and persisted by the server before success modifiers can be authoritative.'
+      };
+    });
   }
 
   @override
