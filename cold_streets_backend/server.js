@@ -3,6 +3,7 @@ const cors = require('cors');
 const pool = require('./db');
 const { requireAuthenticatedPlayer } = require('./middleware/playerIdentity');
 const { startCrewCrimeWorker } = require('./workers/crewCrimeWorker');
+const { startStateDurationWorker } = require('./workers/stateDurationWorker');
 
 require('dotenv').config();
 
@@ -49,6 +50,8 @@ if (gameplayEnabled) {
           console.log('Cold Streets staging database connection established.');
           startCrewCrimeWorker();
           console.log('Crew crime scheduler started.');
+          startStateDurationWorker();
+          console.log('State duration telemetry worker started.');
       })
       .catch(err => console.error('Staging database connection failed:', err.message));
 }
@@ -89,6 +92,9 @@ app.use('/market', require('./routes/market'));
 app.use('/syndicate', require('./routes/syndicate'));
 app.use('/gym', require('./routes/gym')); // The normal gym
 app.use('/jobs', require('./routes/jobs'));
+// Mount the specific audit route before the generic companies router so no
+// future parameterized company route can shadow it.
+app.use('/companies/supply-chain-audit', require('./routes/company_supply_chain_audit'));
 app.use('/companies', require('./routes/companies'));
 app.use('/company-management', require('./routes/company_management'));
 app.use('/credit-broker', require('./routes/credit_broker'));
@@ -107,23 +113,13 @@ if (gameplayEnabled &&
 // Runs every 30 seconds for testing (Change to 5 minutes for production: 5 * 60 * 1000)
 setInterval(async () => {
     try {
-        console.log("⏱️ THE VITAL TICK: Regenerating player stats and checking Wardens...");
+        console.log("⏱️ THE VITAL TICK: Regenerating player stats...");
 
-        // 1. Clear legacy cooldowns
+        // Clear legacy cooldowns only. Jail/Hospital expiry is owned by the
+        // persisted state-duration worker so this opt-in timer cannot race it.
         await pool.query("DELETE FROM user_cooldowns WHERE expires_at <= NOW()");
 
-        // 2. Clear expired Jail/Hospital timers directly in the users table
-        await pool.query(`
-            UPDATE users
-            SET jail_expires_at = NULL, jail_initial_seconds = 0
-            WHERE jail_expires_at <= NOW();
-
-            UPDATE users
-            SET hospital_expires_at = NULL
-            WHERE hospital_expires_at <= NOW();
-        `);
-
-        // 3. Legacy Vital Tick only.
+        // Legacy Vital Tick only.
         // Heat decay is intentionally excluded: recovered sources disagree on
         // the authoritative cadence, so this opt-in legacy timer must not
         // silently choose one generation.
