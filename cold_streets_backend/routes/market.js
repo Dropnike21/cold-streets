@@ -166,20 +166,8 @@ router.post('/buy-bulk', async (req, res) => {
 
         const response = {
             status: 'success',
-            message: 'Bulk purchase successful. Spent 
-    } catch (error) {
-        if (active) {
-            try { await client.query('ROLLBACK'); }
-            catch (rollbackError) { console.error('Market rollback failed:', rollbackError); }
-        }
-        return sendActionError(res, error, 'Market purchase failed:');
-    } finally {
-        if (client) client.release();
-    }
-});
-
-module.exports = router;
- + totalCost.toString() + '.',
+            message: 'Bulk purchase successful. Spent ' +
+                totalCost.toString() + '.',
             total_cost: exactJsonAmount(totalCost),
             user: debit.rows[0]
         };
@@ -189,8 +177,11 @@ module.exports = router;
         return res.status(200).json(response);
     } catch (error) {
         if (active) {
-            try { await client.query('ROLLBACK'); }
-            catch (rollbackError) { console.error('Market rollback failed:', rollbackError); }
+            try {
+                await client.query('ROLLBACK');
+            } catch (rollbackError) {
+                console.error('Market rollback failed:', rollbackError);
+            }
         }
         return sendActionError(res, error, 'Market purchase failed:');
     } finally {
