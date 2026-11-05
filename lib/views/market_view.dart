@@ -207,7 +207,7 @@ class _MarketViewState extends State<MarketView> {
       if (id != itemId) otherCartQty += qty;
     });
     final dailyAllowed =
-        (_remainingToday - otherCartQty).clamp(0, _dailyLimit);
+        (_remainingToday - otherCartQty).clamp(0, _dailyLimit).toInt();
 
     int maxAllowed = currentStock;
     if (affordableQty < maxAllowed) maxAllowed = affordableQty;
