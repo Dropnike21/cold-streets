@@ -1,4 +1,5 @@
-const pool = require('../db'); // Adjust path to your db.js if necessary
+const pool = require('../db');
+const logger = require('./logger');
 
 async function checkPlayerState(req, res, next) {
     // Read the identity established by verified Supabase Auth middleware.
@@ -43,7 +44,10 @@ if (req.originalUrl.includes('/character/level') || req.originalUrl.includes('/c
         // 3. Player is free, allow the request to proceed
         next();
     } catch (err) {
-        console.error("Gatekeeper Error:", err.message);
+        logger.error('state_gatekeeper_failed', {
+            request_id: req.requestId,
+            ...logger.errorFields(err)
+        });
         res.status(500).json({ error: "Server error verifying player state." });
     }
 }
