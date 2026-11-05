@@ -69,15 +69,6 @@ class _JailViewState extends State<JailView> {
         backgroundColor: isError ? Colors.redAccent.shade700 : neonGreen.withOpacity(0.8)));
   }
 
-  int _calculateBail(int initialSeconds) {
-    int minutes = (initialSeconds / 60).ceil();
-    return minutes * 100;
-  }
-
-  String _formatCash(int amount) {
-    return '\$${amount.toString().replaceAllMapped(RegExp(r'(\d{1,3})(?=(\d{3})+(?!\d))'), (Match m) => '${m[1]},')}';
-  }
-
   // Returns formatted time OR null if the timer has expired
   String? _getTimeRemaining(String expiresAt) {
     DateTime expiry = DateTime.parse(expiresAt).toLocal();
@@ -175,8 +166,10 @@ class _JailViewState extends State<JailView> {
                     String? timeLeft = _getTimeRemaining(inmate['jail_expires_at']);
                     bool isReleased = timeLeft == null;
 
-                    // Mock Reason (Until you add it to the DB)
-                    String arrestReason = inmate['reason'] ?? "Arrested by the authorities for illegal street activities.";
+                    String arrestReason =
+                        inmate['reason']?.toString().trim().isNotEmpty == true
+                            ? inmate['reason'].toString()
+                            : "Reason unavailable.";
 
                     return Container(
                       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
