@@ -113,6 +113,18 @@ function mutationContract(req, res, next) {
         });
     }
 
+    if (req.query && Object.keys(req.query).length > 0) {
+        logger.warn('mutation_contract_rejected_query', {
+            request_id: req.requestId,
+            method: req.method,
+            path: req.path,
+            query_field_count: Object.keys(req.query).length
+        });
+        return res.status(400).json({
+            error: 'Mutation routes do not accept query parameters.'
+        });
+    }
+
     const body = req.body == null ? {} : req.body;
     if (typeof body !== 'object' || Array.isArray(body)) {
         logger.warn('mutation_contract_invalid_body', {
