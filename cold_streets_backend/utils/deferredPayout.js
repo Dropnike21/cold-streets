@@ -52,12 +52,10 @@ async function issueDeferredPayout(client, {
     }
 
     const label = nonemptyText(sourceLabel, 'Deferred payout source label', 160);
-    const exactAmount = typeof amount === 'bigint'
-        ? amount
-        : integer(amount, { field: 'Deferred payout amount', min: 1n });
-    if (exactAmount <= 0n) {
-        throw new ActionError(500, 'Deferred payout amount must be positive.');
-    }
+    const exactAmount = integer(
+        typeof amount === 'bigint' ? amount.toString() : amount,
+        { field: 'Deferred payout amount', min: 1n }
+    );
 
     const denomination = payoutCurrency(currency);
 
@@ -101,11 +99,28 @@ async function issueDeferredPayout(client, {
     const existing = await client.query(
         `SELECT id, user_id, source, amount, expires_at, status,
                 issuer_type, source_ref, payout_currency, metadata_jsonb,
-                created_at, claimed_at
+                created_at, claimed_at,
+                (
+                    user_id = $3
+                    AND source = $4
+                    AND amount = $5::numeric
+                    AND expires_at = $6::timestamptz
+                    AND payout_currency = $7
+                    AND metadata_jsonb = $8::jsonb
+                ) AS same_obligation
            FROM pending_checks
           WHERE issuer_type = $1 AND source_ref = $2
           FOR UPDATE`,
-        [issuer, ref]
+        [
+            issuer,
+            ref,
+            userId,
+            label,
+            exactAmount.toString(),
+            String(expiresAt),
+            denomination,
+            JSON.stringify(metadata)
+        ]
     );
 
     if (existing.rowCount !== 1) {
@@ -113,20 +128,13 @@ async function issueDeferredPayout(client, {
     }
 
     const row = existing.rows[0];
-    const same =
-        String(row.user_id) === userId &&
-        String(row.amount).replace(/\.0+$/, '') === exactAmount.toString() &&
-        row.source === label &&
-        row.payout_currency === denomination &&
-        new Date(row.expires_at).toISOString() === new Date(String(expiresAt)).toISOString() &&
-        JSON.stringify(row.metadata_jsonb || {}) === JSON.stringify(metadata);
-
-    if (!same) {
+    if (row.same_obligation !== true) {
         throw new ActionError(
             409,
             'Deferred payout source reference already exists with different settlement data.'
         );
     }
+    delete row.same_obligation;
 
     return { issued: false, check: row };
 }
