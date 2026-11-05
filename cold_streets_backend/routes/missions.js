@@ -15,6 +15,9 @@ const {
     assertAnonymousMissionComplete,
     rewardDeltas
 } = require('../utils/anonymousTutorial');
+const {
+    recordMissionCompletionAchievement
+} = require('../utils/achievement_engine');
 const router = express.Router();
 
 // Reject URLs referencing any player other than the verified session owner.
@@ -300,10 +303,18 @@ router.post('/action', async (req, res) => {
                 throw new ActionError(409, 'Anonymous mission completion state changed.');
             }
 
+            const missionsCompleted = await recordMissionCompletionAchievement(
+                client,
+                userId
+            );
+
             const response = {
                 message: 'Objective verified. Anonymous reputation increased.',
                 completed_mission_id: mission.id,
                 anonymous_reputation: nextRep,
+                missions_completed: exactJsonAmount(
+                    BigInt(String(missionsCompleted))
+                ),
                 rewards: {
                     dirty_cash: exactJsonAmount(reward.dirtyCash),
                     clean_cash: exactJsonAmount(reward.cleanCash),
