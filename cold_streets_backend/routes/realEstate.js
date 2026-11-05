@@ -168,7 +168,8 @@ function formatCatalogRow(row) {
         gym_bonus_source_value: row.gym_bonus === null ? null : String(row.gym_bonus),
         gym_bonus: row.gym_bonus === null ? null : String(row.gym_bonus),
         available_upgrades: Object.values(upgrades),
-        ownership_purchase_available: dbInteger(row.cost, { field: 'Property cost' }) > 0n,
+        ownership_purchase_available: false,
+        agency_purchase_status: 'paused_catalog_source_conflict',
         bonus_application_status: 'unresolved_source_conflict',
         upkeep_collection_status: 'unimplemented'
     };
@@ -290,133 +291,19 @@ router.get('/portfolio/:userId', async (req, res) => {
 });
 
 // 3. AGENCY PURCHASE
-// Source-backed behavior retained:
-// - properties are legitimate assets purchased with Clean Cash;
-// - property type and price come only from the recovered catalog;
-// - starter property (cost 0) is granted exactly once at account creation.
-router.post('/buy-agency', async (req, res) => {
-    let client;
-    let transaction = false;
-
+// The free Cardboard Box starter is the only property value shared by both
+// recovered property source families. Non-starter agency purchase is paused
+// because the older Assets design and the 25-row spreadsheet disagree on
+// tiers, prices, and gym-bonus progression.
+router.post('/buy-agency', (req, res) => {
     try {
-        const userId = actorId(req);
-        const idempotencyKey = requireIdempotencyKey(req);
-        const propertyTypeId = integer(req.body?.propertyTypeId, {
-            field: 'Property ID',
-            min: 1n,
-            max: 9223372036854775807n
-        }).toString();
-
-        if (typeof req.body?.autoMoveIn !== 'boolean') {
-            throw new ActionError(400, 'autoMoveIn must be a boolean.');
-        }
-
-        client = await db.connect();
-        await client.query('BEGIN');
-        transaction = true;
-
-        const user = await client.query(
-            'SELECT clean_cash FROM users WHERE user_id = $1 FOR UPDATE',
-            [userId]
+        actorId(req);
+        throw new ActionError(
+            503,
+            'Real Estate agency purchases are paused until the conflicting property catalogs are reconciled.'
         );
-        if (user.rowCount !== 1) throw new ActionError(404, 'Player not found.');
-
-        const idem = await beginIdempotent(
-            client,
-            userId,
-            'property.buy_agency',
-            idempotencyKey,
-            { propertyTypeId, autoMoveIn: req.body.autoMoveIn }
-        );
-
-        if (idem.replay) {
-            await client.query('COMMIT');
-            transaction = false;
-            return res.status(idem.status).json(idem.response);
-        }
-
-        const catalogRows = await loadCatalog(client);
-        const item = catalogRows.find(row => String(row.id) === propertyTypeId);
-        if (!item) throw new ActionError(400, 'Property not listed by agency.');
-
-        const cost = dbInteger(item.cost, { field: 'Property catalog price' });
-        if (cost <= 0n) {
-            throw new ActionError(400, 'Starter properties cannot be purchased again.');
-        }
-
-        const balance = dbInteger(user.rows[0].clean_cash, {
-            field: 'Clean Cash balance'
-        });
-        if (balance < cost) throw new ActionError(409, 'Insufficient Clean Cash.');
-
-        const debit = await client.query(
-            `UPDATE users
-                SET clean_cash = clean_cash - $1::numeric
-              WHERE user_id = $2
-                AND clean_cash >= $1::numeric
-              RETURNING clean_cash`,
-            [cost.toString(), userId]
-        );
-        if (debit.rowCount !== 1) {
-            throw new ActionError(409, 'Balance changed before purchase.');
-        }
-
-        if (req.body.autoMoveIn) {
-            await client.query(
-                `UPDATE owned_properties
-                    SET status = 'idle'
-                  WHERE user_id = $1
-                    AND status = 'active_residence'`,
-                [userId]
-            );
-        }
-
-        const finalStatus = req.body.autoMoveIn ? 'active_residence' : 'idle';
-        const property = await client.query(
-            `INSERT INTO owned_properties (user_id, property_type_id, status)
-             VALUES ($1, $2, $3)
-             RETURNING id`,
-            [userId, propertyTypeId, finalStatus]
-        );
-        const instanceId = property.rows[0].id;
-
-        // Agency/system acquisition has no player seller.
-        await client.query(
-            `INSERT INTO property_transactions
-                (instance_id, seller_id, buyer_id, transaction_type, amount)
-             VALUES ($1, NULL, $2, 'AGENCY_BUY', $3::numeric)`,
-            [instanceId, userId, cost.toString()]
-        );
-
-        const response = {
-            message: 'Property purchased successfully.',
-            newInstanceId: instanceId,
-            status: finalStatus,
-            charged_clean_cash: exactJsonAmount(cost),
-            clean_cash: exactJsonAmount(
-                dbInteger(debit.rows[0].clean_cash, {
-                    field: 'Clean Cash balance'
-                })
-            ),
-            bonus_application_status: 'unresolved_source_conflict',
-            upkeep_collection_status: 'unimplemented'
-        };
-
-        await completeIdempotent(client, idem, 200, response);
-        await client.query('COMMIT');
-        transaction = false;
-        return res.status(200).json(response);
     } catch (error) {
-        if (transaction) {
-            try {
-                await client.query('ROLLBACK');
-            } catch (rollback) {
-                console.error('Agency rollback failed:', rollback);
-            }
-        }
         return sendActionError(res, error, 'Agency purchase failed:');
-    } finally {
-        if (client) client.release();
     }
 });
 
