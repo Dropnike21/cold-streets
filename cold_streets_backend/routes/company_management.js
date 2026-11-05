@@ -61,20 +61,10 @@ router.post('/funds', async (req, res) => {
         const actor = actorId(req);
         const idempotencyKey = requireIdempotencyKey(req);
         const companyId = req.managedCompanyId;
-        const { action_type: action, currency_type: currency } = req.body || {};
 
-        if (!['deposit', 'withdraw'].includes(action) ||
-            !['clean', 'dirty'].includes(currency)) {
-            throw new ActionError(400, 'Invalid company transfer action or currency.');
-        }
-
-        if (action !== 'deposit' || currency !== 'dirty') {
-            throw new ActionError(
-                503,
-                'Only owner Dirty Cash funding is source-reconciled. Company withdrawals and Clean Cash funding are paused pending cash-flow settlement rules.'
-            );
-        }
-
+        // The route itself represents the only source-reconciled transfer:
+        // owner Dirty Cash -> company Dirty Cash. The client does not choose a
+        // denomination or transfer direction.
         const amount = integer(req.body?.amount, {
             field: 'Dirty Cash funding amount',
             min: 1n
