@@ -1,3 +1,4 @@
+const logger = require('../utils/logger');
 const express = require('express');
 const router = express.Router();
 const db = require('../db');
@@ -215,7 +216,7 @@ router.post('/claim-check', async (req, res) => {
             try {
                 await client.query('ROLLBACK');
             } catch (rollback) {
-                console.error('Deferred payout claim rollback:', rollback);
+                logger.error('deferred_payout_rollback_failed', logger.errorFields(rollback));
             }
         }
         return sendActionError(res, error, 'Bank deferred payout claim failed:');
