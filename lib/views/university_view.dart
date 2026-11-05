@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:http/http.dart' as http;
+import '../services/game_http.dart' as http;
 import 'dart:convert';
 import 'dart:async';
 import '../api_config.dart';
@@ -122,9 +122,14 @@ class _UniversityViewState extends State<UniversityView> {
       if (res.statusCode == 200) {
         _showSnackbar(data['message']);
 
-        // Sync stats instantly to HUD if graduation provided the updated user object
-        if (endpoint == 'graduate' && data['user'] != null && widget.onStateChange != null) {
-          widget.onStateChange!(data['user']);
+        if (widget.onStateChange != null) {
+          if (data['user'] != null) {
+            widget.onStateChange!(Map<String, dynamic>.from(data['user']));
+          } else if (data['dirty_cash'] != null) {
+            final updated = Map<String, dynamic>.from(widget.userData);
+            updated['dirty_cash'] = data['dirty_cash'];
+            widget.onStateChange!(updated);
+          }
         }
       } else {
         _showSnackbar(data['error'] ?? "Action failed.", isError: true);
@@ -224,13 +229,13 @@ class _UniversityViewState extends State<UniversityView> {
               ),
               if (!isReady)
                 ElevatedButton(
-                  onPressed: () => _processAction('dropout', {"user_id": widget.userData['user_id']}),
+                  onPressed: () => _processAction('dropout', const {}),
                   style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent.withOpacity(0.1), side: const BorderSide(color: Colors.redAccent)),
                   child: const Text("DROP OUT", style: TextStyle(color: Colors.redAccent, fontSize: 10, fontWeight: FontWeight.bold)),
                 )
               else
                 ElevatedButton(
-                  onPressed: () => _processAction('graduate', {"user_id": widget.userData['user_id']}),
+                  onPressed: () => _processAction('graduate', const {}),
                   style: ElevatedButton.styleFrom(backgroundColor: neonGreen.withOpacity(0.1), side: BorderSide(color: neonGreen)),
                   child: Text("GRADUATE", style: TextStyle(color: neonGreen, fontSize: 10, fontWeight: FontWeight.bold)),
                 ),
@@ -254,9 +259,40 @@ class _UniversityViewState extends State<UniversityView> {
 
     Color cardBorderColor = isCompleted ? neonGreen : (isLocked ? Colors.redAccent : Colors.lightBlueAccent);
 
-    String rewardStr = "";
-    if (course['reward_stat_1'] != null) rewardStr += "+${course['reward_amount_1']} ${course['reward_stat_1'].toString().toUpperCase()}  ";
-    if (course['reward_stat_2'] != null) rewardStr += "+${course['reward_amount_2']} ${course['reward_stat_2'].toString().toUpperCase()}";
+    final Map<String, dynamic> rewardData = course['rewards_jsonb'] is Map
+        ? Map<String, dynamic>.from(course['rewards_jsonb'])
+        : <String, dynamic>{};
+    final Map<String, dynamic> rewardStats = rewardData['stats'] is Map
+        ? Map<String, dynamic>.from(rewardData['stats'])
+        : <String, dynamic>{};
+    final statParts = <String>[];
+    for (final key in const ['acu', 'ops', 'pre', 'res']) {
+      final value = int.tryParse(rewardStats[key]?.toString() ?? '0') ?? 0;
+      if (value > 0) statParts.add("+$value ${key.toUpperCase()}");
+    }
+    final perks = rewardData['perks'] is List ? rewardData['perks'] as List : const [];
+    final unlocks = rewardData['unlocks'] is List ? rewardData['unlocks'] as List : const [];
+    String rewardStr = statParts.join("  ");
+    if (perks.isNotEmpty) {
+      final perkParts = <String>[];
+      for (final raw in perks) {
+        if (raw is Map) {
+          final perk = Map<String, dynamic>.from(raw);
+          final type = perk['type']?.toString();
+          final value = int.tryParse(perk['value']?.toString() ?? '');
+          if (type == 'max_nerve' && value != null && value > 0) {
+            perkParts.add("+$value MAX NERVE");
+          } else if (type != null && type.isNotEmpty) {
+            perkParts.add("PERK: ${type.replaceAll('_', ' ').toUpperCase()}");
+          }
+        }
+      }
+      rewardStr += "${rewardStr.isEmpty ? '' : '  '}${perkParts.isEmpty ? '+${perks.length} PERK${perks.length == 1 ? '' : 'S'}' : perkParts.join('  ')}";
+    }
+    if (unlocks.isNotEmpty) {
+      rewardStr += "${rewardStr.isEmpty ? '' : '  '}+${unlocks.length} UNLOCK${unlocks.length == 1 ? '' : 'S'}";
+    }
+    if (rewardStr.isEmpty) rewardStr = "COURSE COMPLETION";
 
     return Container(
       margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
@@ -297,7 +333,7 @@ class _UniversityViewState extends State<UniversityView> {
                 SizedBox(
                   height: 26, width: 80,
                   child: ElevatedButton(
-                    onPressed: canAfford ? () => _processAction('enroll', {"user_id": widget.userData['user_id'], "course_id": courseId}) : null,
+                    onPressed: canAfford ? () => _processAction('enroll', {"course_id": courseId}) : null,
                     style: ElevatedButton.styleFrom(
                       backgroundColor: Colors.lightBlueAccent.withOpacity(0.1),
                       padding: EdgeInsets.zero,
