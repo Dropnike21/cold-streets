@@ -214,3 +214,28 @@ HTTP/RNG target flow.
 The backend also rejects unexpected top-level mutation fields and query-string
 fields, so future Flutter additions must update the reviewed server contract
 rather than silently passing new authority-bearing values.
+
+
+## Final source-closure follow-up
+
+The final repository/economy audit discovered additional source conflicts and
+the Flutter surface was tightened again:
+
+- City Job resignation is disabled because the recovered City Job sheet/GDD do
+  not define clean-exit Job Point retention or Final Heist payout/Heat/ban;
+- recruit generation/hiring is disabled because Recruits Canvas conflicts with
+  legacy stat ranges and leaves the pricing multipliers undefined;
+- crew crime assignment/automation is disabled because Recruits Canvas defines
+  fixed 60-second/1% mortality while crimes_master contains per-crime timing and
+  casualty metadata;
+- crew recall remains available so existing persisted assignments can be
+  stopped;
+- legacy Syndicate establishment thresholds (150 members, $500M, two
+  businesses) were removed from authoritative-looking UI because they were not
+  verified in the recovered source set;
+- recruit stat display no longer uses legacy tier bar maxima and instead scales
+  against the persisted recruit's actual max stats.
+
+Final static scans of the affected Flutter files contain no HTTP references to
+the paused City Job quit, recruit generation/hire, crew assignment, or
+Pickpocket client-activity settlement paths.
