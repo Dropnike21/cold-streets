@@ -293,8 +293,11 @@ router.post('/equip', async (req, res) => {
     let client, transaction = false;
     try {
         const userId = actorId(req);
+        const idempotencyKey = requireIdempotencyKey(req);
         const itemId = integer(req.body?.item_id, {
-            field: 'Item ID', min: 1n, max: 9223372036854775807n
+            field: 'Item ID',
+            min: 1n,
+            max: 9223372036854775807n
         }).toString();
         const slot = req.body?.slot;
         const validSlots = {
@@ -310,40 +313,80 @@ router.post('/equip', async (req, res) => {
         client = await pool.connect();
         await client.query('BEGIN');
         transaction = true;
+
+        // Global mutation lock order: actor -> idempotency -> inventory.
         const player = await client.query(
-            'SELECT user_id FROM users WHERE user_id = $1 FOR UPDATE', [userId]
+            'SELECT user_id FROM users WHERE user_id = $1 FOR UPDATE',
+            [userId]
         );
-        if (player.rowCount !== 1) throw new ActionError(404, 'Player not found.');
+        if (player.rowCount !== 1) {
+            throw new ActionError(404, 'Player not found.');
+        }
+
+        const idem = await beginIdempotent(
+            client,
+            userId,
+            'inventory.equip',
+            idempotencyKey,
+            { itemId, slot }
+        );
+        if (idem.replay) {
+            await client.query('COMMIT');
+            transaction = false;
+            return res.status(idem.status).json(idem.response);
+        }
+
         const inv = await client.query(
-            'SELECT quantity FROM user_inventory WHERE user_id = $1 AND item_id = $2 FOR UPDATE',
+            `SELECT quantity
+               FROM user_inventory
+              WHERE user_id = $1
+                AND item_id = $2
+              FOR UPDATE`,
             [userId, itemId]
         );
         if (inv.rowCount !== 1 || BigInt(inv.rows[0].quantity) <= 0n) {
             throw new ActionError(409, 'You do not own this item.');
         }
+
         const item = await client.query(
             'SELECT name, category FROM items_master WHERE item_id = $1',
             [itemId]
         );
-        if (item.rowCount !== 1) throw new ActionError(404, 'Item catalog row missing.');
+        if (item.rowCount !== 1) {
+            throw new ActionError(404, 'Item catalog row missing.');
+        }
         if (item.rows[0].category !== validSlots[slot]) {
-            throw new ActionError(400, 'Item category does not match this equipment slot.');
+            throw new ActionError(
+                400,
+                'Item category does not match this equipment slot.'
+            );
         }
 
         const equipped = await client.query(
-            'UPDATE user_equipment SET ' + slot + ' = $1 WHERE user_id = $2 RETURNING user_id',
+            'UPDATE user_equipment SET ' + slot +
+                ' = $1 WHERE user_id = $2 RETURNING user_id',
             [itemId, userId]
         );
-        if (equipped.rowCount !== 1) throw new Error('Player equipment row missing.');
+        if (equipped.rowCount !== 1) {
+            throw new Error('Player equipment row missing.');
+        }
+
+        const response = {
+            status: 'success',
+            message: 'Equipped ' + item.rows[0].name + '.'
+        };
+        await completeIdempotent(client, idem, 200, response);
         await client.query('COMMIT');
         transaction = false;
-        return res.json({ status: 'success', message: 'Equipped ' + item.rows[0].name + '.' });
+        return res.status(200).json(response);
     } catch (err) {
         if (transaction) {
-            try { await client.query('ROLLBACK'); } catch (rollback) { console.error('Equip rollback:', rollback); }
+            try { await client.query('ROLLBACK'); }
+            catch (rollback) { console.error('Equip rollback:', rollback); }
         }
         return sendActionError(res, err, 'Equip failed:');
-    } finally { if (client) client.release(); }
+    } finally {
+        if (client) client.release();
+    }
 });
-
 module.exports = router;
