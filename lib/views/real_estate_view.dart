@@ -291,9 +291,11 @@ class _RealEstateViewState extends State<RealEstateView> {
                       ? () => _promptPurchaseOptions(prop)
                       : null,
                   child: Text(
-                    prop['ownership_purchase_available'] != true
+                    propCost == 0
                         ? "STARTER PROPERTY"
-                        : (canAfford ? "PURCHASE PROPERTY" : "INSUFFICIENT CLEAN CASH"),
+                        : (prop['ownership_purchase_available'] == true
+                            ? (canAfford ? "PURCHASE PROPERTY" : "INSUFFICIENT CLEAN CASH")
+                            : "PURCHASE PAUSED"),
                     style: const TextStyle(fontWeight: FontWeight.bold, letterSpacing: 1),
                   ),
                 ),
