@@ -132,50 +132,6 @@ class _ManagePropertiesViewState extends State<ManagePropertiesView> {
     }
   }
 
-  Future<void> _purchaseUpgrade(Map<String, dynamic> prop, Map<String, dynamic> upgrade, StateSetter setModalState) async {
-    if (cleanCash < upgrade['cost']) return;
-
-    showDialog(context: context, barrierDismissible: false, builder: (_) => const Center(child: CircularProgressIndicator(color: Color(0xFF39FF14))));
-
-    try {
-      final response = await http.post(
-        Uri.parse('${ApiConfig.baseUrl}/real-estate/upgrade'),
-        headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({
-          'userId': userId,
-          'instanceId': prop['instance_id'],
-          'upgradeId': upgrade['id'],
-          'cost': upgrade['cost']
-        }),
-      );
-
-      if (mounted) Navigator.pop(context);
-
-      if (response.statusCode == 200) {
-        setState(() {
-          cleanCash -= upgrade['cost'] as int;
-          widget.userData['clean_cash'] = cleanCash;
-
-          prop['upgrades'][upgrade['id']] = true;
-          widget.onStateChange(widget.userData);
-        });
-        setModalState(() {});
-
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("${upgrade['name']} installed successfully."), backgroundColor: const Color(0xFF39FF14)));
-        }
-      } else {
-        final data = jsonDecode(response.body);
-        if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(data['error'] ?? "Purchase failed."), backgroundColor: Colors.redAccent));
-      }
-    } catch (e) {
-      if (mounted) {
-        Navigator.pop(context);
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("Network error: $e"), backgroundColor: Colors.redAccent));
-      }
-    }
-  }
-
   String _formatCash(num amount) {
     String formatted = amount.toInt().toString().replaceAllMapped(RegExp(r'(\d{1,3})(?=(\d{3})+(?!\d))'), (Match m) => '${m[1]},');
     return '\$$formatted';
