@@ -5,6 +5,9 @@ const pool = require('../db');
 const logger = require('../utils/logger');
 
 const AUTH_TIMEOUT_MS = 10000;
+const AUTH_MAX_IN_FLIGHT = 50;
+let authVerificationsInFlight = 0;
+
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const PLAYER_ID_PATTERN = /^[1-9][0-9]*$/;
 
@@ -53,6 +56,18 @@ async function requireSupabaseIdentity(req, res, next) {
     if (!match || match[1].length > 8192) {
         return res.status(401).json({ error: 'A Supabase access token is required.' });
     }
+    if (authVerificationsInFlight >= AUTH_MAX_IN_FLIGHT) {
+        res.setHeader('Retry-After', '1');
+        logger.warn('auth_upstream_backpressure', {
+            request_id: req.requestId,
+            in_flight: authVerificationsInFlight
+        });
+        return res.status(503).json({
+            error: 'Authentication service is temporarily busy. Retry shortly.'
+        });
+    }
+
+    authVerificationsInFlight += 1;
     try {
         const response = await fetch(config.endpoint, {
             method: 'GET',
@@ -88,6 +103,8 @@ async function requireSupabaseIdentity(req, res, next) {
             ...logger.errorFields(err)
         });
         return res.status(503).json({ error: 'Authentication service unavailable.' });
+    } finally {
+        authVerificationsInFlight -= 1;
     }
 }
 
