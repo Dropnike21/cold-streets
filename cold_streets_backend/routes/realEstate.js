@@ -154,10 +154,19 @@ function formatCatalogRow(row) {
         base_upkeep: exactJsonAmount(
             dbInteger(row.upkeep_val, { field: 'Property base upkeep' })
         ),
+        // Compatibility aliases for the current Flutter surface. These values
+        // are source data only; bonus application remains explicitly unresolved.
+        upkeep_val: exactJsonAmount(
+            dbInteger(row.upkeep_val, { field: 'Property base upkeep' })
+        ),
         hp_bonus_source_value: exactJsonAmount(
             dbInteger(row.hp_bonus, { field: 'Property HP bonus source value' })
         ),
+        hp_bonus: exactJsonAmount(
+            dbInteger(row.hp_bonus, { field: 'Property HP bonus source value' })
+        ),
         gym_bonus_source_value: row.gym_bonus === null ? null : String(row.gym_bonus),
+        gym_bonus: row.gym_bonus === null ? null : String(row.gym_bonus),
         available_upgrades: Object.values(upgrades),
         ownership_purchase_available: dbInteger(row.cost, { field: 'Property cost' }) > 0n,
         bonus_application_status: 'unresolved_source_conflict',
@@ -235,8 +244,12 @@ router.get('/portfolio/:userId', async (req, res) => {
                 acquisition_cost_reference: exactJsonAmount(
                     dbInteger(catalogRow.cost, { field: 'Property cost' })
                 ),
+                cost: exactJsonAmount(
+                    dbInteger(catalogRow.cost, { field: 'Property cost' })
+                ),
                 upkeep_type: catalogRow.upkeep_type,
                 base_upkeep_reference: exactJsonAmount(baseUpkeep),
+                upkeep_val: exactJsonAmount(baseUpkeep),
                 upgrade_upkeep_increase_reference: exactJsonAmount(installed.upkeepIncrease),
                 total_upkeep_reference: exactJsonAmount(totalUpkeep),
                 hp_bonus_source_value: exactJsonAmount(
@@ -244,7 +257,14 @@ router.get('/portfolio/:userId', async (req, res) => {
                         field: 'Property HP bonus source value'
                     })
                 ),
+                hp_bonus: exactJsonAmount(
+                    dbInteger(catalogRow.hp_bonus, {
+                        field: 'Property HP bonus source value'
+                    })
+                ),
                 gym_bonus_source_value:
+                    catalogRow.gym_bonus === null ? null : String(catalogRow.gym_bonus),
+                gym_bonus:
                     catalogRow.gym_bonus === null ? null : String(catalogRow.gym_bonus),
                 installed_upgrade_ids: installed.ids,
                 available_upgrades: Object.values(available),
