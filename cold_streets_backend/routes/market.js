@@ -146,6 +146,13 @@ router.post('/buy-bulk', async (req, res) => {
             if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
                 throw new ActionError(400, 'Invalid cart line.');
             }
+            const keys = Object.keys(raw);
+            if (keys.some(key => key !== 'item_id' && key !== 'quantity')) {
+                throw new ActionError(
+                    400,
+                    'Market cart lines accept only item_id and quantity.'
+                );
+            }
             const itemId = integer(raw.item_id, { field: 'Item ID', min: 1n, max: 9223372036854775807n }).toString();
             const qty = integer(raw.quantity, {
                 field: 'Quantity',
