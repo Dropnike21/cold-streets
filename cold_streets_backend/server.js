@@ -14,6 +14,11 @@ const app = express();
 const gameplayEnabled = process.env.ENABLE_GAMEPLAY_API === 'true';
 runtimeHealth.configure({ gameplayEnabled });
 
+pool.on('error', err => {
+    runtimeHealth.markDatabaseFailure();
+    logger.error('database_pool_error', logger.errorFields(err));
+});
+
 app.use(requestObservability);
 
 // Browser origins must be explicitly allowlisted. Native Flutter requests do not
