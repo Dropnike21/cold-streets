@@ -162,6 +162,7 @@ router.get('/status/:userId', async (req, res) => {
             time_deposit_creation_available: false,
             time_deposit_claim_available: false,
             pending_check_claim_available: false,
+            pending_check_role: 'external_deferred_payout',
             bank_trust_progression_status: 'unresolved',
             time_deposit_terms_status: 'historical_code_only',
             payout_currency_status: 'unresolved',
