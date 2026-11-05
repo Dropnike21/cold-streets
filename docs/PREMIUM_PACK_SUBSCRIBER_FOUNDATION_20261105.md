@@ -38,7 +38,7 @@ set plus subscriber-only benefits. The owner explicitly defined:
 
 - 1 VIP Pack per month;
 - 1 Book per month;
-- +20% to the city NPC market daily item allowance.
+- +20 items to the city NPC market daily allowance.
 
 The base city NPC market limit is 100 items/day, so active Subscriber status
 produces an effective limit of 120 items/day.
