@@ -127,28 +127,34 @@ identity now matches the development migration history.
 
 Post-repair readback:
 
-- repository migration files: 40;
+- repository migration files: 41;
 - historical name/version mismatches: 0;
 - applied development migrations missing from repository: 0.
 
-### Development-only pending migrations
+### Development migration-history reconciliation
 
-The following schema changes were created during development with direct schema
-work and therefore are not yet present in Supabase's migration-history ledger:
+The premium, Trade asset-namespace, and Data API hardening changes were first
+verified directly against the development schema and later replayed through
+Supabase's normal migration mechanism using idempotent SQL.
 
-- `20261105084920_vip_casino_cap_20261105`
-- `20261105090121_trade_asset_namespace_20261105`
+Their recorded development versions are:
 
-Their migration SQL is now intentionally replay-safe:
+- `20261105095946_vip_casino_cap_20261105.sql`;
+- `20261105095957_trade_asset_namespace_20261105.sql`;
+- `20261105100004_data_api_privilege_hardening_20261105.sql`.
 
-- table/column/index creation uses existence guards where appropriate;
-- catalog inserts are conflict-safe;
-- constraints are conditionally established or safely replaced.
+The Git files were renamed to those exact versions after application.
 
-The migration-history table was **not** manually edited or falsified. These two
-files remain normal pending migrations for the next authorized migration-runner
-pass. Applying them to the current development schema should be a safe
-idempotent reconciliation; that application was not performed in this pass.
+Final readback:
+
+- repository migrations: 41;
+- development migration-history rows: 41;
+- name/version mismatches: 0;
+- repository-only migrations: 0;
+- database-only migrations: 0.
+
+The migration-history table was never edited manually.
+
 
 ## Current integration boundary
 
