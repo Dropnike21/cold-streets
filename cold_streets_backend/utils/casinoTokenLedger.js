@@ -4,7 +4,9 @@ const {
     dbInteger
 } = require('./economyValidation');
 
-const DAILY_TOKEN_SPEND_CAP = 100n;
+const BASE_DAILY_TOKEN_SPEND_CAP = 100n;
+const VIP_DAILY_TOKEN_BONUS = 50n;
+const MAX_DAILY_TOKEN_SPEND_CAP = BASE_DAILY_TOKEN_SPEND_CAP + VIP_DAILY_TOKEN_BONUS;
 const RECONCILED_TOKEN_ENGINES = new Set([
     'perya',
     'slots',
@@ -35,7 +37,7 @@ function normalizeSourceRef(value) {
 async function getCasinoTokenStatus(client, userId) {
     const [wallet, usage] = await Promise.all([
         client.query(
-            'SELECT casino_tokens FROM users WHERE user_id = $1',
+            'SELECT casino_tokens, vip_status_active FROM users WHERE user_id = $1',
             [userId]
         ),
         client.query(
@@ -59,14 +61,22 @@ async function getCasinoTokenStatus(client, userId) {
     const spentToday = dbInteger(usage.rows[0].spent_today, {
         field: 'Casino Tokens spent today'
     });
-    if (balance < 0n || spentToday < 0n || spentToday > DAILY_TOKEN_SPEND_CAP) {
+    const vipActive = wallet.rows[0].vip_status_active === true;
+    const dailyCap = vipActive
+        ? MAX_DAILY_TOKEN_SPEND_CAP
+        : BASE_DAILY_TOKEN_SPEND_CAP;
+    if (balance < 0n || spentToday < 0n || spentToday > dailyCap) {
         throw new Error('Casino token accounting is outside source-backed bounds.');
     }
 
     return {
         balance,
+        vipActive,
+        baseDailyCap: BASE_DAILY_TOKEN_SPEND_CAP,
+        vipDailyBonus: vipActive ? VIP_DAILY_TOKEN_BONUS : 0n,
+        dailyCap,
         spentToday,
-        remainingToday: DAILY_TOKEN_SPEND_CAP - spentToday,
+        remainingToday: dailyCap - spentToday,
         dayKey: usage.rows[0].day_key
     };
 }
@@ -81,13 +91,13 @@ async function reserveCasinoTokenSpend(client, {
     const amount = integer(tokenAmount, {
         field: 'Casino Token spend',
         min: 1n,
-        max: DAILY_TOKEN_SPEND_CAP
+        max: MAX_DAILY_TOKEN_SPEND_CAP
     });
     const ref = normalizeSourceRef(sourceRef);
 
     // Lock order for future token games: authenticated player -> replay ledger.
     const player = await client.query(
-        'SELECT casino_tokens FROM users WHERE user_id = $1 FOR UPDATE',
+        'SELECT casino_tokens, vip_status_active FROM users WHERE user_id = $1 FOR UPDATE',
         [userId]
     );
     if (player.rowCount !== 1) {
@@ -131,10 +141,13 @@ async function reserveCasinoTokenSpend(client, {
     const spentToday = dbInteger(usage.rows[0].spent_today, {
         field: 'Casino Tokens spent today'
     });
-    if (spentToday < 0n || spentToday > DAILY_TOKEN_SPEND_CAP) {
+    const dailyCap = player.rows[0].vip_status_active === true
+        ? MAX_DAILY_TOKEN_SPEND_CAP
+        : BASE_DAILY_TOKEN_SPEND_CAP;
+    if (spentToday < 0n || spentToday > dailyCap) {
         throw new Error('Casino token daily spend ledger is outside source limit.');
     }
-    if (spentToday + amount > DAILY_TOKEN_SPEND_CAP) {
+    if (spentToday + amount > dailyCap) {
         throw new ActionError(
             409,
             'Casino Token daily spend cap exceeded.'
@@ -183,13 +196,17 @@ async function reserveCasinoTokenSpend(client, {
                 field: 'Casino Token balance'
             }),
             spentToday: spentToday + amount,
-            remainingToday: DAILY_TOKEN_SPEND_CAP - spentToday - amount
+            vipActive: player.rows[0].vip_status_active === true,
+            dailyCap,
+            remainingToday: dailyCap - spentToday - amount
         }
     };
 }
 
 module.exports = {
-    DAILY_TOKEN_SPEND_CAP,
+    BASE_DAILY_TOKEN_SPEND_CAP,
+    VIP_DAILY_TOKEN_BONUS,
+    MAX_DAILY_TOKEN_SPEND_CAP,
     RECONCILED_TOKEN_ENGINES,
     getCasinoTokenStatus,
     reserveCasinoTokenSpend
