@@ -294,6 +294,12 @@ Follow-up migration:
 
 simplifies the Bank Trust constraint because the physical field is already PostgreSQL INTEGER.
 
+Additional issuer-source integrity migration:
+
+`20261104235700_pending_check_source_integrity_20261105.sql`
+
+requires every pending check to have a non-null, non-empty `source`. This is intentionally minimal: it does not yet invent issuer types, source-reference IDs, currencies, or expiry policy.
+
 No interest rates, term lengths, 2B cap, 24-hour expiry, status transitions, or payout currencies are encoded by these migrations.
 
 ## Flutter companion
