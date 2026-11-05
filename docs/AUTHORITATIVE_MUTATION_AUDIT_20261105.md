@@ -245,12 +245,19 @@ the mutation reachable.
 
 ## GET side-effect audit
 
-A route scan for SQL INSERT/UPDATE/DELETE within GET handlers found no active
-mutating GET surfaces after the interview stabilization work, except the
-interview route's controlled session issuance described above.
+Two controlled GET-side provisioning behaviors remain for client compatibility:
 
-The starter Gym seed is delegated to a serialized conflict-safe helper rather
-than issuing unguarded duplicate inserts.
+1. the Gym dashboard may provision the source-backed starter Gym when the
+   player's Gym rows are missing;
+2. the City Job interview route may issue a new interview session when no live
+   session exists.
+
+Both are now serialized by the authenticated player row. Starter Gym inserts
+are conflict-safe, and interview refresh reuses the same live persisted
+question set rather than rerolling it.
+
+No other scanned GET handler performs an authoritative SQL INSERT/UPDATE/DELETE
+side effect.
 
 ## Remaining static risks for later stabilization batches
 
