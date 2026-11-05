@@ -177,19 +177,9 @@ router.post('/assign_job', async (req, res) => {
             field: 'Crew ID', min: 1n, max: 9223372036854775807n
         }).toString();
 
-        let crimeId = null;
-        let crimeTitle = null;
-        if (req.body?.crime_id !== undefined && req.body?.crime_id !== null) {
-            crimeId = integer(req.body.crime_id, {
-                field: 'Crime ID', min: 1n, max: 9223372036854775807n
-            }).toString();
-        } else if (typeof req.body?.crime_title === 'string' &&
-                   req.body.crime_title.trim().length > 0 &&
-                   req.body.crime_title.trim().length <= 200) {
-            crimeTitle = req.body.crime_title.trim();
-        } else {
-            throw new ActionError(400, 'A catalog crime identifier is required.');
-        }
+        const crimeId = integer(req.body?.crime_id, {
+            field: 'Crime ID', min: 1n, max: 9223372036854775807n
+        }).toString();
 
         client = await pool.connect();
         await client.query('BEGIN');
@@ -224,7 +214,7 @@ router.post('/assign_job', async (req, res) => {
             userId,
             'syndicate.assign_crew_crime',
             idempotencyKey,
-            { crewId, crimeId, crimeTitle }
+            { crewId, crimeId }
         );
         if (idem.replay) {
             await client.query('COMMIT');
@@ -232,10 +222,7 @@ router.post('/assign_job', async (req, res) => {
             return res.status(idem.status).json(idem.response);
         }
 
-        const rule = await getCrewCrimeRule(
-            client,
-            crimeId !== null ? { crimeId } : { crimeTitle }
-        );
+        const rule = await getCrewCrimeRule(client, { crimeId });
 
         const hasTool = await ownsRequiredTool(
             client,
