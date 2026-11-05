@@ -21,7 +21,12 @@ async function getPremiumStatus(client, userId) {
             ),
             client.query(
                 `SELECT subscription_tier, status, current_period_start,
-                        current_period_end, cancel_at_period_end, source_ref
+                        current_period_end, cancel_at_period_end, source_ref,
+                        (
+                          status = 'active'
+                          AND current_period_start <= NOW()
+                          AND current_period_end > NOW()
+                        ) AS is_active
                    FROM user_subscriptions
                   WHERE user_id = $1`,
                 [userId]
@@ -57,9 +62,7 @@ async function getPremiumStatus(client, userId) {
     const subscriberActive = Boolean(
         subscription &&
         subscription.subscription_tier === 'subscriber' &&
-        subscription.status === 'active' &&
-        new Date(subscription.current_period_start).getTime() <= Date.now() &&
-        new Date(subscription.current_period_end).getTime() > Date.now()
+        subscription.is_active === true
     );
 
     const activeEntitlements = entitlementRes.rows;
