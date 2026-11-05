@@ -1077,7 +1077,7 @@ class _CompanyManagementViewState extends State<CompanyManagementView> {
                   style: const TextStyle(color: Colors.white, fontSize: 12),
                   decoration: const InputDecoration(isDense: true, border: OutlineInputBorder(), labelText: "Order Quantity", hintText: "0"),
                   onChanged: (val) {
-                    setState(() => _dynamicOrderTotals[id] = (int.tryParse(val) ?? 0) * cost);
+                    setState(() => _dynamicOrderTotals[id] = (int.tryParse(val) ?? 0) * (cost ?? 0));
                   },
                 ),
                 const SizedBox(height: 12),
