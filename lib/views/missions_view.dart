@@ -85,12 +85,6 @@ class _MissionsViewState extends State<MissionsView> {
     return Map<String, dynamic>.from(widget.userData['contact_exp']);
   }
 
-  Map<String, dynamic>? _getActiveContract() {
-    if (widget.userData['active_contract'] == null) return null;
-    if (widget.userData['active_contract'] is String) return jsonDecode(widget.userData['active_contract']);
-    return Map<String, dynamic>.from(widget.userData['active_contract']);
-  }
-
   int _getExpFor(String contact) {
     final expMap = _getContactExp();
     final value = expMap[contact];
@@ -148,7 +142,7 @@ class _MissionsViewState extends State<MissionsView> {
       final response = await http.post(
         Uri.parse('${ApiConfig.baseUrl}/missions/action'),
         headers: {"Content-Type": "application/json"},
-        body: jsonEncode({"user_id": widget.userData['user_id'], "contact": contact, "action_type": actionType}),
+        body: jsonEncode({"contact": contact, "action_type": actionType}),
       );
       final data = jsonDecode(response.body);
       if (response.statusCode == 200 && mounted) {
@@ -178,7 +172,7 @@ class _MissionsViewState extends State<MissionsView> {
       case 4: return { "title": "IRON AND BLOOD", "message": "You survived the streets, but you're still weak. Head to the local gym. Burn some of that energy to build your body. I want to see you push your limits in all areas.", "objective": "Navigate to Gym, spend 150 Energy on STR, DEF, DEX, and SPD.", "reward": "\$500 Clean Cash" };
       case 5: return { "title": "FOLLOW THE MONEY", "message": "If you want to survive, you need to protect your assets. I've unlocked the Financial District for you.", "objective": "Navigate to the Bank and Real Estate.", "reward": "\$1,000 Clean Cash" };
       case 6: return { "title": "INTO THE SHADOWS", "message": "Now for the real city. The Underworld is where the big players trade. Be careful.", "objective": "Navigate to the Credit Broker and The Casino.", "reward": "\$2,000 Dirty Cash" };
-      case 7: return { "title": "END OF THE LINE", "message": "I've taught you all I can. A guy named Kevin is looking for reliable muscle.", "objective": "No further objectives.", "reward": "None." };
+      case 7: return { "title": "END OF THE LINE", "message": "I've taught you all I can. A guy named Kevin is looking for reliable muscle.", "objective": "No further objectives. Request a contract from Kevin.", "reward": "None." };
 
       default: return { "title": "END OF THE LINE", "message": "I've taught you all I can. A guy named Kevin is looking for reliable muscle. Check your contact list.", "objective": "No further objectives.", "reward": "None." };
     }
