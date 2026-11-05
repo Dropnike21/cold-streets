@@ -1,3 +1,4 @@
+const logger = require('../utils/logger');
 const express = require('express');
 const router = express.Router();
 const pool = require('../db');
@@ -57,7 +58,7 @@ router.get('/leaderboards', async (req, res) => {
         });
 
     } catch (err) {
-        console.error("Leaderboard Error:", err);
+        logger.error('leaderboard_fetch_failed', logger.errorFields(err));
         res.status(500).json({ error: "Server error fetching leaderboards." });
     } finally {
         client.release();
