@@ -93,37 +93,15 @@ class _JailViewState extends State<JailView> {
     return "${m}m ${s}s";
   }
 
-  Future<void> _processAction(String endpoint, Map<String, dynamic> payload) async {
-    setState(() => _isProcessing = true);
-    try {
-      final res = await http.post(Uri.parse('$apiUrl/$endpoint'),
-          headers: {"Content-Type": "application/json"}, body: jsonEncode(payload));
-      final data = jsonDecode(res.body);
-
-      _showSnackbar(data['message'] ?? data['error'], isError: res.statusCode != 200);
-
-      if (widget.onStateChange != null) {
-        if (data['user'] != null) {
-          widget.onStateChange!(Map<String, dynamic>.from(data['user']));
-        } else if (res.statusCode == 200) {
-          final updated = Map<String, dynamic>.from(widget.userData);
-          if (data['clean_cash'] != null) updated['clean_cash'] = data['clean_cash'];
-          if (data['influence'] != null) updated['influence'] = data['influence'];
-          if (data['nerve'] != null) updated['nerve'] = data['nerve'];
-          if (data['heat'] != null) updated['heat'] = data['heat'];
-          if (data.containsKey('jail_expires_at')) {
-            updated['jail_expires_at'] = data['jail_expires_at'];
-          }
-          widget.onStateChange!(updated);
-        }
-      }
-
-      await _fetchInmates();
-    } catch (e) {
-      _showSnackbar("Network error.", isError: true);
-    } finally {
-      if (mounted) setState(() => _isProcessing = false);
-    }
+  void _showPausedMechanic() {
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text(
+          'Jail bail, breakout and prison-yard training are paused pending source-reconciled mechanics.',
+        ),
+        backgroundColor: Colors.white24,
+      ),
+    );
   }
 
   @override
