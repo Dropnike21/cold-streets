@@ -1,5 +1,5 @@
 const { createHash } = require('node:crypto');
-const { ActionError, integer } = require('./economyValidation');
+const { ActionError, integer, dbInteger } = require('./economyValidation');
 
 // Source-backed catalog keys. These are logical achievement trackers, not SQL
 // column names. Keep the mapping explicit so catalog strings can never become
@@ -68,10 +68,13 @@ async function unlockAchievementsForValue(client, userId, trackerKey, currentVal
     const unlocked = [];
 
     for (const achievement of catalog) {
-        const threshold = exactProgress(
+        const threshold = dbInteger(
             achievement.threshold_value,
-            'Achievement threshold'
+            { field: 'Achievement threshold' }
         );
+        if (threshold < 1n) {
+            throw new Error('Achievement threshold must be positive.');
+        }
         if (threshold > current) break;
 
         const inserted = await client.query(
