@@ -19,7 +19,6 @@ class _AchievementsViewState extends State<AchievementsView> {
   static const Color cDarkGrey = Color(0xFF1E1E1E);
 
   String _selectedCategory = "LATEST";
-  final List<String> _categories = ["LATEST", "ALL", "CRIMES", "GYM", "ECONOMY", "SYNDICATE"];
 
   int? _expandedAchievementId;
 
@@ -71,6 +70,13 @@ class _AchievementsViewState extends State<AchievementsView> {
 
   @override
   Widget build(BuildContext context) {
+    final sourceCategories = _achievements
+        .map((ach) => ach['category']?.toString() ?? 'MISC')
+        .toSet()
+        .toList()
+      ..sort();
+    final categories = <String>["LATEST", "ALL", ...sourceCategories];
+
     List<Map<String, dynamic>> filteredAchievements = [];
 
     if (_selectedCategory == "LATEST") {
@@ -129,7 +135,7 @@ class _AchievementsViewState extends State<AchievementsView> {
               scrollDirection: Axis.horizontal,
               padding: const EdgeInsets.symmetric(horizontal: 12.0),
               child: Row(
-                children: _categories.map((category) {
+                children: categories.map((category) {
                   bool isSelected = _selectedCategory == category;
                   return GestureDetector(
                     onTap: () {
@@ -197,7 +203,8 @@ class _AchievementsViewState extends State<AchievementsView> {
                       child: Row(
                         mainAxisAlignment: MainAxisAlignment.start,
                         children: rowItems.map((ach) {
-                          bool isUnlocked = ach["unlocked"];
+                          bool isUnlocked = ach["unlocked"] == true;
+                          bool trackingAvailable = ach["tracking_available"] == true;
                           bool isSelected = ach["id"] == _expandedAchievementId;
 
                           double cur = double.tryParse(ach["cur"].toString()) ?? 0;
@@ -206,7 +213,9 @@ class _AchievementsViewState extends State<AchievementsView> {
 
                           return Expanded(
                             child: Tooltip(
-                              message: ach["title"].toString().toUpperCase(),
+                              message: trackingAvailable
+                                  ? ach["title"].toString().toUpperCase()
+                                  : "${ach["title"].toString().toUpperCase()}\nTRACKING PENDING",
                               preferBelow: false,
                               textStyle: const TextStyle(color: cBlack, fontWeight: FontWeight.bold, fontSize: 12),
                               decoration: BoxDecoration(color: cNeonGreen, borderRadius: BorderRadius.circular(4)),
@@ -241,7 +250,9 @@ class _AchievementsViewState extends State<AchievementsView> {
                                           strokeWidth: 4.0,
                                           backgroundColor: Colors.grey.shade900,
                                           valueColor: AlwaysStoppedAnimation<Color>(
-                                            isUnlocked ? cNeonGreen : Colors.orangeAccent,
+                                            isUnlocked
+                                                ? cNeonGreen
+                                                : (trackingAvailable ? Colors.orangeAccent : Colors.grey),
                                           ),
                                         ),
                                       ),
@@ -254,8 +265,12 @@ class _AchievementsViewState extends State<AchievementsView> {
                                           border: Border.all(color: Colors.grey.shade800),
                                         ),
                                         child: Icon(
-                                          isUnlocked ? _getCategoryIcon(ach["category"]) : Icons.lock_outline,
-                                          color: isUnlocked ? cNeonGreen : Colors.grey.shade700,
+                                          isUnlocked
+                                              ? _getCategoryIcon(ach["category"])
+                                              : (trackingAvailable ? Icons.lock_outline : Icons.hourglass_empty),
+                                          color: isUnlocked
+                                              ? cNeonGreen
+                                              : (trackingAvailable ? Colors.grey.shade700 : Colors.grey.shade600),
                                           size: 20,
                                         ),
                                       ),
