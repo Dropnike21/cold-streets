@@ -7,12 +7,17 @@ const STAT_COLUMNS = Object.freeze({
     res: 'stat_res'
 });
 
-function statValue(player, statKey) {
+function statValue(player, statKey, prefix = 'stat_') {
     const column = STAT_COLUMNS[statKey];
     if (!column) {
         throw new ActionError(503, 'Company position contains an unsupported Working Stat key.');
     }
-    return dbInteger(player[column], { field: 'Player ' + statKey.toUpperCase() });
+    const actualColumn = prefix === 'cur_'
+        ? 'cur_' + statKey
+        : column;
+    return dbInteger(player[actualColumn], {
+        field: (prefix === 'cur_' ? 'Crew ' : 'Player ') + statKey.toUpperCase()
+    });
 }
 
 function requirementValue(position, field, label) {
@@ -55,7 +60,44 @@ function assertPositionEligibility(player, position) {
     };
 }
 
+function assertCrewPositionEligibility(crew, position) {
+    const primaryReq = requirementValue(
+        position,
+        'req_amount_primary',
+        'Primary position requirement'
+    );
+    const secondaryReq = requirementValue(
+        position,
+        'req_amount_secondary',
+        'Secondary position requirement'
+    );
+
+    const primaryValue = statValue(crew, position.req_stat_primary, 'cur_');
+    const secondaryValue = statValue(crew, position.req_stat_secondary, 'cur_');
+
+    if (primaryValue < primaryReq || secondaryValue < secondaryReq) {
+        throw new ActionError(
+            409,
+            'Recruit does not meet the source-backed Working Stat requirements for this position.'
+        );
+    }
+
+    return {
+        primary: {
+            stat: position.req_stat_primary,
+            required: primaryReq,
+            actual: primaryValue
+        },
+        secondary: {
+            stat: position.req_stat_secondary,
+            required: secondaryReq,
+            actual: secondaryValue
+        }
+    };
+}
+
 module.exports = {
     STAT_COLUMNS,
-    assertPositionEligibility
+    assertPositionEligibility,
+    assertCrewPositionEligibility
 };
