@@ -57,7 +57,7 @@ premium system.
 
 Migration:
 
-`20261105084920_vip_casino_cap_20261105.sql`
+`20261105095946_vip_casino_cap_20261105.sql`
 
 now creates four separate premium-domain tables.
 
