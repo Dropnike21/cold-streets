@@ -212,35 +212,37 @@ class _SyndicateViewState extends State<SyndicateView> {
   }
 
   Widget _buildSyndicateTab() {
-    final myGangCount = _activeCrew.length;
-
-    // V1.3 Dynamic Capital Tracking!
-    int currentCash = int.tryParse(widget.userData['dirty_cash']?.toString() ?? '0') ?? 0;
-    double capitalProgress = (currentCash / 500000000.0).clamp(0.0, 1.0);
-
     return ListView(
-      padding: const EdgeInsets.all(10),
+      padding: const EdgeInsets.all(16),
       children: [
         Container(
-          padding: const EdgeInsets.all(12),
-          decoration: BoxDecoration(color: const Color(0xFF1A1A1A), border: Border.all(color: const Color(0xFF333333)), borderRadius: BorderRadius.circular(4)),
-          child: Column(
+          padding: const EdgeInsets.all(16),
+          decoration: BoxDecoration(
+            color: const Color(0xFF1A1A1A),
+            border: Border.all(color: const Color(0xFF333333)),
+            borderRadius: BorderRadius.circular(6),
+          ),
+          child: const Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              const Text("SYNDICATE ESTABLISHMENT", style: TextStyle(color: Color(0xFF39FF14), fontSize: 12, fontWeight: FontWeight.bold, letterSpacing: 1)),
-              const SizedBox(height: 10),
-              _buildReqRow("GANG MEMBERS", "$myGangCount / 150", (myGangCount / 150.0).clamp(0.0, 1.0)),
-              _buildReqRow("CAPITAL", "\$${_formatStat(currentCash)} / \$500M", capitalProgress),
-              _buildReqRow("COMPLETE BUSINESSES", "0 / 2", 0.0, subtext: "Requires fully linked Production, Manufacturing & Distribution lines."),
-              const SizedBox(height: 16),
-              SizedBox(
-                width: double.infinity, height: 36,
-                child: ElevatedButton(
-                  onPressed: null,
-                  style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF39FF14).withValues(alpha:0.1), disabledBackgroundColor: const Color(0xFF121212), side: const BorderSide(color: Color(0xFF333333))),
-                  child: const Text("INSUFFICIENT RESOURCES", style: TextStyle(color: Colors.white24, fontSize: 10, fontWeight: FontWeight.bold, letterSpacing: 1)),
+              Text(
+                "SYNDICATE ESTABLISHMENT — PAUSED",
+                style: TextStyle(
+                  color: Colors.amber,
+                  fontSize: 12,
+                  fontWeight: FontWeight.bold,
+                  letterSpacing: 1,
                 ),
-              )
+              ),
+              SizedBox(height: 10),
+              Text(
+                "Legacy member, capital, and completed-business thresholds are not verified by the recovered source set. Establishment requirements will be shown only after the canonical Syndicate rules are selected.",
+                style: TextStyle(
+                  color: Colors.white70,
+                  fontSize: 10,
+                  height: 1.45,
+                ),
+              ),
             ],
           ),
         ),
@@ -459,11 +461,15 @@ class _SyndicateViewState extends State<SyndicateView> {
   }
 
   Widget _buildActiveCrewCard(Map<String, dynamic> npc) {
-    int barMax = 1000;
-    if (npc["tier"] == "Hustler") barMax = 10000;
-    if (npc["tier"] == "Enforcer") barMax = 80000;
-    if (npc["tier"] == "Specialist") barMax = 350000;
-    if (npc["tier"] == "Lieutenant") barMax = 1000000;
+    final persistedMaxStats = [
+      npc["max_str"], npc["max_def"], npc["max_dex"], npc["max_spd"],
+      npc["max_acu"], npc["max_ops"], npc["max_pre"], npc["max_res"],
+    ].map((value) => int.tryParse(value?.toString() ?? '') ?? 0)
+      .where((value) => value > 0)
+      .toList();
+    final int barMax = persistedMaxStats.isEmpty
+        ? 1
+        : persistedMaxStats.reduce((a, b) => a > b ? a : b);
 
     bool isAssigned = npc["assignment"] != 'UNASSIGNED';
 
