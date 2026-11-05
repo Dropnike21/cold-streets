@@ -7,6 +7,10 @@ const requestObservability = require('./middleware/requestObservability');
 const { mutationContract } = require('./middleware/mutationContract');
 const logger = require('./utils/logger');
 const runtimeHealth = require('./utils/runtimeHealth');
+const {
+    classifyOperationalError,
+    applyOperationalResponse
+} = require('./utils/operationalErrors');
 const { startCrewCrimeWorker } = require('./workers/crewCrimeWorker');
 const { startStateDurationWorker } = require('./workers/stateDurationWorker');
 
@@ -29,7 +33,11 @@ app.use(requestObservability);
 app.use((_req, res, next) => {
     res.setHeader('Cache-Control', 'no-store');
     res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
     res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('X-DNS-Prefetch-Control', 'off');
+    res.setHeader('X-Permitted-Cross-Domain-Policies', 'none');
+    res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
     res.setHeader('X-Frame-Options', 'DENY');
     res.setHeader('Referrer-Policy', 'no-referrer');
     res.setHeader(
@@ -89,9 +97,23 @@ app.get('/readyz', async (req, res) => {
     let databaseProbeOk = null;
 
     if (gameplayEnabled) {
+        if (pool.coldStreetsCapacity.isOverloaded()) {
+            databaseProbeOk = false;
+            logger.warn('readiness_database_pool_overloaded', {
+                request_id: req.requestId,
+                ...pool.coldStreetsCapacity.capacitySnapshot()
+            });
+        }
+
         let readinessClient;
         let readinessTransaction = false;
         try {
+            if (databaseProbeOk === false) {
+                throw Object.assign(
+                    new Error('Database readiness probe skipped because the pool is overloaded.'),
+                    { code: 'DB_POOL_OVERLOADED' }
+                );
+            }
             readinessClient = await pool.connect();
             await readinessClient.query('BEGIN');
             readinessTransaction = true;
@@ -108,12 +130,14 @@ app.get('/readyz', async (req, res) => {
                 try { await readinessClient.query('ROLLBACK'); }
                 catch (_) {}
             }
-            runtimeHealth.markDatabaseFailure();
+            if (err?.code !== 'DB_POOL_OVERLOADED') {
+                runtimeHealth.markDatabaseFailure();
+                logger.warn('readiness_database_probe_failed', {
+                    request_id: req.requestId,
+                    ...logger.errorFields(err)
+                });
+            }
             databaseProbeOk = false;
-            logger.warn('readiness_database_probe_failed', {
-                request_id: req.requestId,
-                ...logger.errorFields(err)
-            });
         } finally {
             if (readinessClient) readinessClient.release();
         }
@@ -149,6 +173,20 @@ app.use((req, res, next) => {
             error: 'Cold Streets API is disabled pending security review.'
         });
     }
+
+    if (pool.coldStreetsCapacity.isOverloaded()) {
+        logger.warn('database_pool_overload_rejected', {
+            request_id: req.requestId,
+            method: req.method,
+            ...pool.coldStreetsCapacity.capacitySnapshot()
+        });
+        res.setHeader('Retry-After', '1');
+        res.setHeader('Connection', 'close');
+        return res.status(503).json({
+            error: 'Service temporarily overloaded. Retry the request.'
+        });
+    }
+
     return next();
 });
 
@@ -257,6 +295,16 @@ app.use((req, res) => {
 });
 
 app.use((err, req, res, _next) => {
+    const operational = classifyOperationalError(err);
+    if (operational) {
+        logger.warn('unhandled_operational_request_error', {
+            request_id: req.requestId,
+            operational_kind: operational.kind,
+            ...logger.errorFields(err)
+        });
+        return applyOperationalResponse(res, operational);
+    }
+
     logger.error('unhandled_request_error', {
         request_id: req.requestId,
         ...logger.errorFields(err)
@@ -316,6 +364,9 @@ async function shutdown(signal, exitCode = 0) {
         server.close(error => {
             void finish(error);
         });
+        // Node 24 closes idle keep-alive sockets as part of server.close(); the
+        // explicit call makes shutdown intent clear and is harmless on Node 24.
+        server.closeIdleConnections();
     } else {
         await finish(null);
     }
@@ -342,14 +393,24 @@ server = http.createServer({
     headersTimeout: 10000,
     requestTimeout: 20000,
     keepAliveTimeout: 5000,
+    keepAliveTimeoutBuffer: 1000,
+    keepAlive: true,
+    keepAliveInitialDelay: 10000,
     connectionsCheckingInterval: 5000,
-    requireHostHeader: true
+    requireHostHeader: true,
+    insecureHTTPParser: false
 }, app);
 
 server.maxHeadersCount = 100;
 server.maxRequestsPerSocket = 500;
+server.maxConnections = 256;
+server.dropMaxConnection = true;
 server.setTimeout(30000, socket => {
     socket.destroy();
+});
+
+server.on('drop', () => {
+    logger.warn('http_connection_dropped', { reason: 'max_connections' });
 });
 
 server.listen(PORT, '0.0.0.0', () => {
