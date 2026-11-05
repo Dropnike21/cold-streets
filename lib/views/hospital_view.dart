@@ -6,8 +6,13 @@ import '../api_config.dart';
 
 class HospitalView extends StatefulWidget {
   final Map<String, dynamic> userData;
+  final Function(Map<String, dynamic>) onStateChange;
 
-  const HospitalView({super.key, required this.userData});
+  const HospitalView({
+    super.key,
+    required this.userData,
+    required this.onStateChange,
+  });
 
   @override
   State<HospitalView> createState() => _HospitalViewState();
