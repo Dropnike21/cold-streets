@@ -815,7 +815,7 @@ class _CompanyManagementViewState extends State<CompanyManagementView> {
                   style: TextStyle(color: Colors.white54, fontSize: 10),
                 ),
                 Text(
-                  "\\$${_formatNumber(_company['bank_dirty'])}",
+                  "\$${_formatNumber(_company['bank_dirty'])}",
                   style: TextStyle(
                     color: neonGreen,
                     fontSize: 14,
@@ -831,7 +831,7 @@ class _CompanyManagementViewState extends State<CompanyManagementView> {
                   style: TextStyle(color: Colors.white54, fontSize: 10),
                 ),
                 Text(
-                  "\\$${_formatNumber(_company['bank_clean'])}",
+                  "\$${_formatNumber(_company['bank_clean'])}",
                   style: const TextStyle(
                     color: Colors.white,
                     fontSize: 14,
@@ -868,7 +868,7 @@ class _CompanyManagementViewState extends State<CompanyManagementView> {
           style: const TextStyle(color: Colors.white),
           decoration: const InputDecoration(
             border: OutlineInputBorder(),
-            prefixText: "\\$ ",
+            prefixText: "\$ ",
             labelText: "Dirty Cash Amount",
           ),
         ),
