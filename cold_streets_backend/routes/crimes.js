@@ -43,10 +43,6 @@ router.post('/execute', async (req, res) => {
         const crimeId = integer(req.body?.crime_id, {
             field: 'Crime ID', min: 1n, max: 9223372036854775807n
         }).toString();
-        const activityName = typeof req.body?.activity_name === 'string'
-            ? req.body.activity_name
-            : null;
-
         await client.query('BEGIN');
 
         // 1. Universal Checks (Valid User, Jail, Hospital, HP)
@@ -61,7 +57,7 @@ router.post('/execute', async (req, res) => {
             userId,
             'crimes.execute',
             idempotencyKey,
-            { crimeId, activityName }
+            { crimeId }
         );
         if (idem.replay) {
             await client.query('COMMIT');
@@ -100,7 +96,14 @@ router.post('/execute', async (req, res) => {
                 return await shopliftingEngine.execute(client, user, crime, req, res);
 
             case 'Pickpocketing':
-                return await pickpocketEngine.execute(client, user, crime, req, res);
+                // The legacy client supplied the target activity, which changes
+                // success chance. Until target/activity state is server-issued
+                // and replayable, accepting that field would let the client
+                // choose its own probability modifier.
+                await client.query('ROLLBACK');
+                return res.status(503).json({
+                    error: 'Pickpocket execution is paused until target activity is server-issued.'
+                });
 
             default:
                 await client.query('ROLLBACK');
