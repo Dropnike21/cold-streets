@@ -73,6 +73,8 @@ class _MissionsViewState extends State<MissionsView> {
   String? _activeContact;
   bool _isLoadingMission = false;
   Map<String, dynamic>? _currentMissionData;
+  Map<String, dynamic> _currentProgress = {};
+  bool _verificationAvailable = false;
   bool _isProcessingAction = false;
 
   Map<String, dynamic> _getContactExp() {
@@ -97,7 +99,12 @@ class _MissionsViewState extends State<MissionsView> {
 
   void _handleBack() {
     if (_activeContact != null) {
-      setState(() { _activeContact = null; _currentMissionData = null; });
+      setState(() {
+        _activeContact = null;
+        _currentMissionData = null;
+        _currentProgress = {};
+        _verificationAvailable = false;
+      });
     } else {
       widget.onBack();
     }
@@ -110,7 +117,15 @@ class _MissionsViewState extends State<MissionsView> {
       final String id = widget.userData['user_id'].toString();
       final response = await http.get(Uri.parse('${ApiConfig.baseUrl}/missions/details/$id/$contact'));
       if (response.statusCode == 200 && mounted) {
-        setState(() => _currentMissionData = jsonDecode(response.body)['mission']);
+        final data = jsonDecode(response.body);
+        final progressRaw = data['progress'];
+        setState(() {
+          _currentMissionData = data['mission'];
+          _currentProgress = progressRaw is Map
+              ? Map<String, dynamic>.from(progressRaw)
+              : <String, dynamic>{};
+          _verificationAvailable = data['verification_available'] == true;
+        });
       }
     } catch (e) {
       debugPrint("Mission Fetch Error: $e");
@@ -312,86 +327,114 @@ class _MissionsViewState extends State<MissionsView> {
 
     Widget objectiveWidget;
     bool canVerify = false;
+    final visitsRaw = _currentProgress['visits'];
+    final visits = visitsRaw is Map
+        ? Map<String, dynamic>.from(visitsRaw)
+        : <String, dynamic>{};
+    final energyRaw = _currentProgress['energy_by_stat'];
+    final energyByStat = energyRaw is Map
+        ? Map<String, dynamic>.from(energyRaw)
+        : <String, dynamic>{};
 
     if (anonExp == 1) {
-      canVerify = widget.tut1Vitals && widget.tut1Assets;
+      final vitals = visits['vitals'] == true;
+      final assets = visits['assets'] == true;
+      canVerify = _verificationAvailable && vitals && assets;
       objectiveWidget = Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          _buildChecklistItem("Check your Vitals (Top Bar)", widget.tut1Vitals),
-          _buildChecklistItem("Inspect your Assets (Side Menu)", widget.tut1Assets),
+          _buildChecklistItem("Check your Vitals (Top Bar)", vitals),
+          _buildChecklistItem("Inspect your Assets (Side Menu)", assets),
         ],
       );
-    }
-    else if (anonExp == 2) {
-      canVerify = widget.tut2Inv && widget.tut2Prop && widget.tut2Ach;
+    } else if (anonExp == 2) {
+      final inventory = visits['inventory'] == true;
+      final properties = visits['properties'] == true;
+      final achievements = visits['achievements'] == true;
+      canVerify = _verificationAvailable && inventory && properties && achievements;
       objectiveWidget = Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          _buildChecklistItem("Access your Inventory", widget.tut2Inv),
-          _buildChecklistItem("Access your Properties", widget.tut2Prop),
-          _buildChecklistItem("Access your Achievements", widget.tut2Ach),
+          _buildChecklistItem("Access your Inventory", inventory),
+          _buildChecklistItem("Access your Properties", properties),
+          _buildChecklistItem("Access your Achievements", achievements),
         ],
       );
-    }
-    else if (anonExp == 3) {
-      bool hasDoneCrime = widget.tut3CrimesDoneCount >= 20;
-      int displayCount = widget.tut3CrimesDoneCount > 20 ? 20 : widget.tut3CrimesDoneCount;
-
-      canVerify = widget.tut3Search && widget.tut3Shop && widget.tut3Pick && hasDoneCrime;
+    } else if (anonExp == 3) {
+      final searching = visits['crime_searching'] == true;
+      final shoplifting = visits['crime_shoplifting'] == true;
+      final pickpocketing = visits['crime_pickpocketing'] == true;
+      final crimesDone = int.tryParse(
+        (_currentProgress['successful_crimes'] ?? 0).toString(),
+      ) ?? 0;
+      final crimesComplete = crimesDone >= 20;
+      canVerify = _verificationAvailable &&
+          searching && shoplifting && pickpocketing && crimesComplete;
       objectiveWidget = Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          _buildChecklistItem("Scout the Searching area", widget.tut3Search),
-          _buildChecklistItem("Scout the Shoplifting area", widget.tut3Shop),
-          _buildChecklistItem("Scout the Pickpocketing area", widget.tut3Pick),
-          _buildChecklistItem("Pull off 20 successful crimes ($displayCount / 20)", hasDoneCrime),
+          _buildChecklistItem("Scout the Searching area", searching),
+          _buildChecklistItem("Scout the Shoplifting area", shoplifting),
+          _buildChecklistItem("Scout the Pickpocketing area", pickpocketing),
+          _buildChecklistItem(
+            "Pull off 20 successful crimes (${math.min(crimesDone, 20)} / 20)",
+            crimesComplete,
+          ),
         ],
       );
-    }
-    // 🚨 TASK 4 LOGIC
-    else if (anonExp == 4) {
-      bool strDone = widget.tut4EnergyStr >= 150;
-      bool defDone = widget.tut4EnergyDef >= 150;
-      bool dexDone = widget.tut4EnergyDex >= 150;
-      bool spdDone = widget.tut4EnergySpd >= 150;
-
-      canVerify = widget.tut4Gym && strDone && defDone && dexDone && spdDone;
-
+    } else if (anonExp == 4) {
+      int energy(String stat) =>
+          int.tryParse((energyByStat[stat] ?? 0).toString()) ?? 0;
+      final gym = visits['gym'] == true;
+      final str = energy('str');
+      final def = energy('def');
+      final dex = energy('dex');
+      final spd = energy('spd');
+      canVerify = _verificationAvailable &&
+          gym && str >= 150 && def >= 150 && dex >= 150 && spd >= 150;
       objectiveWidget = Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          _buildChecklistItem("Navigate to the Training Gym", widget.tut4Gym),
-          _buildChecklistItem("Spend 150 Energy on STR (${math.min(widget.tut4EnergyStr, 150)}/150)", strDone),
-          _buildChecklistItem("Spend 150 Energy on DEF (${math.min(widget.tut4EnergyDef, 150)}/150)", defDone),
-          _buildChecklistItem("Spend 150 Energy on DEX (${math.min(widget.tut4EnergyDex, 150)}/150)", dexDone),
-          _buildChecklistItem("Spend 150 Energy on SPD (${math.min(widget.tut4EnergySpd, 150)}/150)", spdDone),
+          _buildChecklistItem("Navigate to the Training Gym", gym),
+          _buildChecklistItem("Spend 150 Energy on STR (${math.min(str, 150)}/150)", str >= 150),
+          _buildChecklistItem("Spend 150 Energy on DEF (${math.min(def, 150)}/150)", def >= 150),
+          _buildChecklistItem("Spend 150 Energy on DEX (${math.min(dex, 150)}/150)", dex >= 150),
+          _buildChecklistItem("Spend 150 Energy on SPD (${math.min(spd, 150)}/150)", spd >= 150),
         ],
       );
-    }
-    else if (anonExp == 5) {
-      canVerify = widget.tut5Bank && widget.tut5Estate;
+    } else if (anonExp == 5) {
+      final bank = visits['bank'] == true;
+      final estate = visits['real_estate'] == true;
+      canVerify = _verificationAvailable && bank && estate;
       objectiveWidget = Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          _buildChecklistItem("Navigate to The Bank (Financial District)", widget.tut5Bank),
-          _buildChecklistItem("Navigate to Real Estate (Financial District)", widget.tut5Estate),
+          _buildChecklistItem("Navigate to The Bank (Financial District)", bank),
+          _buildChecklistItem("Navigate to Real Estate (Financial District)", estate),
         ],
       );
-    }
-    else if (anonExp == 6) {
-      canVerify = widget.tut6Broker && widget.tut6Casino;
+    } else if (anonExp == 6) {
+      final broker = visits['credit_broker'] == true;
+      final casino = visits['casino'] == true;
+      canVerify = _verificationAvailable && broker && casino;
       objectiveWidget = Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          _buildChecklistItem("Navigate to Credit Broker (The Underworld)", widget.tut6Broker),
-          _buildChecklistItem("Navigate to The Casino (The Underworld)", widget.tut6Casino),
+          _buildChecklistItem("Navigate to Credit Broker (The Underworld)", broker),
+          _buildChecklistItem("Navigate to The Casino (The Underworld)", casino),
         ],
       );
-    }
-    else {
-      objectiveWidget = Text(missionData['objective_text'] ?? "", style: const TextStyle(color: Colors.orangeAccent, fontSize: 13, fontWeight: FontWeight.bold, height: 1.4));
-      canVerify = true;
+    } else {
+      objectiveWidget = Text(
+        missionData['objective_text'] ?? "",
+        style: const TextStyle(
+          color: Colors.orangeAccent,
+          fontSize: 13,
+          fontWeight: FontWeight.bold,
+          height: 1.4,
+        ),
+      );
+      canVerify = false;
     }
 
     return _buildMessageBubble(
