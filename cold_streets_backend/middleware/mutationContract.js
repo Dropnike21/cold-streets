@@ -31,7 +31,6 @@ const ACTIVE_MUTATION_FIELDS = new Map([
     ['POST /jobs/interview/submit', ['interview_id', 'answers']],
     ['POST /jobs/claim-daily', []],
     ['POST /jobs/promote', []],
-    ['POST /jobs/quit', ['exit_type']],
     ['POST /jobs/mastery/activate', ['job_id']],
 
     ['POST /market/buy-bulk', ['cart']],
@@ -39,10 +38,7 @@ const ACTIVE_MUTATION_FIELDS = new Map([
     ['POST /missions/action', ['contact', 'action_type']],
     ['POST /real-estate/move-in', ['instanceId']],
 
-    ['POST /syndicate/assign_job', ['crew_id', 'crime_id']],
     ['POST /syndicate/unassign_job', ['crew_id']],
-    ['POST /syndicate/generate_board', []],
-    ['POST /syndicate/hire', ['offer_id']],
 
     ['POST /trade-network/listing-preflight', [
         'asset_namespace', 'item_id', 'pack_key', 'quantity'
@@ -72,6 +68,7 @@ const KNOWN_PAUSED_MUTATIONS = new Set([
     'POST /jail/breakout',
     'POST /jail/gym/train',
     'POST /jobs/exchange',
+    'POST /jobs/quit',
     'POST /premium/consume-pack',
     'POST /premium/subscribe',
     'POST /real-estate/buy-agency',
@@ -83,6 +80,9 @@ const KNOWN_PAUSED_MUTATIONS = new Set([
     'POST /real-estate/give',
     'POST /real-estate/upkeep/pay',
     'POST /syndicate/assign_company',
+    'POST /syndicate/assign_job',
+    'POST /syndicate/generate_board',
+    'POST /syndicate/hire',
     'POST /syndicate/complete_job',
     'POST /trade-network/list',
     'POST /trade-network/buy',
