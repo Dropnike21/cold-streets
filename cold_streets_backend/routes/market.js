@@ -4,6 +4,8 @@ const router = express.Router();
 const { ActionError, integer, dbInteger, exactJsonAmount, actorId, sendActionError } = require('../utils/economyValidation');
 const { requireIdempotencyKey, beginIdempotent, completeIdempotent } = require('../utils/idempotency');
 
+const CITY_MARKET_DAILY_ITEM_LIMIT = 100n;
+
 // --- HELPER: Fix pgAdmin's stripped JSON strings ---
 // This handles ANY key name and ANY string value dynamically
 function fixMalformedEffects(str) {
@@ -31,6 +33,46 @@ function fixMalformedEffects(str) {
         return {}; // Failsafe: return empty stats if something goes horribly wrong
     }
 }
+
+// --- CITY NPC MARKET DAILY USAGE ---
+// The recovered source defines one shared 100-item daily cap for city NPC
+// markets. CURRENT_DATE is the deterministic database calendar-day boundary;
+// no separate in-game timezone is invented here.
+router.get('/status', async (req, res) => {
+    try {
+        const userId = actorId(req);
+        const usage = await pool.query(
+            `SELECT CURRENT_DATE::text AS day_key,
+                    COALESCE(SUM(quantity), 0)::bigint AS purchased_today
+               FROM user_purchases
+              WHERE user_id = $1
+                AND purchase_source = 'city_market'
+                AND purchase_date >= CURRENT_DATE
+                AND purchase_date < CURRENT_DATE + INTERVAL '1 day'`,
+            [userId]
+        );
+        const purchased = dbInteger(
+            usage.rows[0].purchased_today,
+            { field: 'City market daily purchases' }
+        );
+        if (purchased < 0n || purchased > CITY_MARKET_DAILY_ITEM_LIMIT) {
+            throw new Error('City market daily purchase ledger is outside the source limit.');
+        }
+        return res.json({
+            success: true,
+            day_key: usage.rows[0].day_key,
+            reset_boundary: 'database_calendar_day',
+            daily_item_limit: exactJsonAmount(CITY_MARKET_DAILY_ITEM_LIMIT),
+            purchased_today: exactJsonAmount(purchased),
+            remaining_today: exactJsonAmount(
+                CITY_MARKET_DAILY_ITEM_LIMIT - purchased
+            ),
+            player_bazaar_limit_status: 'unlimited_by_source'
+        });
+    } catch (err) {
+        return sendActionError(res, err, 'Market status failed:');
+    }
+});
 
 // --- 1. GET ALL ITEMS FOR THE MARKET UI ---
 router.get('/list', async (req, res) => {
@@ -84,11 +126,20 @@ router.post('/buy-bulk', async (req, res) => {
                 throw new ActionError(400, 'Invalid cart line.');
             }
             const itemId = integer(raw.item_id, { field: 'Item ID', min: 1n, max: 9223372036854775807n }).toString();
-            const qty = integer(raw.quantity, { field: 'Quantity', min: 1n, max: 10000n });
+            const qty = integer(raw.quantity, {
+                field: 'Quantity',
+                min: 1n,
+                max: CITY_MARKET_DAILY_ITEM_LIMIT
+            });
             if (seen.has(itemId)) throw new ActionError(400, 'Duplicate items in cart.');
             seen.add(itemId);
             totalQty += qty;
-            if (totalQty > 10000n) throw new ActionError(400, 'Cart quantity exceeds the allowed transaction limit.');
+            if (totalQty > CITY_MARKET_DAILY_ITEM_LIMIT) {
+                throw new ActionError(
+                    400,
+                    'A city-market cart cannot exceed the 100-item daily limit.'
+                );
+            }
             return { itemId, qty };
         }).sort((a, b) => a.itemId.length - b.itemId.length || a.itemId.localeCompare(b.itemId));
     } catch (error) {
@@ -106,6 +157,37 @@ router.post('/buy-bulk', async (req, res) => {
         );
         if (wallet.rowCount !== 1) throw new ActionError(404, 'Player not found.');
         const balance = dbInteger(wallet.rows[0].dirty_cash);
+
+        // The player wallet lock serializes all city-market buys for this user,
+        // so the daily audit sum cannot be raced by a concurrent cart.
+        const dailyUsage = await client.query(
+            `SELECT COALESCE(SUM(quantity), 0)::bigint AS purchased_today
+               FROM user_purchases
+              WHERE user_id = $1
+                AND purchase_source = 'city_market'
+                AND purchase_date >= CURRENT_DATE
+                AND purchase_date < CURRENT_DATE + INTERVAL '1 day'`,
+            [userId]
+        );
+        const purchasedToday = dbInteger(
+            dailyUsage.rows[0].purchased_today,
+            { field: 'City market daily purchases' }
+        );
+        if (purchasedToday < 0n ||
+            purchasedToday > CITY_MARKET_DAILY_ITEM_LIMIT) {
+            throw new Error(
+                'City market daily purchase ledger is outside the source limit.'
+            );
+        }
+        if (purchasedToday + totalQty > CITY_MARKET_DAILY_ITEM_LIMIT) {
+            throw new ActionError(
+                409,
+                'City NPC market daily limit exceeded. ' +
+                    (CITY_MARKET_DAILY_ITEM_LIMIT - purchasedToday).toString() +
+                    ' item(s) remain today.'
+            );
+        }
+
         const idem = await beginIdempotent(
             client, userId, 'market.buy_bulk', idempotencyKey,
             { cart: entries.map(line => ({ itemId: line.itemId, quantity: line.qty.toString() })) }
@@ -159,28 +241,22 @@ router.post('/buy-bulk', async (req, res) => {
                 [userId, line.itemId, line.qty.toString()]
             );
             await client.query(
-                'INSERT INTO user_purchases (user_id, item_id, quantity) VALUES ($1, $2, $3::bigint)',
+                'INSERT INTO user_purchases (user_id, item_id, quantity, purchase_source) VALUES ($1, $2, $3::bigint, \'city_market\')',
                 [userId, line.itemId, line.qty.toString()]
             );
         }
 
         const response = {
             status: 'success',
-            message: 'Bulk purchase successful. Spent 
-    } catch (error) {
-        if (active) {
-            try { await client.query('ROLLBACK'); }
-            catch (rollbackError) { console.error('Market rollback failed:', rollbackError); }
-        }
-        return sendActionError(res, error, 'Market purchase failed:');
-    } finally {
-        if (client) client.release();
-    }
-});
-
-module.exports = router;
- + totalCost.toString() + '.',
+            message: 'Bulk purchase successful. Spent ' +
+                totalCost.toString() + '.',
             total_cost: exactJsonAmount(totalCost),
+            daily_item_limit: exactJsonAmount(CITY_MARKET_DAILY_ITEM_LIMIT),
+            purchased_today: exactJsonAmount(purchasedToday + totalQty),
+            remaining_today: exactJsonAmount(
+                CITY_MARKET_DAILY_ITEM_LIMIT - purchasedToday - totalQty
+            ),
+            reset_boundary: 'database_calendar_day',
             user: debit.rows[0]
         };
         await completeIdempotent(client, idem, 200, response);
@@ -189,8 +265,11 @@ module.exports = router;
         return res.status(200).json(response);
     } catch (error) {
         if (active) {
-            try { await client.query('ROLLBACK'); }
-            catch (rollbackError) { console.error('Market rollback failed:', rollbackError); }
+            try {
+                await client.query('ROLLBACK');
+            } catch (rollbackError) {
+                console.error('Market rollback failed:', rollbackError);
+            }
         }
         return sendActionError(res, error, 'Market purchase failed:');
     } finally {
