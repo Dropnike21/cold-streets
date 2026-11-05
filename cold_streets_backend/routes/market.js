@@ -1,3 +1,4 @@
+const logger = require('../utils/logger');
 const express = require('express');
 const pool = require('../db');
 const router = express.Router();
@@ -37,7 +38,7 @@ function fixMalformedEffects(str) {
         // Parse it into a perfect JavaScript object
         return JSON.parse(fixedStr);
     } catch (e) {
-        console.error("Regex fix failed on string:", str);
+        logger.warn('market_effect_parse_failed');
         return {}; // Failsafe: return empty stats if something goes horribly wrong
     }
 }
@@ -118,7 +119,7 @@ router.get('/list', async (req, res) => {
         res.json(cleanedItems);
     } catch (err) {
         // This will print the EXACT reason to your Node terminal if it fails again
-        console.error("Market Fetch Error:", err.message);
+        logger.error('market_fetch_failed', logger.errorFields(err));
         res.status(500).json({ error: "Failed to load the Market." });
     }
 });
@@ -321,7 +322,7 @@ router.post('/buy-bulk', async (req, res) => {
             try {
                 await client.query('ROLLBACK');
             } catch (rollbackError) {
-                console.error('Market rollback failed:', rollbackError);
+                logger.error('market_rollback_failed', logger.errorFields(rollbackError));
             }
         }
         return sendActionError(res, error, 'Market purchase failed:');
