@@ -11,12 +11,32 @@ const { startStateDurationWorker } = require('./workers/stateDurationWorker');
 
 require('dotenv').config();
 
+function parseRuntimePort(value, fallback) {
+    if (value === undefined || value === '') return fallback;
+    if (!/^[0-9]+$/.test(value)) {
+        throw new Error('PORT must be an integer TCP port.');
+    }
+    const parsed = Number(value);
+    if (!Number.isInteger(parsed) || parsed < 1 || parsed > 65535) {
+        throw new Error('PORT must be between 1 and 65535.');
+    }
+    return parsed;
+}
+
+function parseBooleanFlag(name, fallback = false) {
+    const value = process.env[name];
+    if (value === undefined || value === '') return fallback;
+    if (value === 'true') return true;
+    if (value === 'false') return false;
+    throw new Error(name + ' must be exactly true or false when set.');
+}
+
 const app = express();
 app.disable('x-powered-by');
 app.disable('etag');
 app.set('query parser', 'simple');
 
-const gameplayEnabled = process.env.ENABLE_GAMEPLAY_API === 'true';
+const gameplayEnabled = parseBooleanFlag('ENABLE_GAMEPLAY_API', false);
 runtimeHealth.configure({ gameplayEnabled });
 
 pool.on('error', err => {
@@ -51,8 +71,34 @@ app.use((_req, res, next) => {
 
 // Browser origins must be explicitly allowlisted. Native Flutter requests do not
 // carry an Origin header. Do not expose a wildcard credentialed CORS policy.
-const allowedOrigins = new Set((process.env.CORS_ALLOWED_ORIGINS || '')
-  .split(',').map(origin => origin.trim()).filter(Boolean));
+const configuredOrigins = (process.env.CORS_ALLOWED_ORIGINS || '')
+    .split(',')
+    .map(origin => origin.trim())
+    .filter(Boolean);
+
+const allowedOrigins = new Set();
+for (const origin of configuredOrigins) {
+    let parsed;
+    try {
+        parsed = new URL(origin);
+    } catch {
+        throw new Error('CORS_ALLOWED_ORIGINS contains an invalid URL.');
+    }
+    if (
+        !['http:', 'https:'].includes(parsed.protocol) ||
+        parsed.username ||
+        parsed.password ||
+        parsed.pathname !== '/' ||
+        parsed.search ||
+        parsed.hash ||
+        parsed.origin !== origin
+    ) {
+        throw new Error(
+            'CORS_ALLOWED_ORIGINS entries must be bare http(s) origins.'
+        );
+    }
+    allowedOrigins.add(origin);
+}
 app.use(cors({
     origin(origin, callback) {
         if (!origin || allowedOrigins.has(origin)) return callback(null, true);
@@ -298,9 +344,9 @@ app.use('/real-estate', require('./routes/realEstate'));
 app.use('/casino', require('./routes/casino'));
 
 // Legacy single-process Vital/market timers are permanently retired.
-if (process.env.ENABLE_UNSAFE_LEGACY_TIMERS === 'true') {
+if (process.env.ENABLE_UNSAFE_LEGACY_TIMERS !== undefined) {
     throw new Error(
-        'ENABLE_UNSAFE_LEGACY_TIMERS is retired. Legacy Vital/restock writers cannot be enabled.'
+        'ENABLE_UNSAFE_LEGACY_TIMERS is retired and must not be configured.'
     );
 }
 
@@ -328,7 +374,7 @@ app.use((err, req, res, _next) => {
     });
 });
 
-const PORT = process.env.PORT || 3000;
+const PORT = parseRuntimePort(process.env.PORT, 3000);
 let server = null;
 
 async function shutdown(signal, exitCode = 0) {
