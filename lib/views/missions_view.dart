@@ -75,6 +75,8 @@ class _MissionsViewState extends State<MissionsView> {
   Map<String, dynamic>? _currentMissionData;
   Map<String, dynamic> _currentProgress = {};
   bool _verificationAvailable = false;
+  String _currentContactStatus = 'unknown';
+  String _currentContactReason = '';
   bool _isProcessingAction = false;
 
   Map<String, dynamic> _getContactExp() {
@@ -104,6 +106,8 @@ class _MissionsViewState extends State<MissionsView> {
         _currentMissionData = null;
         _currentProgress = {};
         _verificationAvailable = false;
+        _currentContactStatus = 'unknown';
+        _currentContactReason = '';
       });
     } else {
       widget.onBack();
@@ -111,7 +115,6 @@ class _MissionsViewState extends State<MissionsView> {
   }
 
   Future<void> _fetchMissionData(String contact) async {
-    if (contact != 'anonymous') return;
     setState(() => _isLoadingMission = true);
     try {
       final String id = widget.userData['user_id'].toString();
@@ -120,11 +123,15 @@ class _MissionsViewState extends State<MissionsView> {
         final data = jsonDecode(response.body);
         final progressRaw = data['progress'];
         setState(() {
-          _currentMissionData = data['mission'];
+          _currentMissionData = data['mission'] is Map
+              ? Map<String, dynamic>.from(data['mission'])
+              : null;
           _currentProgress = progressRaw is Map
               ? Map<String, dynamic>.from(progressRaw)
               : <String, dynamic>{};
           _verificationAvailable = data['verification_available'] == true;
+          _currentContactStatus = data['status']?.toString() ?? 'unknown';
+          _currentContactReason = data['reason']?.toString() ?? '';
         });
       }
     } catch (e) {
@@ -207,7 +214,6 @@ class _MissionsViewState extends State<MissionsView> {
   Widget _buildContactList() {
     int anonExp = _getExpFor('anonymous');
     int kevinExp = _getExpFor('kevin');
-    int johnExp = _getExpFor('uncle_john');
 
     return ListView(
       padding: const EdgeInsets.all(12),
@@ -222,7 +228,7 @@ class _MissionsViewState extends State<MissionsView> {
             name: "Anonymous",
             phone: "+63 945 112 ****",
             repScore: anonExp,
-            maxRep: 50,
+            maxRep: 7,
             color: widget.isWaitingForMessage ? Colors.white24 : Colors.grey,
             icon: widget.isWaitingForMessage ? Icons.lock_clock : Icons.help_outline,
             subtitleOverride: widget.isWaitingForMessage ? "Decrypting transmission..." : null,
@@ -234,11 +240,20 @@ class _MissionsViewState extends State<MissionsView> {
           ),
         ),
 
-        if (anonExp >= 50)
-          _buildContactTile(name: "Kevin", phone: "+63 917 883 ****", repScore: kevinExp, maxRep: 200, color: Colors.orangeAccent, icon: Icons.local_fire_department, onTap: () => setState(() => _activeContact = 'kevin')),
-
-        if (kevinExp >= 200)
-          _buildContactTile(name: "Uncle John", phone: "+63 920 555 ****", repScore: johnExp, maxRep: 1000, color: Colors.redAccent, icon: Icons.business_center, onTap: () => setState(() => _activeContact = 'uncle_john')),
+        if (anonExp >= 7)
+          _buildContactTile(
+            name: "Kevin",
+            phone: "+63 917 883 ****",
+            repScore: kevinExp,
+            maxRep: 1,
+            color: Colors.orangeAccent,
+            icon: Icons.local_fire_department,
+            subtitleOverride: "UNLOCKED • CONTRACTS PAUSED",
+            onTap: () {
+              setState(() => _activeContact = 'kevin');
+              _fetchMissionData('kevin');
+            },
+          ),
       ],
     );
   }
@@ -456,36 +471,26 @@ class _MissionsViewState extends State<MissionsView> {
   }
 
   Widget _buildKevinChat() {
-    final contract = _getActiveContract();
-
-    if (contract == null || contract['fixer'] != 'kevin') {
-      return _buildMessageBubble(
-          title: "STANDBY FOR WORK", message: "You looking for a hustle? I got names and targets, but you gotta commit.",
-          objectiveWidget: const Text("Request a dynamic contract from Kevin.", style: TextStyle(color: Colors.orangeAccent, fontSize: 13, fontWeight: FontWeight.bold, height: 1.4)),
-          reward: "Variable Cash & EXP",
-          buttons: [_buildActionBtn("REQUEST NEW CONTRACT", Colors.orangeAccent, () => _processAction('kevin', 'REQUEST'))]
-      );
-    }
-
-    Widget dynamicObjective = Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        _buildChecklistItem("Crimes: ${contract['progress']['crimes']} / ${contract['reqs']['crimes']}", contract['progress']['crimes'] >= contract['reqs']['crimes']),
-        _buildChecklistItem("Gym: ${contract['progress']['gym']} / ${contract['reqs']['gym']}", contract['progress']['gym'] >= contract['reqs']['gym']),
-      ],
-    );
+    final reason = _currentContactReason.isNotEmpty
+        ? _currentContactReason
+        : "Kevin is unlocked by the Anonymous handoff, but his contract rules are still being source-reconciled.";
 
     return _buildMessageBubble(
-        title: "ACTIVE CONTRACT", message: "Here are the details. Get it done, and report back.",
-        objectiveWidget: dynamicObjective,
-        reward: "\$${contract['reward_cash']} Dirty Cash",
-        buttons: [
-          _buildActionBtn("TURN IN CONTRACT (+2 REP)", const Color(0xFF39FF14), () => _processAction('kevin', 'TURN_IN')),
-          const SizedBox(height: 8),
-          _buildActionBtn("PARTIAL TURN-IN (-1 REP)", Colors.yellowAccent, () => _processAction('kevin', 'PARTIAL')),
-          const SizedBox(height: 8),
-          _buildActionBtn("ABORT CONTRACT (-2 REP)", Colors.redAccent, () => _processAction('kevin', 'ABORT')),
-        ]
+      title: _currentContactStatus == 'paused'
+          ? "CONTACT ESTABLISHED"
+          : "KEVIN",
+      message: reason,
+      objectiveWidget: const Text(
+        "No contract can be requested, advanced, turned in, partially settled, or aborted until authoritative objectives, payouts, and reputation rules are recovered.",
+        style: TextStyle(
+          color: Colors.orangeAccent,
+          fontSize: 13,
+          fontWeight: FontWeight.bold,
+          height: 1.4,
+        ),
+      ),
+      reward: "No authoritative contract reward available.",
+      buttons: const [],
     );
   }
 
