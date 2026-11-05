@@ -13,8 +13,8 @@ deployment, or production change was performed.
 Static route inventory:
 
 - total POST endpoints: 72;
-- registered active/read-preflight POST contracts: 39;
-- explicitly paused/legacy POST endpoints: 33;
+- registered active/read-preflight POST contracts: 35;
+- explicitly paused/legacy POST endpoints: 37;
 - unclassified POST endpoints: 0;
 - PUT/PATCH/DELETE gameplay handlers found in the current route stack: 0.
 
@@ -36,7 +36,6 @@ Examples:
 - `/market/buy-bulk` -> `cart`;
 - `/gym/train` -> `stat_type, energy_spent, gym_id`;
 - `/company-management/funds` -> `company_id, amount`;
-- `/syndicate/assign_job` -> `crew_id, crime_id`;
 - `/trade-network/listing-preflight` -> canonical asset identity + quantity.
 
 Active mutation routes reject:
@@ -134,11 +133,9 @@ The old route accepted either:
 
 The title fallback is removed.
 
-Crew assignment now requires canonical `crime_id`, then resolves title,
-automation interval, payout, tool requirement, and casualty rate from the
-server catalog.
-
-Flutter now submits the board's canonical crime ID.
+The title fallback was removed. A later source review then found that Recruits
+Canvas conflicts with `crimes_master` on automation timing/mortality, so crew
+crime assignment is now fully paused rather than executing either rule family.
 
 ## Pickpocket authority defect closed
 
@@ -175,11 +172,10 @@ including:
 - Hospital revive;
 - classifieds;
 - inventory use/equip;
-- City Job interview/daily pay/promotion/quit/mastery;
+- City Job interview/daily pay/promotion/mastery;
 - City Market purchase;
 - Anonymous verification;
 - property move-in;
-- Syndicate assignment/board/hire;
 - University enrollment/dropout/graduation.
 
 POST surfaces without the economic idempotency ledger are intentionally
@@ -196,8 +192,9 @@ non-additive/read-like:
 Economic/resource values continue to use exact integer parsing and PostgreSQL
 integer/NUMERIC arithmetic where required.
 
-This pass also removed a recruit-price JSON conversion through `Number`;
-Syndicate recruitment prices now use exact JSON integer serialization.
+Recruit generation/hiring was subsequently paused after Recruits Canvas exposed
+conflicting stat ranges and an incomplete dynamic cost formula. No recruit price
+settlement remains active.
 
 Remaining JavaScript `Number` use in active mutation code is limited to
 bounded values such as:
@@ -219,3 +216,14 @@ Every currently defined backend POST route is now either:
 2. explicitly fail-closed.
 
 There is no unclassified mutation route in the current canonical route stack.
+
+## Final source-reconciliation reclassification
+
+A final Drive/source closure pass moved four routes from active to paused:
+
+- `POST /jobs/quit` — resignation retention/heist economics are not defined by the recovered City Job sources;
+- `POST /syndicate/assign_job` — Recruits Canvas conflicts with per-crime automation/casualty metadata;
+- `POST /syndicate/generate_board` — legacy stat ranges conflict with Recruits Canvas;
+- `POST /syndicate/hire` — recruit price multipliers are not defined.
+
+The final 35/37 classification above reflects this source-backed fail-closed state.
