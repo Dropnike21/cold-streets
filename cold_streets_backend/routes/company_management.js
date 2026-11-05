@@ -12,7 +12,8 @@ const { requireIdempotencyKey, beginIdempotent, completeIdempotent } = require('
 // some company_id operations with no director authorization at all.
 const pausedManagementActions = new Set([
     '/manage-employee', '/change-director', '/sell-company',
-    '/order-stock', '/buy-upgrade', '/assign-crew', '/update-advertising'
+    '/order-stock', '/buy-upgrade', '/assign-crew', '/update-advertising',
+    '/update-pricing'
 ]);
 router.use(async (req, res, next) => {
     if (req.method !== 'POST') return next();
