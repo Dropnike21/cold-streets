@@ -1,8 +1,10 @@
 const express = require('express');
 const cors = require('cors');
+const http = require('node:http');
 const pool = require('./db');
 const { requireAuthenticatedPlayer } = require('./middleware/playerIdentity');
 const requestObservability = require('./middleware/requestObservability');
+const { mutationContract } = require('./middleware/mutationContract');
 const logger = require('./utils/logger');
 const runtimeHealth = require('./utils/runtimeHealth');
 const { startCrewCrimeWorker } = require('./workers/crewCrimeWorker');
@@ -11,6 +13,9 @@ const { startStateDurationWorker } = require('./workers/stateDurationWorker');
 require('dotenv').config();
 
 const app = express();
+app.disable('x-powered-by');
+app.disable('etag');
+
 const gameplayEnabled = process.env.ENABLE_GAMEPLAY_API === 'true';
 runtimeHealth.configure({ gameplayEnabled });
 
@@ -21,6 +26,29 @@ pool.on('error', err => {
 
 app.use(requestObservability);
 
+app.use((_req, res, next) => {
+    res.setHeader('Cache-Control', 'no-store');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('X-Frame-Options', 'DENY');
+    res.setHeader('Referrer-Policy', 'no-referrer');
+    res.setHeader(
+        'Content-Security-Policy',
+        "default-src 'none'; frame-ancestors 'none'; base-uri 'none'"
+    );
+    res.setHeader(
+        'Permissions-Policy',
+        'camera=(), microphone=(), geolocation=()'
+    );
+    if (process.env.NODE_ENV === 'production') {
+        res.setHeader(
+            'Strict-Transport-Security',
+            'max-age=31536000'
+        );
+    }
+    return next();
+});
+
 // Browser origins must be explicitly allowlisted. Native Flutter requests do not
 // carry an Origin header. Do not expose a wildcard credentialed CORS policy.
 const allowedOrigins = new Set((process.env.CORS_ALLOWED_ORIGINS || '')
@@ -30,15 +58,23 @@ app.use(cors({
         if (!origin || allowedOrigins.has(origin)) return callback(null, true);
         return callback(null, false);
     },
+    methods: ['GET', 'POST', 'OPTIONS'],
     allowedHeaders: [
         'Content-Type',
         'Authorization',
         'Idempotency-Key',
         'X-Request-Id'
     ],
-    exposedHeaders: ['X-Request-Id']
+    exposedHeaders: ['X-Request-Id'],
+    credentials: false,
+    maxAge: 600,
+    optionsSuccessStatus: 204
 }));
-app.use(express.json({ limit: '64kb' }));
+app.use(express.json({
+    limit: '64kb',
+    strict: true,
+    type: ['application/json', 'application/*+json']
+}));
 
 // Liveness proves only that the Node process/listener is alive. It deliberately
 // does not touch Postgres or reveal gameplay configuration details.
@@ -102,6 +138,10 @@ app.use((req, res, next) => {
     }
     return next();
 });
+
+// Any active mutation must be registered with an explicit top-level JSON field
+// allowlist. Unknown mutation routes fail closed.
+app.use(mutationContract);
 
 let workerHandles = [];
 
@@ -284,7 +324,22 @@ process.once('unhandledRejection', reason => {
     void shutdown('unhandledRejection', 1);
 });
 
-server = app.listen(PORT, '0.0.0.0', () => {
+server = http.createServer({
+    maxHeaderSize: 16 * 1024,
+    headersTimeout: 10000,
+    requestTimeout: 20000,
+    keepAliveTimeout: 5000,
+    connectionsCheckingInterval: 5000,
+    requireHostHeader: true
+}, app);
+
+server.maxHeadersCount = 100;
+server.maxRequestsPerSocket = 500;
+server.setTimeout(30000, socket => {
+    socket.destroy();
+});
+
+server.listen(PORT, '0.0.0.0', () => {
     logger.info('listener_started', {
         port: Number(PORT),
         gameplay_enabled: gameplayEnabled
