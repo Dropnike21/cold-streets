@@ -1,7 +1,7 @@
 // File Path: lib/views/inventory_view.dart
 
 import 'package:flutter/material.dart';
-import 'package:http/http.dart' as http;
+import '../services/game_http.dart' as http;
 import 'dart:convert';
 
 import '../api_config.dart';
@@ -128,7 +128,7 @@ class _InventoryViewState extends State<InventoryView> {
       final response = await http.post(
         Uri.parse('${ApiConfig.baseUrl}/inventory/use'),
         headers: {"Content-Type": "application/json"},
-        body: jsonEncode({"user_id": widget.userData['user_id'], "item_id": item['item_id']}),
+        body: jsonEncode({"item_id": item['item_id']}),
       );
 
       if (!mounted) return;
@@ -137,9 +137,30 @@ class _InventoryViewState extends State<InventoryView> {
       final result = jsonDecode(response.body);
 
       if (response.statusCode == 200) {
-        if (result['user'] != null) widget.onStateChange(result['user']);
+        if (result['user'] != null) {
+          widget.onStateChange({
+            ...widget.userData,
+            ...Map<String, dynamic>.from(result['user']),
+          });
+        }
         _fetchInventory();
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(result['message']), backgroundColor: Colors.greenAccent));
+
+        String message = result['message']?.toString() ?? 'Item used.';
+        final medical = result['applied_explicit_medical'];
+        if (medical is Map) {
+          final hpPct = medical['hp_gain_pct']?.toString();
+          final hospitalMins = medical['hosp_reduction_mins']?.toString();
+          if (hpPct != null && hospitalMins != null) {
+            message += ' +$hpPct% Max HP, -$hospitalMins min Hospital.';
+          }
+        }
+
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(message),
+            backgroundColor: Colors.greenAccent,
+          ),
+        );
       } else {
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(result['error'] ?? "Failed to use item."), backgroundColor: Colors.redAccent));
       }
