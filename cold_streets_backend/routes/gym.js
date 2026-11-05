@@ -5,7 +5,7 @@ const { requireOwnedPlayerParam } = require('../middleware/playerIdentity');
 router.param('user_id', requireOwnedPlayerParam);
 
 const pool = require('../db');
-const { trackAndCheckAchievement } = require('../utils/achievement_engine'); // INJECTED ACHIEVEMENT ENGINE
+const { recordGymTrainingAchievement } = require('../utils/achievement_engine');
 const { ActionError, integer, dbInteger, actorId, sendActionError } = require('../utils/economyValidation');
 const { incrementKevinProgress } = require('../utils/missionProgress');
 const { recordAnonymousGymTraining } = require('../utils/anonymousTutorial');
@@ -218,13 +218,12 @@ router.post('/train', async (req, res) => {
         // independent of how much energy was spent in that action.
         await incrementKevinProgress(client, userId, 'gym', 1);
         await recordAnonymousGymTraining(client, userId, statType, energySpent.toString());
+        await recordGymTrainingAchievement(client, userId, energySpent.toString());
         await client.query('COMMIT');
         transaction = false;
 
         const payload = updatedUser.rows[0];
         payload.gym_exp = exp.rows[0].gym_exp;
-        trackAndCheckAchievement(userId, 'total_gym_trains', 1, 'user_statistics');
-        trackAndCheckAchievement(userId, 'total_energy_spent', energyNumber, 'user_statistics');
         return res.json({ success: true, gained: totalStatGain.toFixed(2), user: payload });
     } catch (err) {
         if (transaction) {
