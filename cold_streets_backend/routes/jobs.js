@@ -17,6 +17,11 @@ const { refreshUniqueItemDiscoveryAchievements } = require('../utils/achievement
 // from its recovered mastery definition.
 const JOB_SPECIALS = {};
 
+const CLEAN_EXIT_RETENTION_PERCENT = 50;
+const HEIST_PAYOUT_PER_RANK = 10000n;
+const HEIST_HEAT = 100;
+const HEIST_BAN_DAYS = 30n;
+
 // Only source/catalog tuples that completed this reconciliation pass may run.
 // The hashes bind the private recovered rule values to the catalog metadata
 // without copying the recovered payloads into the public repository.
@@ -160,14 +165,26 @@ router.get('/:user_id', async (req, res) => {
                 };
             });
 
+            const mappedRank = uData
+                ? dbInteger(uData.current_rank, { field: 'Job rank' })
+                : 1n;
+            const isCurrent = user.current_job_id === job.job_id;
+
             return {
                 job_id: job.job_id,
                 job_name: job.job_name,
                 primary_stat: job.primary_stat,
                 mastery_passive: job.mastery_passive_desc,
                 mastery_active: job.mastery_active_desc,
-                is_current: user.current_job_id === job.job_id,
+                is_current: isCurrent,
                 current_rank: uData ? uData.current_rank : 1,
+                resignation_preview: isCurrent ? {
+                    clean_exit_retention_percent: CLEAN_EXIT_RETENTION_PERCENT,
+                    heist_payout_dirty_cash:
+                        exactJsonAmount(mappedRank * HEIST_PAYOUT_PER_RANK),
+                    heist_heat: HEIST_HEAT,
+                    heist_ban_days: exactJsonAmount(HEIST_BAN_DAYS)
+                } : null,
                 incentive_balance: uData ? uData.incentive_balance : 0,
                 is_mastered: uData ? uData.is_mastered : false,
                 ban_expiry: uData ? uData.ban_expiry : null,
@@ -874,28 +891,31 @@ router.post('/quit', async (req, res) => {
             const rank = integer(jobData.current_rank, {
                 field: 'Job rank', min: 1n, max: 100n
             });
-            const payout = rank * 10000n;
+            const payout = rank * HEIST_PAYOUT_PER_RANK;
             await client.query(
                 `UPDATE user_job_data
                     SET incentive_balance = 0,
-                        ban_expiry = NOW() + INTERVAL '30 days'
+                        ban_expiry = NOW() +
+                            ($3::bigint * INTERVAL '1 day')
                   WHERE user_id = $1 AND job_id = $2`,
-                [userId, jobId]
+                [userId, jobId, HEIST_BAN_DAYS.toString()]
             );
             const wallet = await client.query(
                 `UPDATE users
                     SET current_job_id = NULL,
                         dirty_cash = dirty_cash + $1::numeric,
-                        heat = 100
-                  WHERE user_id = $2
+                        heat = $2
+                  WHERE user_id = $3
                   RETURNING dirty_cash, heat`,
-                [payout.toString(), userId]
+                [payout.toString(), HEIST_HEAT, userId]
             );
             response = {
                 success: true,
                 message: 'Heist resignation completed. Maximum heat and 30-day job ban applied.',
                 payout: exactJsonAmount(payout),
-                dirty_cash: wallet.rows[0].dirty_cash
+                dirty_cash: wallet.rows[0].dirty_cash,
+                heat: wallet.rows[0].heat,
+                ban_days: exactJsonAmount(HEIST_BAN_DAYS)
             };
         }
         await completeIdempotent(client, idem, 200, response);
