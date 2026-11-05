@@ -8,6 +8,13 @@ const isRemote = Boolean(process.env.DB_HOST && process.env.DB_HOST !== 'localho
 const tlsEnabled = process.env.DB_SSL === 'true' ||
     (process.env.DB_SSL === undefined && isRemote);
 
+// Keep the application pool deliberately small when using Supabase's shared
+// pooler. Once all clients are checked out, node-postgres queues pool.connect()
+// calls in memory. The HTTP layer sheds new gameplay requests before that queue
+// can grow without bound.
+const DB_POOL_MAX = 10;
+const DB_POOL_MAX_WAITING = 20;
+
 const pool = new Pool({
     user: process.env.DB_USER,
     password: process.env.DB_PASSWORD,
@@ -27,12 +34,39 @@ const pool = new Pool({
     idle_in_transaction_session_timeout: 15000,
 
     idleTimeoutMillis: 30000,
-    max: 10,
+    max: DB_POOL_MAX,
     maxUses: 5000,
     maxLifetimeSeconds: 300,
     keepAlive: true,
     keepAliveInitialDelayMillis: 10000,
     application_name: 'cold-streets-api'
+});
+
+function capacitySnapshot() {
+    return {
+        total: pool.totalCount,
+        idle: pool.idleCount,
+        waiting: pool.waitingCount,
+        max: DB_POOL_MAX,
+        waiting_limit: DB_POOL_MAX_WAITING
+    };
+}
+
+function isOverloaded() {
+    return pool.totalCount >= DB_POOL_MAX &&
+        pool.idleCount === 0 &&
+        pool.waitingCount >= DB_POOL_MAX_WAITING;
+}
+
+// Preserve the historical `require('./db') -> Pool` contract while exposing a
+// small, read-only operational surface for readiness/load shedding.
+Object.defineProperties(pool, {
+    coldStreetsCapacity: {
+        value: Object.freeze({ capacitySnapshot, isOverloaded }),
+        enumerable: false,
+        writable: false,
+        configurable: false
+    }
 });
 
 module.exports = pool;
