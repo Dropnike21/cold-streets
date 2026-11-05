@@ -199,7 +199,7 @@ class MainHubDrawer extends StatelessWidget {
                       children: [
                         _buildMenuTile(icon: Icons.account_balance, color: Colors.blueAccent, title: "The Bank", onTap: () => _handleNavigation(context, 17)),
                         _buildMenuTile(icon: Icons.domain, color: Colors.tealAccent, title: "Real Estate", onTap: () => _handleNavigation(context, 18)),
-                        _buildMenuTile(icon: Icons.shopping_bag, color: Colors.amber, title: "Trade Network (undeveloped)", onTap: () => _handleNavigation(context, 25)),
+                        _buildMenuTile(icon: Icons.shopping_bag, color: Colors.amber, title: "Trade Network", onTap: () => _handleNavigation(context, 25)),
                         _buildMenuTile(icon: Icons.gavel, color: Colors.orange, title: "Auction House (undeveloped)", onTap: () {}),
                       ]
                   ),
