@@ -97,7 +97,7 @@ class _HospitalViewState extends State<HospitalView> {
     try {
       final res = await http.post(Uri.parse('$apiUrl/revive'),
           headers: {"Content-Type": "application/json"},
-          body: jsonEncode({"user_id": widget.userData['user_id'], "target_id": targetId})
+          body: jsonEncode({"target_id": targetId})
       );
       final data = jsonDecode(res.body);
 
