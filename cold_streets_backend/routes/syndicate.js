@@ -1,3 +1,4 @@
+const logger = require('../utils/logger');
 const express = require('express');
 const router = express.Router();
 // Reject URLs referencing any player other than the verified session owner.
@@ -264,7 +265,7 @@ router.post('/unassign_job', async (req, res) => {
         if (transaction) {
             try { await client.query('ROLLBACK'); }
             catch (rollback) {
-                console.error('Crew recall rollback:', rollback);
+                logger.error('crew_recall_rollback_failed', logger.errorFields(rollback));
             }
         }
         return sendActionError(res, err, 'Crew recall failed:');
