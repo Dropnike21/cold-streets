@@ -8,6 +8,7 @@ router.param('user_id', requireOwnedPlayerParam);
 const pool = require('../db');
 const { ActionError, integer, dbInteger, exactJsonAmount, actorId, sendActionError } = require('../utils/economyValidation');
 const { requireIdempotencyKey, beginIdempotent, completeIdempotent } = require('../utils/idempotency');
+const { refreshUniqueItemDiscoveryAchievements } = require('../utils/achievement_engine');
 
 // Job-special mappings in the legacy route were not source-authoritative:
 // job 1 is Armed Forces (not City Hospital), and item IDs 101/102 are weapons,
@@ -863,6 +864,11 @@ router.post('/mastery/activate', async (req, res) => {
             );
             if (inventory.rowCount !== 1) throw new Error('Mastery inventory settlement failed.');
 
+            const uniqueItemsFound = await refreshUniqueItemDiscoveryAchievements(
+                client,
+                userId
+            );
+
             response = {
                 success: true,
                 reward_type: 'item',
@@ -871,6 +877,10 @@ router.post('/mastery/activate', async (req, res) => {
                 inventory_quantity: exactJsonAmount(dbInteger(
                     inventory.rows[0].quantity,
                     { field: 'Inventory quantity' }
+                )),
+                unique_items_found: exactJsonAmount(dbInteger(
+                    uniqueItemsFound,
+                    { field: 'Unique item discoveries' }
                 )),
                 incentive_cost: exactJsonAmount(active.cost),
                 incentive_balance: exactJsonAmount(dbInteger(
