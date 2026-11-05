@@ -89,6 +89,7 @@ app.use('/syndicate', require('./routes/syndicate'));
 app.use('/gym', require('./routes/gym')); // The normal gym
 app.use('/jobs', require('./routes/jobs'));
 app.use('/companies', require('./routes/companies'));
+app.use('/companies/supply-chain-audit', require('./routes/company_supply_chain_audit'));
 app.use('/company-management', require('./routes/company_management'));
 app.use('/credit-broker', require('./routes/credit_broker'));
 app.use('/real-estate', require('./routes/realEstate'));
