@@ -15,6 +15,7 @@ require('dotenv').config();
 const app = express();
 app.disable('x-powered-by');
 app.disable('etag');
+app.set('query parser', 'simple');
 
 const gameplayEnabled = process.env.ENABLE_GAMEPLAY_API === 'true';
 runtimeHealth.configure({ gameplayEnabled });
@@ -150,6 +151,24 @@ app.use((req, res, next) => {
         });
     }
     return next();
+});
+
+// Apply bounded backpressure before authentication or gameplay handlers can add
+// more PostgreSQL work to an already saturated pool.
+const MAX_DB_WAITING_REQUESTS = 20;
+app.use((req, res, next) => {
+    if (pool.waitingCount < MAX_DB_WAITING_REQUESTS) return next();
+
+    res.setHeader('Retry-After', '1');
+    logger.warn('database_pool_backpressure', {
+        request_id: req.requestId,
+        waiting_count: pool.waitingCount,
+        total_clients: pool.totalCount,
+        idle_clients: pool.idleCount
+    });
+    return res.status(503).json({
+        error: 'Server is temporarily busy. Retry shortly.'
+    });
 });
 
 // Any active mutation must be registered with an explicit top-level JSON field
