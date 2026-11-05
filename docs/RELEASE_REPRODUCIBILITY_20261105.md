@@ -88,7 +88,7 @@ The backend/container continues to default:
 
 With gameplay disabled:
 
-- only `/healthz` is available;
+- only `/healthz` and `/readyz` are available;
 - gameplay workers do not start;
 - authenticated gameplay routes remain 503.
 
@@ -145,8 +145,8 @@ Not performed:
 
 ## Operational hardening follow-up
 
-The reviewed runtime contract now requires Node 24.x and the release preflight
-checks that major explicitly.
+The reviewed runtime contract now requires Node >=24.6 <25 and the release
+preflight checks that version floor explicitly.
 
 Transport/database limits are documented in:
 

@@ -82,26 +82,36 @@ function startStateDurationWorker({
     batchLimit = DEFAULT_BATCH_LIMIT
 } = {}) {
     let running = false;
+    let stopping = false;
     runtimeHealth.markWorkerStarted(WORKER_NAME);
 
     const poll = async () => {
-        if (running) return;
+        if (running || stopping) return;
         running = true;
         try {
-            const settled = await settleDueStateEpisodeBatch(batchLimit);
-            runtimeHealth.markWorkerPollSuccess(WORKER_NAME, settled);
-            if (settled > 0) {
-                logger.info('worker_batch_settled', {
-                    worker: WORKER_NAME,
-                    settled_count: settled
-                });
+            let settled = 0;
+            while (!stopping && settled < batchLimit) {
+                const found = await settleOneDueStateEpisode();
+                if (!found) break;
+                settled += 1;
+            }
+            if (!stopping) {
+                runtimeHealth.markWorkerPollSuccess(WORKER_NAME, settled);
+                if (settled > 0) {
+                    logger.info('worker_batch_settled', {
+                        worker: WORKER_NAME,
+                        settled_count: settled
+                    });
+                }
             }
         } catch (err) {
-            runtimeHealth.markWorkerPollFailure(WORKER_NAME);
-            logger.error('worker_poll_failed', {
-                worker: WORKER_NAME,
-                ...logger.errorFields(err)
-            });
+            if (!stopping) {
+                runtimeHealth.markWorkerPollFailure(WORKER_NAME);
+                logger.error('worker_poll_failed', {
+                    worker: WORKER_NAME,
+                    ...logger.errorFields(err)
+                });
+            }
         } finally {
             running = false;
         }
@@ -109,7 +119,15 @@ function startStateDurationWorker({
 
     const timer = setInterval(poll, pollMs);
     if (typeof timer.unref === 'function') timer.unref();
-    return { name: WORKER_NAME, poll, timer };
+
+    const stop = () => {
+        if (stopping) return;
+        stopping = true;
+        clearInterval(timer);
+        runtimeHealth.markWorkerStopped(WORKER_NAME);
+    };
+
+    return { name: WORKER_NAME, poll, timer, stop };
 }
 
 module.exports = {

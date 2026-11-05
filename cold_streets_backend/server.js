@@ -7,6 +7,10 @@ const requestObservability = require('./middleware/requestObservability');
 const { mutationContract } = require('./middleware/mutationContract');
 const logger = require('./utils/logger');
 const runtimeHealth = require('./utils/runtimeHealth');
+const {
+    classifyOperationalError,
+    applyOperationalResponse
+} = require('./utils/operationalErrors');
 const { startStateDurationWorker } = require('./workers/stateDurationWorker');
 
 require('dotenv').config();
@@ -17,6 +21,7 @@ app.disable('etag');
 app.set('query parser', 'simple');
 
 const gameplayEnabled = process.env.ENABLE_GAMEPLAY_API === 'true';
+const MAX_DB_WAITING_REQUESTS = 20;
 runtimeHealth.configure({ gameplayEnabled });
 
 pool.on('error', err => {
@@ -29,7 +34,11 @@ app.use(requestObservability);
 app.use((_req, res, next) => {
     res.setHeader('Cache-Control', 'no-store');
     res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
     res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('X-DNS-Prefetch-Control', 'off');
+    res.setHeader('X-Permitted-Cross-Domain-Policies', 'none');
+    res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
     res.setHeader('X-Frame-Options', 'DENY');
     res.setHeader('Referrer-Policy', 'no-referrer');
     res.setHeader(
@@ -89,33 +98,43 @@ app.get('/readyz', async (req, res) => {
     let databaseProbeOk = null;
 
     if (gameplayEnabled) {
-        let readinessClient;
-        let readinessTransaction = false;
-        try {
-            readinessClient = await pool.connect();
-            await readinessClient.query('BEGIN');
-            readinessTransaction = true;
-            await readinessClient.query("SET LOCAL statement_timeout = '2s'");
-            await readinessClient.query("SET LOCAL lock_timeout = '1s'");
-            await readinessClient.query('SELECT 1');
-            await readinessClient.query('ROLLBACK');
-            readinessTransaction = false;
-
-            runtimeHealth.markDatabaseReady();
-            databaseProbeOk = true;
-        } catch (err) {
-            if (readinessClient && readinessTransaction) {
-                try { await readinessClient.query('ROLLBACK'); }
-                catch (_) {}
-            }
-            runtimeHealth.markDatabaseFailure();
+        if (pool.waitingCount >= MAX_DB_WAITING_REQUESTS) {
             databaseProbeOk = false;
-            logger.warn('readiness_database_probe_failed', {
+            logger.warn('readiness_database_pool_overloaded', {
                 request_id: req.requestId,
-                ...logger.errorFields(err)
+                waiting_count: pool.waitingCount,
+                total_clients: pool.totalCount,
+                idle_clients: pool.idleCount
             });
-        } finally {
-            if (readinessClient) readinessClient.release();
+        } else {
+            let readinessClient;
+            let readinessTransaction = false;
+            try {
+                readinessClient = await pool.connect();
+                await readinessClient.query('BEGIN');
+                readinessTransaction = true;
+                await readinessClient.query("SET LOCAL statement_timeout = '2s'");
+                await readinessClient.query("SET LOCAL lock_timeout = '1s'");
+                await readinessClient.query('SELECT 1');
+                await readinessClient.query('ROLLBACK');
+                readinessTransaction = false;
+
+                runtimeHealth.markDatabaseReady();
+                databaseProbeOk = true;
+            } catch (err) {
+                if (readinessClient && readinessTransaction) {
+                    try { await readinessClient.query('ROLLBACK'); }
+                    catch (_) {}
+                }
+                runtimeHealth.markDatabaseFailure();
+                databaseProbeOk = false;
+                logger.warn('readiness_database_probe_failed', {
+                    request_id: req.requestId,
+                    ...logger.errorFields(err)
+                });
+            } finally {
+                if (readinessClient) readinessClient.release();
+            }
         }
     }
 
@@ -154,11 +173,11 @@ app.use((req, res, next) => {
 
 // Apply bounded backpressure before authentication or gameplay handlers can add
 // more PostgreSQL work to an already saturated pool.
-const MAX_DB_WAITING_REQUESTS = 20;
 app.use((req, res, next) => {
     if (pool.waitingCount < MAX_DB_WAITING_REQUESTS) return next();
 
     res.setHeader('Retry-After', '1');
+    res.setHeader('Connection', 'close');
     logger.warn('database_pool_backpressure', {
         request_id: req.requestId,
         waiting_count: pool.waitingCount,
@@ -199,6 +218,12 @@ if (gameplayEnabled) {
     pool.connect()
       .then(client => {
           client.release();
+
+          if (shutdownStarted) {
+              logger.warn('database_bootstrap_completed_during_shutdown');
+              return;
+          }
+
           runtimeHealth.markDatabaseReady();
           logger.info('database_bootstrap_ready');
 
@@ -274,6 +299,33 @@ app.use((req, res) => {
 });
 
 app.use((err, req, res, _next) => {
+    if (req.aborted || res.destroyed) {
+        logger.warn('request_error_after_disconnect', {
+            request_id: req.requestId,
+            ...logger.errorFields(err)
+        });
+        return;
+    }
+
+    if (res.headersSent) {
+        logger.error('request_error_after_headers_sent', {
+            request_id: req.requestId,
+            ...logger.errorFields(err)
+        });
+        res.destroy();
+        return;
+    }
+
+    const operational = classifyOperationalError(err);
+    if (operational) {
+        logger.warn('unhandled_operational_request_error', {
+            request_id: req.requestId,
+            operational_kind: operational.kind,
+            ...logger.errorFields(err)
+        });
+        return applyOperationalResponse(res, operational);
+    }
+
     logger.error('unhandled_request_error', {
         request_id: req.requestId,
         ...logger.errorFields(err)
@@ -303,8 +355,12 @@ async function shutdown(signal, exitCode = 0) {
     logger.info('shutdown_started', { signal });
 
     for (const handle of workerHandles) {
-        if (handle?.timer) clearInterval(handle.timer);
-        if (handle?.name) runtimeHealth.markWorkerStopped(handle.name);
+        if (typeof handle?.stop === 'function') {
+            handle.stop();
+        } else {
+            if (handle?.timer) clearInterval(handle.timer);
+            if (handle?.name) runtimeHealth.markWorkerStopped(handle.name);
+        }
     }
 
     const forceTimer = setTimeout(() => {
@@ -333,6 +389,7 @@ async function shutdown(signal, exitCode = 0) {
         server.close(error => {
             void finish(error);
         });
+        server.closeIdleConnections();
     } else {
         await finish(null);
     }
@@ -359,14 +416,24 @@ server = http.createServer({
     headersTimeout: 10000,
     requestTimeout: 20000,
     keepAliveTimeout: 5000,
+    keepAliveTimeoutBuffer: 1000,
+    keepAlive: true,
+    keepAliveInitialDelay: 10000,
     connectionsCheckingInterval: 5000,
-    requireHostHeader: true
+    requireHostHeader: true,
+    insecureHTTPParser: false
 }, app);
 
 server.maxHeadersCount = 100;
 server.maxRequestsPerSocket = 500;
+server.maxConnections = 256;
+server.dropMaxConnection = true;
 server.setTimeout(30000, socket => {
     socket.destroy();
+});
+
+server.on('drop', () => {
+    logger.warn('http_connection_dropped', { reason: 'max_connections' });
 });
 
 server.listen(PORT, '0.0.0.0', () => {
