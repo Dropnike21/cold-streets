@@ -195,9 +195,12 @@ router.post('/use', async (req, res) => {
                                  - ($2::bigint * INTERVAL '1 minute')
                         END,
                         state_reason = CASE
-                            WHEN hospital_expires_at > NOW()
-                             AND hospital_expires_at
-                                   - ($2::bigint * INTERVAL '1 minute') <= NOW()
+                            WHEN hospital_expires_at IS NOT NULL
+                             AND (
+                                  hospital_expires_at <= NOW()
+                                  OR hospital_expires_at
+                                     - ($2::bigint * INTERVAL '1 minute') <= NOW()
+                             )
                              AND NOT COALESCE(jail_expires_at > NOW(), false)
                                 THEN NULL
                             ELSE state_reason
