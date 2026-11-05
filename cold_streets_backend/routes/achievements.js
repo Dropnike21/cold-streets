@@ -1,3 +1,4 @@
+const logger = require('../utils/logger');
 const express = require('express');
 const pool = require('../db');
 const router = express.Router();
@@ -131,7 +132,7 @@ router.get('/:user_id', async (req, res) => {
             achievements: mappedAchievements
         });
     } catch (err) {
-        console.error('Fetch Achievements Error:', err.message);
+        logger.error('achievements_fetch_failed', logger.errorFields(err));
         return res.status(500).json({ error: 'Failed to load achievements.' });
     }
 });
