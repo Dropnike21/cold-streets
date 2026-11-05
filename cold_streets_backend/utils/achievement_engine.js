@@ -8,7 +8,8 @@ const TRACKER_FINGERPRINTS = Object.freeze({
     gym_trains: '8ee92e728cedc162e62bd7feb8d2f6f1',
     crimes_successful: '01b96511878f1afa4f88591ee99364e7',
     player_level: '333212151aba8634b4672f695298b121',
-    courses_completed: 'b057568304caf960a3f75c6f84cc963e'
+    courses_completed: 'b057568304caf960a3f75c6f84cc963e',
+    unique_items_found: '453804215f82daa77f8d8a003adf8842'
 });
 
 const SUPPORTED_TRACKERS = Object.freeze(Object.keys(TRACKER_FINGERPRINTS));
@@ -128,8 +129,29 @@ async function recordGymTrainingAchievement(client, userId, energySpent) {
     return totals.rows[0];
 }
 
+async function refreshUniqueItemDiscoveryAchievements(client, userId) {
+    const total = await client.query(
+        `SELECT COUNT(*)::bigint AS total
+           FROM user_item_discoveries
+          WHERE user_id = $1`,
+        [userId]
+    );
+    if (total.rowCount !== 1) {
+        throw new Error('Unique item discovery telemetry could not be resolved.');
+    }
+
+    await unlockAchievementsForValue(
+        client,
+        userId,
+        'unique_items_found',
+        total.rows[0].total
+    );
+    return total.rows[0].total;
+}
+
 module.exports = {
     SUPPORTED_TRACKERS,
     unlockAchievementsForValue,
-    recordGymTrainingAchievement
+    recordGymTrainingAchievement,
+    refreshUniqueItemDiscoveryAchievements
 };

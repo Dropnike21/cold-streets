@@ -3,6 +3,7 @@ const pool = require('../db');
 const router = express.Router();
 const { ActionError, integer, dbInteger, exactJsonAmount, actorId, sendActionError } = require('../utils/economyValidation');
 const { requireIdempotencyKey, beginIdempotent, completeIdempotent } = require('../utils/idempotency');
+const { refreshUniqueItemDiscoveryAchievements } = require('../utils/achievement_engine');
 
 const CITY_MARKET_DAILY_ITEM_LIMIT = 100n;
 
@@ -246,6 +247,11 @@ router.post('/buy-bulk', async (req, res) => {
             );
         }
 
+        const uniqueItemsFound = await refreshUniqueItemDiscoveryAchievements(
+            client,
+            userId
+        );
+
         const response = {
             status: 'success',
             message: 'Bulk purchase successful. Spent ' +
@@ -257,6 +263,9 @@ router.post('/buy-bulk', async (req, res) => {
                 CITY_MARKET_DAILY_ITEM_LIMIT - purchasedToday - totalQty
             ),
             reset_boundary: 'database_calendar_day',
+            unique_items_found: exactJsonAmount(
+                dbInteger(uniqueItemsFound, { field: 'Unique item discoveries' })
+            ),
             user: debit.rows[0]
         };
         await completeIdempotent(client, idem, 200, response);

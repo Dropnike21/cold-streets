@@ -1,5 +1,5 @@
 // crimes/pickpocketing.js
-const { unlockAchievementsForValue } = require('../../utils/achievement_engine');
+const { unlockAchievementsForValue, refreshUniqueItemDiscoveryAchievements } = require('../../utils/achievement_engine');
 const { recordAnonymousCrimeSuccess } = require('../../utils/anonymousTutorial');
 const { randomPercent, randomInclusive, randomText, commitCrimeOutcome } = require('../../utils/crimeSettlement');
 const {
@@ -77,6 +77,7 @@ async function execute(client, user, crime, req, res) {
             const payout = randomInclusive(rewards.min_cash || 0, rewards.max_cash || 0);
 
             const lootData = rewards.loot || {};
+            let lootGranted = false;
             if (lootData && lootData.item_id && lootData.chance) {
                 const lootRoll = randomPercent();
                 if (lootRoll <= lootData.chance) {
@@ -85,6 +86,7 @@ async function execute(client, user, crime, req, res) {
                          ON CONFLICT (user_id, item_id) DO UPDATE SET quantity = user_inventory.quantity + EXCLUDED.quantity`,
                         [user.user_id, lootData.item_id, lootData.qty || 1]
                     );
+                    lootGranted = true;
                 }
             }
 
@@ -103,6 +105,13 @@ async function execute(client, user, crime, req, res) {
                 client, user.user_id, 'crimes_successful',
                 crimeTotals.rows[0].total_successes
             );
+            let uniqueItemsFound = null;
+            if (lootGranted) {
+                uniqueItemsFound = await refreshUniqueItemDiscoveryAchievements(
+                    client,
+                    user.user_id
+                );
+            }
             const flavorText = (randomPercent() <= 5)
                 ? getRandomText(flavor.crit)
                 : getRandomText(flavor.success);
@@ -110,6 +119,7 @@ async function execute(client, user, crime, req, res) {
                 status: "success",
                 message: flavorText,
                 gained_cash: payout,
+                unique_items_found: uniqueItemsFound,
                 user: updatedUser.rows[0]
             };
             return commitCrimeOutcome(client, req, res, response);
