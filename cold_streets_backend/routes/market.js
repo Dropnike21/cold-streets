@@ -4,8 +4,15 @@ const router = express.Router();
 const { ActionError, integer, dbInteger, exactJsonAmount, actorId, sendActionError } = require('../utils/economyValidation');
 const { requireIdempotencyKey, beginIdempotent, completeIdempotent } = require('../utils/idempotency');
 const { refreshUniqueItemDiscoveryAchievements } = require('../utils/achievement_engine');
+const {
+    BASE_CITY_MARKET_DAILY_ITEM_LIMIT,
+    SUBSCRIBER_CITY_MARKET_BONUS_ITEMS,
+    SUBSCRIBER_CITY_MARKET_DAILY_ITEM_LIMIT,
+    getPremiumStatus
+} = require('../utils/premiumEntitlements');
 
-const CITY_MARKET_DAILY_ITEM_LIMIT = 100n;
+const MAX_CITY_MARKET_DAILY_ITEM_LIMIT =
+    SUBSCRIBER_CITY_MARKET_DAILY_ITEM_LIMIT;
 
 // --- HELPER: Fix pgAdmin's stripped JSON strings ---
 // This handles ANY key name and ANY string value dynamically
@@ -36,13 +43,15 @@ function fixMalformedEffects(str) {
 }
 
 // --- CITY NPC MARKET DAILY USAGE ---
-// The recovered source defines one shared 100-item daily cap for city NPC
-// markets. CURRENT_DATE is the deterministic database calendar-day boundary;
-// no separate in-game timezone is invented here.
+// The recovered source defines a 100-item base daily cap for city NPC markets.
+// User-defined Subscriber semantics add +20 items, producing a 120-item effective
+// cap while the subscription period is active. CURRENT_DATE remains the
+// deterministic database calendar-day boundary.
 router.get('/status', async (req, res) => {
     try {
         const userId = actorId(req);
-        const usage = await pool.query(
+        const [usage, premium] = await Promise.all([
+            pool.query(
             `SELECT CURRENT_DATE::text AS day_key,
                     COALESCE(SUM(quantity), 0)::bigint AS purchased_today
                FROM user_purchases
@@ -51,23 +60,29 @@ router.get('/status', async (req, res) => {
                 AND purchase_date >= CURRENT_DATE
                 AND purchase_date < CURRENT_DATE + INTERVAL '1 day'`,
             [userId]
-        );
+            ),
+            getPremiumStatus(pool, userId)
+        ]);
+        const dailyLimit = premium.effectiveBenefits.cityMarketDailyItemLimit;
         const purchased = dbInteger(
             usage.rows[0].purchased_today,
             { field: 'City market daily purchases' }
         );
-        if (purchased < 0n || purchased > CITY_MARKET_DAILY_ITEM_LIMIT) {
+        if (purchased < 0n || purchased > dailyLimit) {
             throw new Error('City market daily purchase ledger is outside the source limit.');
         }
         return res.json({
             success: true,
             day_key: usage.rows[0].day_key,
             reset_boundary: 'database_calendar_day',
-            daily_item_limit: exactJsonAmount(CITY_MARKET_DAILY_ITEM_LIMIT),
+            base_daily_item_limit:
+                exactJsonAmount(BASE_CITY_MARKET_DAILY_ITEM_LIMIT),
+            subscriber_bonus_items:
+                exactJsonAmount(SUBSCRIBER_CITY_MARKET_BONUS_ITEMS),
+            subscriber_active: premium.subscriberActive,
+            daily_item_limit: exactJsonAmount(dailyLimit),
             purchased_today: exactJsonAmount(purchased),
-            remaining_today: exactJsonAmount(
-                CITY_MARKET_DAILY_ITEM_LIMIT - purchased
-            ),
+            remaining_today: exactJsonAmount(dailyLimit - purchased),
             player_bazaar_limit_status: 'unlimited_by_source'
         });
     } catch (err) {
@@ -112,16 +127,21 @@ router.get('/list', async (req, res) => {
 // One transaction and one database client cover money, stock, inventory
 // and audit rows. The server alone determines item eligibility and prices.
 router.post('/buy-bulk', async (req, res) => {
-    let userId, entries;
+    let userId, entries, idempotencyKey, totalQty = 0n;
     try {
         userId = actorId(req);
-        const idempotencyKey = requireIdempotencyKey(req);
+        idempotencyKey = requireIdempotencyKey(req);
         const cart = req.body?.cart;
-        if (!Array.isArray(cart) || cart.length < 1 || cart.length > 100) {
-            throw new ActionError(400, 'Cart must contain 1–100 line items.');
+        if (!Array.isArray(cart) ||
+            cart.length < 1 ||
+            BigInt(cart.length) > MAX_CITY_MARKET_DAILY_ITEM_LIMIT) {
+            throw new ActionError(
+                400,
+                'Cart line count exceeds the maximum supported daily market allowance.'
+            );
         }
         const seen = new Set();
-        let totalQty = 0n;
+        totalQty = 0n;
         entries = cart.map(raw => {
             if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
                 throw new ActionError(400, 'Invalid cart line.');
@@ -130,15 +150,15 @@ router.post('/buy-bulk', async (req, res) => {
             const qty = integer(raw.quantity, {
                 field: 'Quantity',
                 min: 1n,
-                max: CITY_MARKET_DAILY_ITEM_LIMIT
+                max: MAX_CITY_MARKET_DAILY_ITEM_LIMIT
             });
             if (seen.has(itemId)) throw new ActionError(400, 'Duplicate items in cart.');
             seen.add(itemId);
             totalQty += qty;
-            if (totalQty > CITY_MARKET_DAILY_ITEM_LIMIT) {
+            if (totalQty > MAX_CITY_MARKET_DAILY_ITEM_LIMIT) {
                 throw new ActionError(
                     400,
-                    'A city-market cart cannot exceed the 100-item daily limit.'
+                    'A city-market cart exceeds the maximum supported daily allowance.'
                 );
             }
             return { itemId, qty };
@@ -159,6 +179,27 @@ router.post('/buy-bulk', async (req, res) => {
         if (wallet.rowCount !== 1) throw new ActionError(404, 'Player not found.');
         const balance = dbInteger(wallet.rows[0].dirty_cash);
 
+        // Persistent replay must be checked before any daily-cap decision.
+        // Otherwise a retry of a successful purchase would count the original
+        // purchase and could fail as over-limit instead of replaying.
+        const idem = await beginIdempotent(
+            client, userId, 'market.buy_bulk', idempotencyKey,
+            {
+                cart: entries.map(line => ({
+                    itemId: line.itemId,
+                    quantity: line.qty.toString()
+                }))
+            }
+        );
+        if (idem.replay) {
+            await client.query('COMMIT');
+            active = false;
+            return res.status(idem.status).json(idem.response);
+        }
+
+        const premium = await getPremiumStatus(client, userId);
+        const dailyLimit = premium.effectiveBenefits.cityMarketDailyItemLimit;
+
         // The player wallet lock serializes all city-market buys for this user,
         // so the daily audit sum cannot be raced by a concurrent cart.
         const dailyUsage = await client.query(
@@ -175,29 +216,20 @@ router.post('/buy-bulk', async (req, res) => {
             { field: 'City market daily purchases' }
         );
         if (purchasedToday < 0n ||
-            purchasedToday > CITY_MARKET_DAILY_ITEM_LIMIT) {
+            purchasedToday > dailyLimit) {
             throw new Error(
                 'City market daily purchase ledger is outside the source limit.'
             );
         }
-        if (purchasedToday + totalQty > CITY_MARKET_DAILY_ITEM_LIMIT) {
+        if (purchasedToday + totalQty > dailyLimit) {
             throw new ActionError(
                 409,
                 'City NPC market daily limit exceeded. ' +
-                    (CITY_MARKET_DAILY_ITEM_LIMIT - purchasedToday).toString() +
+                    (dailyLimit - purchasedToday).toString() +
                     ' item(s) remain today.'
             );
         }
 
-        const idem = await beginIdempotent(
-            client, userId, 'market.buy_bulk', idempotencyKey,
-            { cart: entries.map(line => ({ itemId: line.itemId, quantity: line.qty.toString() })) }
-        );
-        if (idem.replay) {
-            await client.query('COMMIT');
-            active = false;
-            return res.status(idem.status).json(idem.response);
-        }
         let totalCost = 0n;
         const selected = [];
 
@@ -257,10 +289,15 @@ router.post('/buy-bulk', async (req, res) => {
             message: 'Bulk purchase successful. Spent ' +
                 totalCost.toString() + '.',
             total_cost: exactJsonAmount(totalCost),
-            daily_item_limit: exactJsonAmount(CITY_MARKET_DAILY_ITEM_LIMIT),
+            base_daily_item_limit:
+                exactJsonAmount(BASE_CITY_MARKET_DAILY_ITEM_LIMIT),
+            subscriber_bonus_items:
+                exactJsonAmount(SUBSCRIBER_CITY_MARKET_BONUS_ITEMS),
+            subscriber_active: premium.subscriberActive,
+            daily_item_limit: exactJsonAmount(dailyLimit),
             purchased_today: exactJsonAmount(purchasedToday + totalQty),
             remaining_today: exactJsonAmount(
-                CITY_MARKET_DAILY_ITEM_LIMIT - purchasedToday - totalQty
+                dailyLimit - purchasedToday - totalQty
             ),
             reset_boundary: 'database_calendar_day',
             unique_items_found: exactJsonAmount(
