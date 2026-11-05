@@ -7,7 +7,6 @@ const requestObservability = require('./middleware/requestObservability');
 const { mutationContract } = require('./middleware/mutationContract');
 const logger = require('./utils/logger');
 const runtimeHealth = require('./utils/runtimeHealth');
-const { startCrewCrimeWorker } = require('./workers/crewCrimeWorker');
 const { startStateDurationWorker } = require('./workers/stateDurationWorker');
 
 require('dotenv').config();
@@ -85,7 +84,7 @@ app.get('/healthz', (_req, res) => {
 
 // Readiness is separate from liveness. When gameplay is intentionally disabled,
 // the health-only process is considered ready. When gameplay is enabled, the
-// database must answer and both authoritative workers must be started/healthy.
+// database must answer and every currently enabled authoritative worker must be healthy.
 app.get('/readyz', async (req, res) => {
     let databaseProbeOk = null;
 
@@ -203,9 +202,8 @@ if (gameplayEnabled) {
           runtimeHealth.markDatabaseReady();
           logger.info('database_bootstrap_ready');
 
-          const crewWorker = startCrewCrimeWorker();
           const stateWorker = startStateDurationWorker();
-          workerHandles = [crewWorker, stateWorker];
+          workerHandles = [stateWorker];
 
           logger.info('workers_started', {
               workers: workerHandles.map(handle => handle.name).join(',')
