@@ -127,10 +127,10 @@ router.get('/list', async (req, res) => {
 // One transaction and one database client cover money, stock, inventory
 // and audit rows. The server alone determines item eligibility and prices.
 router.post('/buy-bulk', async (req, res) => {
-    let userId, entries;
+    let userId, entries, idempotencyKey, totalQty = 0n;
     try {
         userId = actorId(req);
-        const idempotencyKey = requireIdempotencyKey(req);
+        idempotencyKey = requireIdempotencyKey(req);
         const cart = req.body?.cart;
         if (!Array.isArray(cart) ||
             cart.length < 1 ||
@@ -141,7 +141,7 @@ router.post('/buy-bulk', async (req, res) => {
             );
         }
         const seen = new Set();
-        let totalQty = 0n;
+        totalQty = 0n;
         entries = cart.map(raw => {
             if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
                 throw new ActionError(400, 'Invalid cart line.');
@@ -178,6 +178,25 @@ router.post('/buy-bulk', async (req, res) => {
         );
         if (wallet.rowCount !== 1) throw new ActionError(404, 'Player not found.');
         const balance = dbInteger(wallet.rows[0].dirty_cash);
+
+        // Persistent replay must be checked before any daily-cap decision.
+        // Otherwise a retry of a successful purchase would count the original
+        // purchase and could fail as over-limit instead of replaying.
+        const idem = await beginIdempotent(
+            client, userId, 'market.buy_bulk', idempotencyKey,
+            {
+                cart: entries.map(line => ({
+                    itemId: line.itemId,
+                    quantity: line.qty.toString()
+                }))
+            }
+        );
+        if (idem.replay) {
+            await client.query('COMMIT');
+            active = false;
+            return res.status(idem.status).json(idem.response);
+        }
+
         const premium = await getPremiumStatus(client, userId);
         const dailyLimit = premium.effectiveBenefits.cityMarketDailyItemLimit;
 
@@ -211,15 +230,6 @@ router.post('/buy-bulk', async (req, res) => {
             );
         }
 
-        const idem = await beginIdempotent(
-            client, userId, 'market.buy_bulk', idempotencyKey,
-            { cart: entries.map(line => ({ itemId: line.itemId, quantity: line.qty.toString() })) }
-        );
-        if (idem.replay) {
-            await client.query('COMMIT');
-            active = false;
-            return res.status(idem.status).json(idem.response);
-        }
         let totalCost = 0n;
         const selected = [];
 
