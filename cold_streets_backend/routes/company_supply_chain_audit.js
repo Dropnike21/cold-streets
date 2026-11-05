@@ -49,9 +49,12 @@ router.get('/:type_id', async (req, res) => {
                 `SELECT
                      (SELECT COUNT(*)::bigint FROM company_products_master)::text
                        AS legacy_catalog_products,
-                     (SELECT COUNT(DISTINCT product_name)::bigint
-                        FROM company_product_rules_master)::text
+                     (SELECT COUNT(*)::bigint
+                        FROM company_source_products_master)::text
                        AS source_distinct_products,
+                     (SELECT COUNT(*)::bigint
+                        FROM company_source_inventory)::text
+                       AS source_inventory_rows,
                      (SELECT COUNT(*)::bigint
                         FROM company_product_rules_master)::text
                        AS source_rules_total,
@@ -105,6 +108,9 @@ router.get('/:type_id', async (req, res) => {
             ).length,
             product_rules: auditedRules,
             affiliations: affiliations.rows,
+            source_product_namespace_ready: true,
+            source_inventory_storage_ready: true,
+            source_inventory_mutation_available: false,
             legacy_name_matches_are_approved_mappings: false,
             incorporation_available: false,
             production_available: false,
@@ -112,7 +118,7 @@ router.get('/:type_id', async (req, res) => {
             sales_settlement_available: false,
             blockers: [
                 'Source supply-chain names and legacy product IDs belong to conflicting catalog generations.',
-                'No canonical source-to-runtime product identity mapping has been approved.',
+                'The source-native product namespace is canonical for recovered supply-chain names, but no legacy product-ID mapping has been approved.',
                 'Recipe quantities, production cadence, losses and inventory settlement remain unresolved.',
                 'Tier-3 clean_ratio does not establish a cash denomination or settlement formula.',
                 'Three cross-company affiliation names remain unresolved at the global catalog level.'
