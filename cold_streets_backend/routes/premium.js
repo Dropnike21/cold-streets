@@ -13,7 +13,7 @@ const {
     BASE_CASINO_DAILY_TOKEN_SPEND_CAP,
     VIP_CASINO_DAILY_TOKEN_SPEND_CAP,
     BASE_CITY_MARKET_DAILY_ITEM_LIMIT,
-    SUBSCRIBER_CITY_MARKET_BONUS_PERCENT,
+    SUBSCRIBER_CITY_MARKET_BONUS_ITEMS,
     SUBSCRIBER_CITY_MARKET_DAILY_ITEM_LIMIT,
     VIP_MAX_ENERGY_TARGET,
     VIP_NERVE_BONUS_PERCENT,
@@ -102,8 +102,8 @@ router.get('/status', async (req, res) => {
                     exactJsonAmount(VIP_CASINO_DAILY_TOKEN_SPEND_CAP),
                 base_city_market_daily_item_limit:
                     exactJsonAmount(BASE_CITY_MARKET_DAILY_ITEM_LIMIT),
-                subscriber_city_market_bonus_percent:
-                    exactJsonAmount(SUBSCRIBER_CITY_MARKET_BONUS_PERCENT),
+                subscriber_city_market_bonus_items:
+                    exactJsonAmount(SUBSCRIBER_CITY_MARKET_BONUS_ITEMS),
                 subscriber_city_market_daily_item_limit:
                     exactJsonAmount(SUBSCRIBER_CITY_MARKET_DAILY_ITEM_LIMIT),
                 vip_max_energy_target:
