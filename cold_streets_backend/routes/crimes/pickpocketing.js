@@ -1,193 +1,37 @@
-// crimes/pickpocketing.js
-const { unlockAchievementsForValue, refreshUniqueItemDiscoveryAchievements } = require('../../utils/achievement_engine');
-const { recordAnonymousCrimeSuccess } = require('../../utils/anonymousTutorial');
-const { randomPercent, randomInclusive, randomText, commitCrimeOutcome } = require('../../utils/crimeSettlement');
 const {
-    getCrimePenaltyRule,
-    reachesFederalHeatThreshold,
-    applyFederalArrest,
-    applyCrimeHospitalization,
-    applyCrimeJail
-} = require('../../utils/crimePenaltyCatalog');
+    ActionError,
+    sendActionError
+} = require('../../utils/economyValidation');
 
 async function listTargets(client, res) {
     try {
-        const crimes = await client.query("SELECT * FROM crimes_master WHERE sub_category = 'Pickpocketing' ORDER BY id ASC");
-        // We now just send the raw templates. The DB holds their specific activities!
-        res.json({ templates: crimes.rows });
+        const crimes = await client.query(
+            `SELECT id, category, sub_category, title, req_skill_level,
+                    nerve_cost, mechanics_json
+               FROM crimes_master
+              WHERE sub_category = 'Pickpocketing'
+              ORDER BY id ASC`
+        );
+
+        return res.json({
+            execution_available: false,
+            target_issuance_status: 'server_persistence_required',
+            templates: crimes.rows
+        });
     } catch (err) {
-        console.error("Pickpocket List Error:", err.message);
-        res.status(500).json({ error: "Failed to load crowd data." });
+        return sendActionError(res, err, 'Pickpocket catalog fetch failed:');
     }
 }
 
-async function execute(client, user, crime, req, res) {
-    try {
-        const rewards = crime.rewards_json || {};
-        const penaltyRule = getCrimePenaltyRule(crime);
-        const flavor = crime.flavor_text_json || {};
-        const mechanics = crime.mechanics_json || {};
-
-        // The app tells us WHICH activity the target was doing when the player attacked
-        const activityName = req.body.activity_name;
-
-        if (user.nerve < crime.nerve_cost) {
-            await client.query('ROLLBACK');
-            return res.status(400).json({ error: "Not enough Nerve." });
-        }
-
-        const getRandomText = (array) => randomText(array, "The job is done.");
-
-        const heatGained = penaltyRule.heatGen;
-
-        if (await reachesFederalHeatThreshold(client, user.heat, heatGained)) {
-            await applyFederalArrest(client, {
-                userId: user.user_id,
-                nerveCost: crime.nerve_cost,
-                currentInfluence: user.influence
-            });
-            await client.query(
-                "UPDATE user_crime_records SET total_crimes = total_crimes + 1, total_jailed = total_jailed + 1 WHERE user_id = $1",
-                [user.user_id]
-            );
-            return commitCrimeOutcome(client, req, res, {
-                status: "jailed",
-                arrested: true,
-                message: "100% HEAT REACHED! The cops were waiting. You lost all Dirty Cash and were sent to state prison."
-            });
-        }
-
-        // --- MATH ENGINE: Securely looking up the exact modifier ---
-        const activitiesList = mechanics.activities || [];
-        const matchedActivity = activitiesList.find(a => a.name === activityName);
-
-        // If they send a fake activity, default to 0 bonus
-        const activityMod = matchedActivity ? (parseFloat(matchedActivity.mod) || 0.0) : 0.0;
-
-        const nerveCost = parseFloat(crime.nerve_cost) || 1.0;
-        let baseChance = 95.0 - (nerveCost * 0.8);
-
-        let finalChance = baseChance + activityMod;
-        finalChance = Math.max(5.0, Math.min(99.0, finalChance));
-
-        const roll = randomPercent();
-
-        if (roll <= finalChance) {
-            // SUCCESS
-            const payout = randomInclusive(rewards.min_cash || 0, rewards.max_cash || 0);
-
-            const lootData = rewards.loot || {};
-            let lootGranted = false;
-            if (lootData && lootData.item_id && lootData.chance) {
-                const lootRoll = randomPercent();
-                if (lootRoll <= lootData.chance) {
-                    await client.query(
-                        `INSERT INTO user_inventory (user_id, item_id, quantity) VALUES ($1, $2, $3)
-                         ON CONFLICT (user_id, item_id) DO UPDATE SET quantity = user_inventory.quantity + EXCLUDED.quantity`,
-                        [user.user_id, lootData.item_id, lootData.qty || 1]
-                    );
-                    lootGranted = true;
-                }
-            }
-
-            const updatedUser = await client.query(
-                `UPDATE users SET nerve = nerve - $1, dirty_cash = dirty_cash + $2, exp = exp + $3, crime_exp = crime_exp + $4, heat = LEAST(heat + $5, 100.00) WHERE user_id = $6 RETURNING dirty_cash, energy, nerve, max_nerve, hp, exp, crime_exp, heat`,
-                [crime.nerve_cost, payout, (rewards.skill_exp || 10), (rewards.crime_exp || 5), heatGained, user.user_id]
-            );
-
-            const crimeTotals = await client.query(
-                "UPDATE user_crime_records SET total_crimes = total_crimes + 1, total_successes = total_successes + 1 WHERE user_id = $1 RETURNING total_successes",
-                [user.user_id]
-            );
-            if (crimeTotals.rowCount !== 1) throw new Error('Crime statistics row missing.');
-            await recordAnonymousCrimeSuccess(client, user.user_id, crime.sub_category);
-            await unlockAchievementsForValue(
-                client, user.user_id, 'crimes_successful',
-                crimeTotals.rows[0].total_successes
-            );
-            let uniqueItemsFound = null;
-            if (lootGranted) {
-                uniqueItemsFound = await refreshUniqueItemDiscoveryAchievements(
-                    client,
-                    user.user_id
-                );
-            }
-            const flavorText = (randomPercent() <= 5)
-                ? getRandomText(flavor.crit)
-                : getRandomText(flavor.success);
-            const response = {
-                status: "success",
-                message: flavorText,
-                gained_cash: payout,
-                unique_items_found: uniqueItemsFound,
-                user: updatedUser.rows[0]
-            };
-            return commitCrimeOutcome(client, req, res, response);
-
-        } else {
-            // FAILURE
-            await client.query("UPDATE user_crime_records SET total_crimes = total_crimes + 1, total_fails = total_fails + 1 WHERE user_id = $1", [user.user_id]);
-
-            const playerSpd = parseFloat(user.stat_spd) || 10.0;
-            let escapeChance = 33 + ((playerSpd / ((crime.req_skill_level * 10) || 10)) * 20);
-            escapeChance = Math.max(10, Math.min(85, escapeChance));
-            const failRoll = randomPercent();
-
-            if (failRoll <= escapeChance) {
-                const updatedUser = await client.query("UPDATE users SET nerve = nerve - $1, hp = GREATEST(hp - 10, 1), heat = LEAST(heat + $2, 100.00) WHERE user_id = $3 RETURNING dirty_cash, energy, nerve, max_nerve, hp, heat", [crime.nerve_cost, heatGained, user.user_id]);
-                return commitCrimeOutcome(client, req, res, {
-                    status: "escaped",
-                    message: getRandomText(flavor.fail),
-                    user: updatedUser.rows[0]
-                });
-            } else if (failRoll <= (escapeChance + ((100 - escapeChance) / 2))) {
-                const textHosp = getRandomText(flavor.hosp);
-                const updatedUser = {
-                    rows: [await applyCrimeHospitalization(client, {
-                        userId: user.user_id,
-                        nerveCost: crime.nerve_cost,
-                        heatGen: penaltyRule.heatGen,
-                        hospitalSeconds: penaltyRule.hospitalSeconds,
-                        reason: textHosp,
-                        sourceRef: String(crime.id)
-                    })]
-                };
-                return commitCrimeOutcome(client, req, res, {
-                    status: "hospitalized",
-                    message: textHosp,
-                    user: updatedUser.rows[0]
-                });
-            } else {
-                const textJail = getRandomText(flavor.jail);
-                await client.query(
-                    "UPDATE user_crime_records SET total_jailed = total_jailed + 1 WHERE user_id = $1",
-                    [user.user_id]
-                );
-                const updatedUser = {
-                    rows: [await applyCrimeJail(client, {
-                        userId: user.user_id,
-                        nerveCost: crime.nerve_cost,
-                        heatGen: penaltyRule.heatGen,
-                        jailSeconds: penaltyRule.jailSeconds,
-                        reason: textJail,
-                        sourceRef: String(crime.id)
-                    })]
-                };
-                return commitCrimeOutcome(client, req, res, {
-                    status: "jailed",
-                    message: textJail,
-                    user: updatedUser.rows[0]
-                });
-            }
-        }
-    } catch (err) {
-        await client.query('ROLLBACK');
-        console.error("Pickpocketing Engine Error:", err.message);
-        const status = Number.isInteger(err?.status) ? err.status : 500;
-        res.status(status).json({
-            error: status === 500 ? "Hustle engine malfunction." : err.message
-        });
-    }
+async function execute(_client, _user, _crime, _req, res) {
+    return sendActionError(
+        res,
+        new ActionError(
+            503,
+            'Pickpocket execution is paused until target activity is server-issued, persisted, actor-bound, and replay-safe.'
+        ),
+        'Pickpocket execution blocked:'
+    );
 }
 
 module.exports = { execute, listTargets };
