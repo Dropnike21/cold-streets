@@ -7,13 +7,16 @@ const {
     sendActionError
 } = require('../utils/economyValidation');
 const {
-    DAILY_TOKEN_SPEND_CAP,
+    BASE_DAILY_TOKEN_SPEND_CAP,
+    VIP_DAILY_TOKEN_BONUS,
+    MAX_DAILY_TOKEN_SPEND_CAP,
     RECONCILED_TOKEN_ENGINES,
     getCasinoTokenStatus
 } = require('../utils/casinoTokenLedger');
 
 // Read-only Category 1 token accounting. The source establishes Casino Tokens
-// and a 100-token daily SPEND cap, but not token issuance/reset semantics.
+// and a 100-token base daily SPEND cap; active VIP benefits (VIP Pack
+// entitlement or Subscriber period) raise the cap to 150.
 // No Casino game mutation is opened by this endpoint.
 router.get('/status', async (req, res) => {
     try {
@@ -25,7 +28,15 @@ router.get('/status', async (req, res) => {
             casino_status: 'token_accounting_ready_games_paused',
             category_1_currency: 'casino_tokens',
             token_balance: exactJsonAmount(status.balance),
-            daily_token_spend_cap: exactJsonAmount(DAILY_TOKEN_SPEND_CAP),
+            vip_benefits_active: status.vipActive,
+            subscriber_active: status.subscriberActive,
+            base_daily_token_spend_cap: exactJsonAmount(BASE_DAILY_TOKEN_SPEND_CAP),
+            vip_daily_token_bonus: exactJsonAmount(
+                status.vipActive ? VIP_DAILY_TOKEN_BONUS : 0n
+            ),
+            effective_daily_token_spend_cap: exactJsonAmount(status.dailyCap),
+            maximum_supported_daily_token_spend_cap:
+                exactJsonAmount(MAX_DAILY_TOKEN_SPEND_CAP),
             spent_today: exactJsonAmount(status.spentToday),
             remaining_daily_spend: exactJsonAmount(status.remainingToday),
             day_key: status.dayKey,
@@ -52,7 +63,8 @@ router.get('/status', async (req, res) => {
 //
 // The recovered Casino V1.0 establishes that Perya, Syndicate Slots and
 // High-Low are Category 1 Token Games whose currency is Casino Tokens and whose
-// daily token spend is capped at 100. The preserved child engines instead
+// base daily token spend is capped at 100, with active VIP benefits increasing
+// that cap by 50 to 150. The preserved child engines instead
 // contain an unsupported hybrid of token and cash settlement. Keep those
 // engines unavailable until denomination/paytable/issuance rules are canonical.
 router.use((_req, res) => {

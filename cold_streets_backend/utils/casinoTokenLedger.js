@@ -3,8 +3,16 @@ const {
     integer,
     dbInteger
 } = require('./economyValidation');
+const {
+    BASE_CASINO_DAILY_TOKEN_SPEND_CAP,
+    VIP_CASINO_DAILY_TOKEN_SPEND_CAP,
+    getPremiumStatus
+} = require('./premiumEntitlements');
 
-const DAILY_TOKEN_SPEND_CAP = 100n;
+const BASE_DAILY_TOKEN_SPEND_CAP = BASE_CASINO_DAILY_TOKEN_SPEND_CAP;
+const MAX_DAILY_TOKEN_SPEND_CAP = VIP_CASINO_DAILY_TOKEN_SPEND_CAP;
+const VIP_DAILY_TOKEN_BONUS =
+    MAX_DAILY_TOKEN_SPEND_CAP - BASE_DAILY_TOKEN_SPEND_CAP;
 const RECONCILED_TOKEN_ENGINES = new Set([
     'perya',
     'slots',
@@ -33,7 +41,7 @@ function normalizeSourceRef(value) {
 }
 
 async function getCasinoTokenStatus(client, userId) {
-    const [wallet, usage] = await Promise.all([
+    const [wallet, usage, premium] = await Promise.all([
         client.query(
             'SELECT casino_tokens FROM users WHERE user_id = $1',
             [userId]
@@ -46,7 +54,8 @@ async function getCasinoTokenStatus(client, userId) {
                 AND spent_at >= CURRENT_DATE
                 AND spent_at < CURRENT_DATE + INTERVAL '1 day'`,
             [userId]
-        )
+        ),
+        getPremiumStatus(client, userId)
     ]);
 
     if (wallet.rowCount !== 1) {
@@ -59,14 +68,21 @@ async function getCasinoTokenStatus(client, userId) {
     const spentToday = dbInteger(usage.rows[0].spent_today, {
         field: 'Casino Tokens spent today'
     });
-    if (balance < 0n || spentToday < 0n || spentToday > DAILY_TOKEN_SPEND_CAP) {
+    const vipActive = premium.vipBenefitsActive;
+    const dailyCap = premium.effectiveBenefits.casinoDailyTokenSpendCap;
+    if (balance < 0n || spentToday < 0n || spentToday > dailyCap) {
         throw new Error('Casino token accounting is outside source-backed bounds.');
     }
 
     return {
         balance,
+        vipActive,
+        baseDailyCap: BASE_DAILY_TOKEN_SPEND_CAP,
+        vipDailyBonus: vipActive ? VIP_DAILY_TOKEN_BONUS : 0n,
+        subscriberActive: premium.subscriberActive,
+        dailyCap,
         spentToday,
-        remainingToday: DAILY_TOKEN_SPEND_CAP - spentToday,
+        remainingToday: dailyCap - spentToday,
         dayKey: usage.rows[0].day_key
     };
 }
@@ -81,7 +97,7 @@ async function reserveCasinoTokenSpend(client, {
     const amount = integer(tokenAmount, {
         field: 'Casino Token spend',
         min: 1n,
-        max: DAILY_TOKEN_SPEND_CAP
+        max: MAX_DAILY_TOKEN_SPEND_CAP
     });
     const ref = normalizeSourceRef(sourceRef);
 
@@ -120,6 +136,8 @@ async function reserveCasinoTokenSpend(client, {
         };
     }
 
+    const premium = await getPremiumStatus(client, userId);
+
     const usage = await client.query(
         `SELECT COALESCE(SUM(token_amount), 0)::bigint AS spent_today
            FROM casino_token_spend_ledger
@@ -131,10 +149,11 @@ async function reserveCasinoTokenSpend(client, {
     const spentToday = dbInteger(usage.rows[0].spent_today, {
         field: 'Casino Tokens spent today'
     });
-    if (spentToday < 0n || spentToday > DAILY_TOKEN_SPEND_CAP) {
+    const dailyCap = premium.effectiveBenefits.casinoDailyTokenSpendCap;
+    if (spentToday < 0n || spentToday > dailyCap) {
         throw new Error('Casino token daily spend ledger is outside source limit.');
     }
-    if (spentToday + amount > DAILY_TOKEN_SPEND_CAP) {
+    if (spentToday + amount > dailyCap) {
         throw new ActionError(
             409,
             'Casino Token daily spend cap exceeded.'
@@ -183,13 +202,18 @@ async function reserveCasinoTokenSpend(client, {
                 field: 'Casino Token balance'
             }),
             spentToday: spentToday + amount,
-            remainingToday: DAILY_TOKEN_SPEND_CAP - spentToday - amount
+            vipActive: premium.vipBenefitsActive,
+            subscriberActive: premium.subscriberActive,
+            dailyCap,
+            remainingToday: dailyCap - spentToday - amount
         }
     };
 }
 
 module.exports = {
-    DAILY_TOKEN_SPEND_CAP,
+    BASE_DAILY_TOKEN_SPEND_CAP,
+    VIP_DAILY_TOKEN_BONUS,
+    MAX_DAILY_TOKEN_SPEND_CAP,
     RECONCILED_TOKEN_ENGINES,
     getCasinoTokenStatus,
     reserveCasinoTokenSpend
