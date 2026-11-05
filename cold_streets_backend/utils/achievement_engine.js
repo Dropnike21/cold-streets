@@ -1,72 +1,135 @@
-const pool = require('../db');
+const { createHash } = require('node:crypto');
+const { ActionError, integer, dbInteger } = require('./economyValidation');
 
-async function trackAndCheckAchievement(userId, statColumn, incrementValue, targetTable = 'user_statistics') {
-    const client = await pool.connect();
-    try {
-        await client.query('BEGIN');
+// Source-backed catalog keys. These are logical achievement trackers, not SQL
+// column names. Keep the mapping explicit so catalog strings can never become
+// dynamic SQL identifiers.
+const TRACKER_FINGERPRINTS = Object.freeze({
+    gym_trains: '8ee92e728cedc162e62bd7feb8d2f6f1',
+    crimes_successful: '01b96511878f1afa4f88591ee99364e7',
+    player_level: '333212151aba8634b4672f695298b121',
+    courses_completed: 'b057568304caf960a3f75c6f84cc963e'
+});
 
-        // 1. Update the Tracker Table (SAFE UPSERT FOR BOTH TABLES)
-        let updateQuery = "";
-        if (targetTable === 'user_statistics') {
-            updateQuery = `
-                INSERT INTO user_statistics (user_id, ${statColumn})
-                VALUES ($1, $2)
-                ON CONFLICT (user_id)
-                DO UPDATE SET ${statColumn} = COALESCE(user_statistics.${statColumn}, 0) + $2
-                RETURNING ${statColumn} AS new_total;
-            `;
-        } else if (targetTable === 'user_crime_records') {
-            updateQuery = `
-                INSERT INTO user_crime_records (user_id, ${statColumn})
-                VALUES ($1, $2)
-                ON CONFLICT (user_id)
-                DO UPDATE SET ${statColumn} = COALESCE(user_crime_records.${statColumn}, 0) + $2
-                RETURNING ${statColumn} AS new_total;
-            `;
-        }
+const SUPPORTED_TRACKERS = Object.freeze(Object.keys(TRACKER_FINGERPRINTS));
 
-        const updateRes = await client.query(updateQuery, [userId, incrementValue]);
-        const newTotal = updateRes.rows[0].new_total;
-
-        // 2. Fetch unearned achievements crossed by this new total
-        const checkQuery = `
-            SELECT am.achievement_id, am.title
-            FROM achievements_master am
-            LEFT JOIN user_achievements ua ON am.achievement_id = ua.achievement_id AND ua.user_id = $1
-            WHERE am.stat_tracker = $2
-            AND am.threshold_value <= $3
-            AND ua.achievement_id IS NULL;
-        `;
-        const achievements = await client.query(checkQuery, [userId, statColumn, newTotal]);
-
-        // 3. Award the Achievements
-        for (let ach of achievements.rows) {
-            // Unlock it
-            await client.query(
-                `INSERT INTO user_achievements (user_id, achievement_id) VALUES ($1, $2)`,
-                [userId, ach.achievement_id]
-            );
-
-            // GRANT EXACTLY +1 CRED (Hardcoded)
-            await client.query(
-                `UPDATE users SET cred = cred + 1 WHERE user_id = $1`,
-                [userId]
-            );
-
-            // Log it for the UI Notification Event
-            await client.query(
-                `INSERT INTO user_events (user_id, event_text) VALUES ($1, $2)`,
-                [userId, `Achievement Unlocked: ${ach.title}! You earned +1 Cred.`]
-            );
-        }
-
-        await client.query('COMMIT');
-    } catch (err) {
-        await client.query('ROLLBACK');
-        console.error("Achievement Engine Error:", err);
-    } finally {
-        client.release();
-    }
+function exactProgress(value, field) {
+    if (typeof value === 'bigint') return value;
+    return integer(value, {
+        field,
+        min: 0n,
+        max: 999999999999999999999999n
+    });
 }
 
-module.exports = { trackAndCheckAchievement };
+function catalogFingerprint(rows) {
+    const serialized = rows.map(row => [
+        row.achievement_id,
+        row.title,
+        row.description,
+        row.category,
+        row.stat_tracker,
+        row.threshold_value,
+        row.rarity
+    ].map(value => String(value ?? '')).join('|')).join('\n');
+    return createHash('md5').update(serialized).digest('hex');
+}
+
+async function loadTrackerCatalog(client, trackerKey) {
+    if (!Object.prototype.hasOwnProperty.call(TRACKER_FINGERPRINTS, trackerKey)) {
+        throw new ActionError(
+            503,
+            'This achievement tracker is not yet backed by authoritative server telemetry.'
+        );
+    }
+
+    const result = await client.query(
+        `SELECT achievement_id, title, description, category, stat_tracker,
+                threshold_value, rarity
+           FROM achievements_master
+          WHERE stat_tracker = $1
+          ORDER BY achievement_id`,
+        [trackerKey]
+    );
+
+    if (result.rowCount !== 25 ||
+        catalogFingerprint(result.rows) !== TRACKER_FINGERPRINTS[trackerKey]) {
+        throw new ActionError(
+            503,
+            'Achievement catalog data changed and requires re-reconciliation.'
+        );
+    }
+    return result.rows;
+}
+
+async function unlockAchievementsForValue(client, userId, trackerKey, currentValue) {
+    const current = exactProgress(currentValue, 'Achievement progress');
+    const catalog = await loadTrackerCatalog(client, trackerKey);
+    const unlocked = [];
+
+    for (const achievement of catalog) {
+        const threshold = dbInteger(
+            achievement.threshold_value,
+            { field: 'Achievement threshold' }
+        );
+        if (threshold < 1n) {
+            throw new Error('Achievement threshold must be positive.');
+        }
+        if (threshold > current) break;
+
+        const inserted = await client.query(
+            `INSERT INTO user_achievements (user_id, achievement_id)
+             VALUES ($1, $2)
+             ON CONFLICT (user_id, achievement_id) DO NOTHING
+             RETURNING achievement_id, unlocked_at`,
+            [userId, achievement.achievement_id]
+        );
+        if (inserted.rowCount !== 1) continue;
+
+        await client.query(
+            'INSERT INTO user_events (user_id, event_text) VALUES ($1, $2)',
+            [userId, `Achievement Unlocked: ${achievement.title}.`]
+        );
+        unlocked.push({
+            achievement_id: achievement.achievement_id,
+            title: achievement.title,
+            unlocked_at: inserted.rows[0].unlocked_at
+        });
+    }
+
+    return unlocked;
+}
+
+async function recordGymTrainingAchievement(client, userId, energySpent) {
+    const energy = exactProgress(energySpent, 'Gym Energy spent');
+    if (energy < 1n) throw new Error('Successful Gym training must spend Energy.');
+
+    const totals = await client.query(
+        `INSERT INTO user_statistics
+           (user_id, total_gym_trains, total_energy_spent)
+         VALUES ($1, 1, $2::bigint)
+         ON CONFLICT (user_id)
+         DO UPDATE SET
+           total_gym_trains = user_statistics.total_gym_trains + 1,
+           total_energy_spent = user_statistics.total_energy_spent + $2::bigint
+         RETURNING total_gym_trains, total_energy_spent`,
+        [userId, energy.toString()]
+    );
+    if (totals.rowCount !== 1) {
+        throw new Error('Gym achievement telemetry could not be persisted.');
+    }
+
+    await unlockAchievementsForValue(
+        client,
+        userId,
+        'gym_trains',
+        totals.rows[0].total_gym_trains
+    );
+    return totals.rows[0];
+}
+
+module.exports = {
+    SUPPORTED_TRACKERS,
+    unlockAchievementsForValue,
+    recordGymTrainingAchievement
+};

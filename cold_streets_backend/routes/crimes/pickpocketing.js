@@ -1,5 +1,5 @@
 // crimes/pickpocketing.js
-const { trackAndCheckAchievement } = require('../../utils/achievement_engine');
+const { unlockAchievementsForValue } = require('../../utils/achievement_engine');
 const { incrementKevinProgress } = require('../../utils/missionProgress');
 const { recordAnonymousCrimeSuccess } = require('../../utils/anonymousTutorial');
 const { randomPercent, randomInclusive, randomText, commitCrimeOutcome } = require('../../utils/crimeSettlement');
@@ -94,9 +94,17 @@ async function execute(client, user, crime, req, res) {
                 [crime.nerve_cost, payout, (rewards.skill_exp || 10), (rewards.crime_exp || 5), heatGained, user.user_id]
             );
 
-            await client.query("UPDATE user_crime_records SET total_crimes = total_crimes + 1, total_successes = total_successes + 1 WHERE user_id = $1", [user.user_id]);
+            const crimeTotals = await client.query(
+                "UPDATE user_crime_records SET total_crimes = total_crimes + 1, total_successes = total_successes + 1 WHERE user_id = $1 RETURNING total_successes",
+                [user.user_id]
+            );
+            if (crimeTotals.rowCount !== 1) throw new Error('Crime statistics row missing.');
             await incrementKevinProgress(client, user.user_id, 'crimes', 1);
             await recordAnonymousCrimeSuccess(client, user.user_id, crime.sub_category);
+            await unlockAchievementsForValue(
+                client, user.user_id, 'crimes_successful',
+                crimeTotals.rows[0].total_successes
+            );
             const flavorText = (randomPercent() <= 5)
                 ? getRandomText(flavor.crit)
                 : getRandomText(flavor.success);
@@ -106,15 +114,7 @@ async function execute(client, user, crime, req, res) {
                 gained_cash: payout,
                 user: updatedUser.rows[0]
             };
-            return commitCrimeOutcome(
-                client,
-                req,
-                res,
-                response,
-                () => trackAndCheckAchievement(
-                    user.user_id, 'total_successes', 1, 'user_crime_records'
-                )
-            );
+            return commitCrimeOutcome(client, req, res, response);
 
         } else {
             // FAILURE

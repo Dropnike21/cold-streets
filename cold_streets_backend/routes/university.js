@@ -9,6 +9,7 @@ const {
     requireIdempotencyKey, beginIdempotent, completeIdempotent
 } = require('../utils/idempotency');
 const { listEducationEntitlements } = require('../utils/educationEntitlements');
+const { unlockAchievementsForValue } = require('../utils/achievement_engine');
 
 router.param('user_id', requireOwnedPlayerParam);
 
@@ -337,6 +338,14 @@ router.post('/graduate', async (req, res) => {
         if (updatedUser.rowCount !== 1) {
             throw new ActionError(409, 'Course enrollment changed before graduation.');
         }
+
+        const courseCount = await client.query(
+            'SELECT COUNT(*)::bigint AS total FROM user_completed_courses WHERE user_id = $1',
+            [userId]
+        );
+        await unlockAchievementsForValue(
+            client, userId, 'courses_completed', courseCount.rows[0].total
+        );
 
         const response = {
             success: true,
