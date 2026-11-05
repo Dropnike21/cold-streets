@@ -188,3 +188,29 @@ Not performed:
 - gameplay tests;
 - concurrency tests;
 - deployment.
+
+
+## Mutation-contract hardening follow-up
+
+The canonical backend now maintains a fail-closed registry for every POST route.
+Flutter active mutations must therefore send only the exact documented action
+fields.
+
+Additional companion changes in this pass:
+
+- company owner funding sends only `amount` plus the existing company resource
+  context; the client no longer selects transfer direction or denomination;
+- Syndicate crew crime assignment sends canonical `crime_id`, not a title
+  alias;
+- Pickpocket execution is fully paused in Flutter because the old screen
+  generated target activity/modifier state locally and that value changed
+  authoritative success probability;
+- Searching and Shoplifting remain active because their execution payload is the
+  server catalog `crime_id` only.
+
+The Pickpocket screen is now a static paused surface and contains no executable
+HTTP/RNG target flow.
+
+The backend also rejects unexpected top-level mutation fields and query-string
+fields, so future Flutter additions must update the reviewed server contract
+rather than silently passing new authority-bearing values.
