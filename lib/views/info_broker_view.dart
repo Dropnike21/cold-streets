@@ -146,7 +146,7 @@ class _InfoBrokerViewState extends State<InfoBrokerView> {
                           try {
                             final res = await http.post(Uri.parse('$apiUrl/classifieds'),
                                 headers: {"Content-Type": "application/json"},
-                                body: jsonEncode({"user_id": widget.userData['user_id'], "ad_text": adController.text}));
+                                body: jsonEncode({"ad_text": adController.text}));
                             final data = jsonDecode(res.body);
                             _showSnackbar(data['message'] ?? data['error'], isError: res.statusCode != 200);
                             if (res.statusCode == 200) {
@@ -262,7 +262,7 @@ class _InfoBrokerViewState extends State<InfoBrokerView> {
               try {
                 final res = await http.post(Uri.parse('$companyApiUrl/apply'),
                     headers: {"Content-Type": "application/json"},
-                    body: jsonEncode({"user_id": widget.userData['user_id'], "company_id": companyId, "pitch_message": pitchController.text}));
+                    body: jsonEncode({"company_id": companyId, "pitch_message": pitchController.text}));
                 final data = jsonDecode(res.body);
                 _showSnackbar(data['message'] ?? data['error'], isError: res.statusCode != 200);
               } catch (e) { _showSnackbar("Connection error.", isError: true); }
