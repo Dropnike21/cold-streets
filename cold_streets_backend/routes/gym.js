@@ -7,7 +7,6 @@ router.param('user_id', requireOwnedPlayerParam);
 const pool = require('../db');
 const { recordGymTrainingAchievement } = require('../utils/achievement_engine');
 const { ActionError, integer, dbInteger, actorId, sendActionError } = require('../utils/economyValidation');
-const { incrementKevinProgress } = require('../utils/missionProgress');
 const { recordAnonymousGymTraining } = require('../utils/anonymousTutorial');
 
 // The Level 1 safety net for the Hybrid Math Engine
@@ -216,7 +215,6 @@ router.post('/train', async (req, res) => {
 
         // Contract "gym" means one successful server-side training action,
         // independent of how much energy was spent in that action.
-        await incrementKevinProgress(client, userId, 'gym', 1);
         await recordAnonymousGymTraining(client, userId, statType, energySpent.toString());
         await recordGymTrainingAchievement(client, userId, energySpent.toString());
         await client.query('COMMIT');
