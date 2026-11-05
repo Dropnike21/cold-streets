@@ -35,7 +35,7 @@ Premium packs use `premium_pack_catalog.is_tradable` and
 
 Migration:
 
-`20261105090121_trade_asset_namespace_20261105.sql`
+`20261105095957_trade_asset_namespace_20261105.sql`
 
 extends `trade_listings` with:
 
