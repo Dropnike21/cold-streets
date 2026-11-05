@@ -5,14 +5,14 @@ const { requireOwnedPlayerParam } = require('../middleware/playerIdentity');
 router.param('user_id', requireOwnedPlayerParam);
 
 const pool = require('../db');
-const { ActionError, integer, dbInteger, actorId, sendActionError } = require('../utils/economyValidation');
+const { ActionError, integer, dbInteger, exactJsonAmount, actorId, sendActionError } = require('../utils/economyValidation');
 const { requireIdempotencyKey, beginIdempotent, completeIdempotent } = require('../utils/idempotency');
 
 // Central actor/company ownership check. The original route checks allowed
 // some company_id operations with no director authorization at all.
 const pausedManagementActions = new Set([
     '/manage-employee', '/change-director', '/sell-company',
-    '/order-stock', '/buy-upgrade', '/assign-crew'
+    '/order-stock', '/buy-upgrade', '/assign-crew', '/update-advertising'
 ]);
 router.use(async (req, res, next) => {
     if (req.method !== 'POST') return next();
@@ -25,6 +25,7 @@ router.use(async (req, res, next) => {
             `SELECT 1 FROM player_companies pc
              JOIN company_employees ce ON ce.company_id = pc.company_id
              WHERE pc.company_id = $1 AND pc.owner_id = $2
+               AND pc.is_active = true
                AND ce.employee_id = $2 AND ce.is_npc = false
                AND ce.position_role = 'Director'`,
             [companyId, actor]
@@ -43,7 +44,14 @@ router.use(async (req, res, next) => {
 });
 
 
-// --- 1. VAULT MANAGEMENT: exact money, owner row lock, atomic transfer.
+// --- 1. COMPANY CASH FUNDING ---
+// Source-backed safe subset:
+// - the Company Canvas explicitly says the owner deposits Dirty Cash into the
+//   Company Bank;
+// - this action preserves denomination and does not itself launder value.
+//
+// Clean deposits, any withdrawals, payroll conversion, sales revenue,
+// laundering tax, and bankruptcy settlement remain paused.
 router.post('/funds', async (req, res) => {
     let client, transaction = false;
     try {
@@ -51,84 +59,169 @@ router.post('/funds', async (req, res) => {
         const idempotencyKey = requireIdempotencyKey(req);
         const companyId = req.managedCompanyId;
         const { action_type: action, currency_type: currency } = req.body || {};
-        if (!['deposit', 'withdraw'].includes(action) || !['clean', 'dirty'].includes(currency)) {
+
+        if (!['deposit', 'withdraw'].includes(action) ||
+            !['clean', 'dirty'].includes(currency)) {
             throw new ActionError(400, 'Invalid company transfer action or currency.');
         }
-        const amount = integer(req.body?.amount, { field: 'Transfer amount', min: 1n });
-        const userColumn = currency === 'clean' ? 'clean_cash' : 'dirty_cash';
-        const companyColumn = currency === 'clean' ? 'bank_clean' : 'bank_dirty';
+
+        if (action !== 'deposit' || currency !== 'dirty') {
+            throw new ActionError(
+                503,
+                'Only owner Dirty Cash funding is source-reconciled. Company withdrawals and Clean Cash funding are paused pending cash-flow settlement rules.'
+            );
+        }
+
+        const amount = integer(req.body?.amount, {
+            field: 'Dirty Cash funding amount',
+            min: 1n
+        });
 
         client = await pool.connect();
         await client.query('BEGIN');
         transaction = true;
-        // Always lock actor BEFORE company; consistent with incorporation.
+
+        // Lock order: actor -> idempotency -> company.
         const user = await client.query(
-            'SELECT clean_cash, dirty_cash FROM users WHERE user_id = $1 FOR UPDATE', [actor]
+            'SELECT dirty_cash FROM users WHERE user_id = $1 FOR UPDATE',
+            [actor]
         );
         if (user.rowCount !== 1) throw new ActionError(404, 'Player not found.');
+
         const idem = await beginIdempotent(
-            client, actor, 'company.vault_transfer', idempotencyKey,
-            { companyId, action, currency, amount: amount.toString() }
+            client,
+            actor,
+            'company.owner_dirty_funding',
+            idempotencyKey,
+            { companyId, amount: amount.toString() }
         );
         if (idem.replay) {
             await client.query('COMMIT');
             transaction = false;
             return res.status(idem.status).json(idem.response);
         }
+
         const company = await client.query(
-            'SELECT owner_id, bank_clean, bank_dirty FROM player_companies WHERE company_id = $1 FOR UPDATE',
+            `SELECT owner_id, bank_dirty, bank_clean, is_active
+               FROM player_companies
+              WHERE company_id = $1
+              FOR UPDATE`,
             [companyId]
         );
-        if (company.rowCount !== 1 || String(company.rows[0].owner_id) !== actor) {
-            throw new ActionError(403, 'Company ownership changed.');
+        if (
+            company.rowCount !== 1 ||
+            String(company.rows[0].owner_id) !== actor ||
+            company.rows[0].is_active !== true
+        ) {
+            throw new ActionError(403, 'Company is no longer active under this owner.');
         }
-        const sourceBalance = action === 'deposit'
-            ? dbInteger(user.rows[0][userColumn])
-            : dbInteger(company.rows[0][companyColumn]);
-        if (sourceBalance < amount) throw new ActionError(409, 'Insufficient funds.');
 
-        if (action === 'deposit') {
-            const debit = await client.query(
-                'UPDATE users SET ' + userColumn + ' = ' + userColumn +
-                ' - $1::numeric WHERE user_id = $2 AND ' + userColumn + ' >= $1::numeric RETURNING user_id',
-                [amount.toString(), actor]
-            );
-            if (debit.rowCount !== 1) throw new ActionError(409, 'Player wallet changed.');
-            await client.query(
-                'UPDATE player_companies SET ' + companyColumn + ' = ' + companyColumn +
-                ' + $1::numeric WHERE company_id = $2',
-                [amount.toString(), companyId]
-            );
-        } else {
-            const debit = await client.query(
-                'UPDATE player_companies SET ' + companyColumn + ' = ' + companyColumn +
-                ' - $1::numeric WHERE company_id = $2 AND ' + companyColumn +
-                ' >= $1::numeric RETURNING company_id',
-                [amount.toString(), companyId]
-            );
-            if (debit.rowCount !== 1) throw new ActionError(409, 'Company vault changed.');
-            await client.query(
-                'UPDATE users SET ' + userColumn + ' = ' + userColumn +
-                ' + $1::numeric WHERE user_id = $2',
-                [amount.toString(), actor]
-            );
+        const playerDirty = dbInteger(user.rows[0].dirty_cash, {
+            field: 'Player Dirty Cash'
+        });
+        if (playerDirty < amount) {
+            throw new ActionError(409, 'Insufficient Dirty Cash.');
         }
-        await client.query(
-            "INSERT INTO company_logs (company_id, log_type, log_text) VALUES ($1, 'FUNDS', $2)",
-            [companyId, 'Director ' + (action === 'deposit' ? 'deposited ' : 'withdrew ') +
-                amount.toString() + ' ' + currency + ' cash.']
+
+        const debit = await client.query(
+            `UPDATE users
+                SET dirty_cash = dirty_cash - $1::numeric
+              WHERE user_id = $2
+                AND dirty_cash >= $1::numeric
+              RETURNING dirty_cash`,
+            [amount.toString(), actor]
         );
-        const response = { success: true, message: 'Vault transfer successful.' };
+        if (debit.rowCount !== 1) {
+            throw new ActionError(409, 'Player wallet changed before company funding.');
+        }
+
+        const funded = await client.query(
+            `UPDATE player_companies
+                SET bank_dirty = bank_dirty + $1::numeric
+              WHERE company_id = $2
+                AND owner_id = $3
+                AND is_active = true
+              RETURNING bank_dirty, bank_clean`,
+            [amount.toString(), companyId, actor]
+        );
+        if (funded.rowCount !== 1) {
+            throw new ActionError(409, 'Company state changed before funding.');
+        }
+
+        await client.query(
+            `INSERT INTO company_cash_ledger (
+                company_id,
+                actor_user_id,
+                event_type,
+                dirty_delta,
+                clean_delta,
+                dirty_balance_after,
+                clean_balance_after,
+                source_ref
+             )
+             VALUES (
+                $1, $2, 'OWNER_DIRTY_DEPOSIT',
+                $3::numeric, 0,
+                $4::numeric, $5::numeric, $6
+             )`,
+            [
+                companyId,
+                actor,
+                amount.toString(),
+                funded.rows[0].bank_dirty,
+                funded.rows[0].bank_clean,
+                idempotencyKey
+            ]
+        );
+
+        await client.query(
+            `INSERT INTO company_logs (company_id, log_type, log_text)
+             VALUES ($1, 'FUNDS', $2)`,
+            [
+                companyId,
+                'Owner deposited ' + amount.toString() +
+                    ' Dirty Cash into the company bank.'
+            ]
+        );
+
+        const response = {
+            success: true,
+            message: 'Dirty Cash deposited into the company bank.',
+            cash_flow_status: 'funding_only',
+            laundering_settlement_available: false,
+            player_dirty_cash: exactJsonAmount(
+                dbInteger(debit.rows[0].dirty_cash, {
+                    field: 'Player Dirty Cash'
+                })
+            ),
+            company_bank_dirty: exactJsonAmount(
+                dbInteger(funded.rows[0].bank_dirty, {
+                    field: 'Company Dirty Cash'
+                })
+            ),
+            company_bank_clean: exactJsonAmount(
+                dbInteger(funded.rows[0].bank_clean, {
+                    field: 'Company Clean Cash'
+                })
+            )
+        };
+
         await completeIdempotent(client, idem, 200, response);
         await client.query('COMMIT');
         transaction = false;
         return res.json(response);
     } catch (err) {
         if (transaction) {
-            try { await client.query('ROLLBACK'); } catch (rollback) { console.error('Company vault rollback:', rollback); }
+            try {
+                await client.query('ROLLBACK');
+            } catch (rollback) {
+                console.error('Company Dirty Cash funding rollback:', rollback);
+            }
         }
-        return sendActionError(res, err, 'Company vault failed:');
-    } finally { if (client) client.release(); }
+        return sendActionError(res, err, 'Company cash funding failed:');
+    } finally {
+        if (client) client.release();
+    }
 });
 
 // --- 2. EDIT COMPANY PROFILE ---
