@@ -18,7 +18,7 @@ const BANK_BLOCKERS = Object.freeze([
     'dirty_cash_to_clean_cash_conversion_conflict',
     'bank_trust_progression_unresolved',
     'bank_interest_perk_stacking_unresolved',
-    'pending_check_producer_unrecovered',
+    'pending_check_issuer_contract_unresolved',
     'pending_check_expiry_settlement_unrecovered'
 ]);
 
@@ -62,9 +62,11 @@ router.post('/claim-deposit', (req, res) =>
     pausedBankMutation(req, res, 'time-deposit settlement')
 );
 
-// No authoritative backend producer for pending_checks was recovered, and the
-// 24-hour auto-liquidation path exists only in historical UI/code prose. Do not
-// pay rows whose creation/expiry semantics cannot yet be verified.
+// pending_checks are treated as a generic deferred-payout instrument issued
+// by other authoritative systems (for example future Casino lottery/jackpot,
+// auction/trade settlement, or reward flows), not as Bank-created money.
+// No issuer contract currently defines currency, unique source reference,
+// expiry, or fallback settlement, so claims remain paused.
 router.post('/claim-check', (req, res) =>
     pausedBankMutation(req, res, 'pending-check settlement')
 );
@@ -151,7 +153,7 @@ router.get('/status/:userId', async (req, res) => {
             status: row.status,
             timestamp_expired: row.timestamp_expired === true,
             claim_available: false,
-            settlement_status: 'paused_source_unrecovered'
+            settlement_status: 'paused_issuer_contract_unresolved'
         }));
 
         return res.json({
@@ -164,7 +166,7 @@ router.get('/status/:userId', async (req, res) => {
             time_deposit_terms_status: 'historical_code_only',
             payout_currency_status: 'unresolved',
             dirty_to_clean_conversion_status: 'conflicts_with_gdd_laundering_model',
-            pending_check_creation_status: 'producer_unrecovered',
+            pending_check_creation_status: 'external_issuer_contract_unimplemented',
             pending_check_expiry_status: 'auto_liquidation_unrecovered',
             blockers: BANK_BLOCKERS,
             account: {
