@@ -17,7 +17,8 @@ const pool = new Pool({
     ssl: tlsEnabled ? { rejectUnauthorized: true } : false,
     connectionTimeoutMillis: 10000,
     idleTimeoutMillis: 30000,
-    max: 10
+    max: 10,
+    application_name: 'cold-streets-api'
 });
 
 module.exports = pool;
