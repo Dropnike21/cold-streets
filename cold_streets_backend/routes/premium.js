@@ -3,6 +3,7 @@ const pool = require('../db');
 const router = express.Router();
 
 const {
+    ActionError,
     actorId,
     dbInteger,
     exactJsonAmount,
@@ -133,7 +134,7 @@ router.get('/status', async (req, res) => {
 function pausedMutation(req, res, action) {
     try {
         actorId(req);
-        throw new (require('../utils/economyValidation').ActionError)(
+        throw new ActionError(
             503,
             action + ' is paused pending complete premium benefit and billing reconciliation.'
         );
