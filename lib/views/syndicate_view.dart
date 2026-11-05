@@ -115,11 +115,10 @@ class _SyndicateViewState extends State<SyndicateView> {
     if (dailyRefreshes <= 0) return;
     setModalState(() => isLoading = true);
     try {
-      final String userIdStr = widget.userData['user_id'].toString();
       final response = await http.post(
         Uri.parse('$apiUrl/generate_board'),
         headers: {"Content-Type": "application/json"},
-        body: jsonEncode({"user_id": userIdStr}),
+        body: jsonEncode(const <String, dynamic>{}),
       ).timeout(const Duration(seconds: 8));
 
       if (response.statusCode == 200) {
@@ -151,41 +150,44 @@ class _SyndicateViewState extends State<SyndicateView> {
     }
   }
 
-  Future<void> _hireRecruit(Map<String, dynamic> recruit, StateSetter setModalState) async {
+  Future<void> _hireRecruit(
+    Map<String, dynamic> recruit,
+    StateSetter setModalState,
+  ) async {
     if (recruitCooldownSeconds > 0) return;
 
-    // Safety check frontend math before hitting API
-    int currentCash = int.tryParse(widget.userData['dirty_cash']?.toString() ?? '0') ?? 0;
-    int recruitPrice = int.tryParse(recruit["price"]?.toString() ?? '0') ?? 0;
-    if (currentCash < recruitPrice) return;
-
     try {
-      final String userIdStr = widget.userData['user_id'].toString();
       final response = await http.post(
         Uri.parse('$apiUrl/hire'),
         headers: {"Content-Type": "application/json"},
-        body: jsonEncode({
-          "user_id": userIdStr,
-          "offer_id": recruit["offer_id"],
-        }),
+        body: jsonEncode({"offer_id": recruit["offer_id"]}),
       ).timeout(const Duration(seconds: 8));
 
       if (response.statusCode == 200) {
-        final data = jsonDecode(response.body);
-        if (widget.onStateChange != null) {
-          final Map<String, dynamic> updatedUser = Map.from(widget.userData);
-          updatedUser['dirty_cash'] =
-              int.tryParse(data['dirty_cash']?.toString() ?? '') ??
-                  (currentCash - recruitPrice);
+        final data = Map<String, dynamic>.from(jsonDecode(response.body) as Map);
+        final authoritativeCash =
+            int.tryParse(data['dirty_cash']?.toString() ?? '');
+        final authoritativeCooldown =
+            int.tryParse(data['recruitment_cooldown_seconds']?.toString() ?? '');
+
+        if (authoritativeCash != null && widget.onStateChange != null) {
+          final Map<String, dynamic> updatedUser =
+              Map<String, dynamic>.from(widget.userData);
+          updatedUser['dirty_cash'] = authoritativeCash;
           widget.onStateChange!(updatedUser);
         }
 
         setModalState(() {
           _recruitmentBoard.remove(recruit);
-          recruitCooldownSeconds = 120; // Explicit 2-minute default per backend
+          recruitCooldownSeconds =
+              authoritativeCooldown != null && authoritativeCooldown > 0
+                  ? authoritativeCooldown
+                  : 0;
         });
         _fetchActiveCrew();
-        _startCooldownTimer(setModalState);
+        if (recruitCooldownSeconds > 0) {
+          _startCooldownTimer(setModalState);
+        }
       }
     } catch (e) {
       debugPrint("Hire Error: $e");
@@ -195,11 +197,10 @@ class _SyndicateViewState extends State<SyndicateView> {
   Future<void> _unassignCrew(String crewId) async {
     setState(() => isLoading = true);
     try {
-      final String userIdStr = widget.userData['user_id'].toString();
       final response = await http.post(
         Uri.parse('$apiUrl/unassign_job'),
         headers: {"Content-Type": "application/json"},
-        body: jsonEncode({"user_id": userIdStr, "crew_id": crewId}),
+        body: jsonEncode({"crew_id": crewId}),
       ).timeout(const Duration(seconds: 8));
 
       if (response.statusCode == 200) {
@@ -434,7 +435,7 @@ class _SyndicateViewState extends State<SyndicateView> {
                                         await http.post(
                                             Uri.parse('$apiUrl/assign_job'),
                                             headers: {"Content-Type": "application/json"},
-                                            body: jsonEncode({"user_id": userIdStr, "crew_id": npc['crew_id'], "crime_title": crime['title']})
+                                            body: jsonEncode({"crew_id": npc['crew_id'], "crime_title": crime['title']})
                                         );
                                         _fetchActiveCrew();
                                         if (!context.mounted) return;
