@@ -387,7 +387,8 @@ class _RealEstateViewState extends State<RealEstateView> {
     List<Map<String, dynamic>> filteredListings = playerListings.where((l) {
       if (!filterShowSales && l['listing_type'] == 'SALE') return false;
       if (!filterShowRentals && l['listing_type'] == 'RENT') return false;
-      bool hasUpgrades = l['upgrades'] != null && (l['upgrades'] as Map).isNotEmpty;
+      bool hasUpgrades = l['installed_upgrade_ids'] is List &&
+          (l['installed_upgrade_ids'] as List).isNotEmpty;
       if (filterOnlyUpgraded && !hasUpgrades) return false;
       return true;
     }).toList();
