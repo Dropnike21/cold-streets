@@ -141,3 +141,22 @@ Not performed:
 - Flutter build/analyze;
 - deployment;
 - production changes.
+
+
+## Operational hardening follow-up
+
+The reviewed runtime contract now requires Node 24.x and the release preflight
+checks that major explicitly.
+
+Transport/database limits are documented in:
+
+- `docs/HTTP_POSTGRES_OPERATIONAL_HARDENING_20261105.md`;
+- `docs/MUTATION_CONTRACT_AUDIT_20261105.md`.
+
+The release candidate now includes explicit HTTP header/request/socket bounds,
+PostgreSQL statement/query/lock/idle-transaction bounds, connection rotation,
+DB-pool backpressure, strict active-mutation request field allowlists, and a
+fail-closed registry for future mutation endpoints.
+
+These additions were reviewed statically only; the preflight and server were not
+executed.
