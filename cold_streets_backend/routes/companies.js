@@ -9,10 +9,38 @@ const { ActionError, integer, dbInteger, exactJsonAmount, actorId, sendActionErr
 const { requireIdempotencyKey, beginIdempotent, completeIdempotent } = require('../utils/idempotency');
 
 // --- 1. GET ALL COMPANY BLUEPRINTS ---
-router.get('/blueprints', async (req, res) => {
+router.get('/blueprints', async (_req, res) => {
     try {
-        const result = await pool.query('SELECT * FROM company_types_master ORDER BY tier ASC, setup_cost ASC');
-        res.json({ success: true, blueprints: result.rows });
+        const result = await pool.query(`
+            SELECT ctm.*,
+                   cu.upgrade_id,
+                   cu.upgrade_key,
+                   cu.cost AS upgrade_cost,
+                   cu.upkeep_increase AS upgrade_upkeep_increase,
+                   cu.bonus_key AS upgrade_bonus_key,
+                   cu.bonus_value AS upgrade_bonus_value,
+                   cu.semantics_status AS upgrade_semantics_status,
+                   (SELECT COUNT(*) FROM company_positions_master cp
+                     WHERE cp.type_id = ctm.type_id) AS position_count,
+                   (SELECT COUNT(*) FROM company_specials_master cs
+                     WHERE cs.type_id = ctm.type_id) AS special_count,
+                   (SELECT COUNT(*) FROM company_product_rules_master cpr
+                     WHERE cpr.type_id = ctm.type_id) AS source_product_rule_count,
+                   (SELECT COUNT(*) FROM company_affiliations_master ca
+                     WHERE ca.type_id = ctm.type_id
+                       AND ca.resolution_status <> 'exact') AS unresolved_affiliation_count
+              FROM company_types_master ctm
+              LEFT JOIN company_upgrades_master cu ON cu.type_id = ctm.type_id
+             ORDER BY ctm.tier ASC, ctm.setup_cost ASC, ctm.type_id ASC
+        `);
+        res.json({
+            success: true,
+            catalog_status: 'source_normalized_partial',
+            incorporation_available: false,
+            incorporation_blocker:
+                'Recovered supply-chain product generation conflicts with the legacy 20-row normalized product catalog.',
+            blueprints: result.rows
+        });
     } catch (err) {
         console.error("Error fetching blueprints:", err);
         res.status(500).json({ error: "Server error fetching commercial registry." });
@@ -20,12 +48,13 @@ router.get('/blueprints', async (req, res) => {
 });
 
 // --- 2. INCORPORATE ---
-// The recovered company type catalog exists, but blueprint_products is empty
-// and the legacy products_json text belongs to a different/incomplete generation.
-// Do not charge setup cost or create a partially configured company.
+// Positions, specials, source product rules, affiliations and upgrade costs are
+// now normalized from the recovered spreadsheet. Incorporation remains paused
+// because that source generation contains a much broader product graph than the
+// existing 20-row company_products_master catalog; do not force them together.
 router.post('/incorporate', (_req, res) => {
     return res.status(503).json({
-        error: 'Company incorporation is paused pending canonical product blueprint recovery.'
+        error: 'Company incorporation is paused because recovered supply-chain products conflict with the legacy normalized product catalog.'
     });
 });
 
@@ -102,7 +131,9 @@ router.get('/:company_id/dashboard/:user_id', async (req, res) => {
                 (tenths / 10n).toString() + '.' + (tenths % 10n).toString();
         }
 
-        const [rosterRes, logsRes, positionsRes, inventoryRes, shipmentsRes, applicantsRes, specialsRes, cashLedgerRes] = await Promise.all([
+        const [rosterRes, logsRes, positionsRes, inventoryRes, shipmentsRes, applicantsRes,
+            specialsRes, cashLedgerRes, productRulesRes, affiliationsRes, upgradeRes] =
+            await Promise.all([
             pool.query(`
                 SELECT ce.*, u.username, u.level, u.stat_acu, u.stat_ops, u.stat_pre, u.stat_res
                 FROM company_employees ce
@@ -111,8 +142,13 @@ router.get('/:company_id/dashboard/:user_id', async (req, res) => {
             `, [company_id]),
             pool.query(`SELECT * FROM company_logs WHERE company_id = $1 ORDER BY created_at DESC LIMIT 50`, [company_id]),
             pool.query(`
-                SELECT position_id, type_id, role_name AS name, req_stat_primary, req_stat_secondary, stat_gain_desc, description
-                FROM company_positions_master WHERE type_id = $1
+                SELECT position_id, type_id, role_name AS name, role_key,
+                       req_stat_primary, req_amount_primary,
+                       req_stat_secondary, req_amount_secondary,
+                       gain_primary, gain_secondary, source_jsonb
+                  FROM company_positions_master
+                 WHERE type_id = $1
+                 ORDER BY position_id ASC
             `, [company.type_id]),
             pool.query(`
                 SELECT ci.*, ci.product_id AS item_id, p.product_name AS item_name
@@ -133,8 +169,13 @@ router.get('/:company_id/dashboard/:user_id', async (req, res) => {
                 WHERE ca.company_id = $1 AND ca.status = 'Pending'
             `, [company_id]),
             pool.query(`
-                SELECT special_id, type_id, star_requirement AS star, special_name AS name, effect_description AS effect, jp_cost AS cost, is_passive
-                FROM company_specials_master WHERE type_id = $1 ORDER BY star_requirement ASC
+                SELECT special_id, type_id, star_requirement AS star,
+                       special_name AS name, effect_description AS effect,
+                       jp_cost AS cost, is_passive, source_special_key,
+                       semantics_status
+                  FROM company_specials_master
+                 WHERE type_id = $1
+                 ORDER BY star_requirement ASC, special_id ASC
             `, [company.type_id]),
             userRole === 'Director'
                 ? pool.query(`
@@ -146,7 +187,27 @@ router.get('/:company_id/dashboard/:user_id', async (req, res) => {
                      ORDER BY created_at DESC, entry_id DESC
                      LIMIT 50
                 `, [company_id])
-                : Promise.resolve({ rows: [] })
+                : Promise.resolve({ rows: [] }),
+            pool.query(`
+                SELECT rule_id, tier, relation_type, product_name,
+                       clean_ratio, semantics_status
+                  FROM company_product_rules_master
+                 WHERE type_id = $1
+                 ORDER BY rule_id ASC
+            `, [company.type_id]),
+            pool.query(`
+                SELECT affiliation_id, direction, source_ordinal,
+                       related_company_name, related_type_id, resolution_status
+                  FROM company_affiliations_master
+                 WHERE type_id = $1
+                 ORDER BY direction ASC, source_ordinal ASC
+            `, [company.type_id]),
+            pool.query(`
+                SELECT upgrade_id, upgrade_key, cost, upkeep_increase,
+                       bonus_key, bonus_value, semantics_status
+                  FROM company_upgrades_master
+                 WHERE type_id = $1
+            `, [company.type_id])
         ]);
 
         res.json({
@@ -174,12 +235,24 @@ router.get('/:company_id/dashboard/:user_id', async (req, res) => {
                     'acumen_tax_reduction_formula_unresolved',
                     'company_daily_settlement_boundary_unresolved',
                     'employee_salary_contracts_paused',
-                    'product_blueprints_unrecovered',
-                    'tier3_sales_clean_ratio_not_normalized',
+                    'legacy_product_catalog_conflicts_with_recovered_supply_chain',
+                    'tier3_clean_ratio_semantics_unresolved',
                     'bankruptcy_severance_settlement_unresolved'
                 ]
             },
             cash_ledger: cashLedgerRes.rows,
+            company_catalog: {
+                positions_status: 'source_normalized',
+                specials_status: 'source_description_only',
+                product_rules_status: 'source_normalized_settlement_paused',
+                affiliations_status: affiliationsRes.rows.some(
+                    row => row.resolution_status !== 'exact'
+                ) ? 'contains_unresolved_name_conflicts' : 'source_normalized',
+                upgrade_status: 'cost_upkeep_source_normalized_effect_unreconciled',
+                product_rules: productRulesRes.rows,
+                affiliations: affiliationsRes.rows,
+                upgrade: upgradeRes.rows[0] || null
+            },
             roster: rosterRes.rows,
             logs: logsRes.rows,
             positions: positionsRes.rows,
@@ -206,7 +279,14 @@ router.get('/directory/types', async (req, res) => {
 router.get('/directory/details/:type_id', async (req, res) => {
     try {
         const { type_id } = req.params;
-        const posRes = await pool.query(`SELECT role_name, req_stat_primary, req_stat_secondary, stat_gain_desc, description FROM company_positions_master WHERE type_id = $1 AND role_name != 'Director' ORDER BY position_id ASC`, [type_id]);
+        const posRes = await pool.query(`
+            SELECT role_name, role_key, req_stat_primary, req_amount_primary,
+                   req_stat_secondary, req_amount_secondary,
+                   gain_primary, gain_secondary
+              FROM company_positions_master
+             WHERE type_id = $1
+             ORDER BY position_id ASC
+        `, [type_id]);
         const compRes = await pool.query(`SELECT pc.company_id, pc.company_name, pc.star_rating, pc.daily_income, u.username as owner_name FROM player_companies pc JOIN users u ON pc.owner_id = u.user_id WHERE pc.type_id = $1 AND pc.is_active = true ORDER BY pc.star_rating DESC, pc.daily_income DESC`, [type_id]);
         res.json({ success: true, positions: posRes.rows, companies: compRes.rows });
     } catch (err) { res.status(500).json({ error: "Failed to load industry details." }); }
