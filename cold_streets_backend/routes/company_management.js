@@ -7,6 +7,7 @@ router.param('user_id', requireOwnedPlayerParam);
 const pool = require('../db');
 const { ActionError, integer, dbInteger, exactJsonAmount, actorId, sendActionError } = require('../utils/economyValidation');
 const { requireIdempotencyKey, beginIdempotent, completeIdempotent } = require('../utils/idempotency');
+const { assertPositionEligibility } = require('../utils/companyEmployment');
 
 // Central actor/company ownership check. The original route checks allowed
 // some company_id operations with no director authorization at all.
@@ -517,11 +518,12 @@ router.post('/recall-crew', async (req, res) => {
     }
 });
 
-// --- 13. MANAGE APPLICANT ---
-// Accept/reject is independent of production, pricing, upgrade, and position
-// effectiveness formulas. The target identity comes only from the locked
-// application row; the client cannot nominate a different employee.
-router.post('/manage-applicant', async (req, res) => {
+// --- 13. PROPOSE REAL-PLAYER EMPLOYMENT CONTRACT ---
+// The recovered company design explicitly requires negotiated Clean Cash
+// salaries for real players. An application is not employment consent.
+// Directors propose an exact source role + salary; the applicant accepts later
+// under their own authenticated identity.
+router.post('/employment-offer', async (req, res) => {
     let client, transaction = false;
     try {
         const actor = actorId(req);
@@ -530,15 +532,19 @@ router.post('/manage-applicant', async (req, res) => {
         const applicationId = integer(req.body?.application_id, {
             field: 'Application ID', min: 1n, max: 9223372036854775807n
         }).toString();
-        const action = req.body?.action;
-        if (!['accept', 'reject'].includes(action)) {
-            throw new ActionError(400, 'Applicant action must be accept or reject.');
-        }
+        const positionId = integer(req.body?.position_id, {
+            field: 'Position ID', min: 1n, max: 9223372036854775807n
+        }).toString();
+        const salary = integer(req.body?.daily_salary_clean, {
+            field: 'Negotiated Clean Cash salary', min: 1n
+        });
 
         client = await pool.connect();
         await client.query('BEGIN');
         transaction = true;
 
+        // Lock order: authenticated actor -> idempotency -> company ->
+        // application -> target player -> dependent rows.
         const actorRow = await client.query(
             'SELECT user_id FROM users WHERE user_id = $1 FOR UPDATE',
             [actor]
@@ -546,8 +552,16 @@ router.post('/manage-applicant', async (req, res) => {
         if (actorRow.rowCount !== 1) throw new ActionError(404, 'Player not found.');
 
         const idem = await beginIdempotent(
-            client, actor, 'company.manage_applicant', idempotencyKey,
-            { companyId, applicationId, action }
+            client,
+            actor,
+            'company.employment_offer.create',
+            idempotencyKey,
+            {
+                companyId,
+                applicationId,
+                positionId,
+                salary: salary.toString()
+            }
         );
         if (idem.replay) {
             await client.query('COMMIT');
@@ -564,11 +578,12 @@ router.post('/manage-applicant', async (req, res) => {
               FOR UPDATE OF pc`,
             [companyId]
         );
-        if (company.rowCount !== 1 || String(company.rows[0].owner_id) !== actor) {
-            throw new ActionError(403, 'Company ownership changed.');
-        }
-        if (!company.rows[0].is_active) {
-            throw new ActionError(409, 'Company is inactive.');
+        if (
+            company.rowCount !== 1 ||
+            String(company.rows[0].owner_id) !== actor ||
+            company.rows[0].is_active !== true
+        ) {
+            throw new ActionError(403, 'Company ownership or active state changed.');
         }
 
         const application = await client.query(
@@ -587,84 +602,215 @@ router.post('/manage-applicant', async (req, res) => {
         }
 
         const targetId = String(application.rows[0].user_id);
-        if (action === 'accept') {
-            const target = await client.query(
-                'SELECT current_job_id FROM users WHERE user_id = $1 FOR UPDATE',
-                [targetId]
-            );
-            if (target.rowCount !== 1) {
-                throw new ActionError(409, 'Applicant account no longer exists.');
-            }
-            if (target.rows[0].current_job_id !== null) {
-                throw new ActionError(
-                    409,
-                    'Applicant has joined a City Job since applying.'
-                );
-            }
-
-            const employed = await client.query(
-                `SELECT company_id
-                   FROM company_employees
-                  WHERE employee_id = $1 AND is_npc = false
-                  LIMIT 1`,
-                [targetId]
-            );
-            if (employed.rowCount) {
-                throw new ActionError(
-                    409,
-                    'Applicant is already attached to a company.'
-                );
-            }
-
-            const staff = await client.query(
-                'SELECT COUNT(*)::bigint AS total FROM company_employees WHERE company_id = $1',
-                [companyId]
-            );
-            const total = BigInt(staff.rows[0].total);
-            const maxEmployees = BigInt(company.rows[0].max_employees);
-            if (total >= maxEmployees) {
-                throw new ActionError(409, 'Company is at its recovered base staff capacity.');
-            }
-
-            await client.query(
-                `INSERT INTO company_employees (
-                    company_id, employee_id, is_npc, position_role, daily_salary
-                 )
-                 VALUES ($1, $2, false, 'Unassigned', 0)`,
-                [companyId, targetId]
-            );
-            await client.query(
-                `UPDATE company_applicants
-                    SET status = 'Accepted'
-                  WHERE application_id = $1::bigint AND company_id = $2`,
-                [applicationId, companyId]
-            );
-            await client.query(
-                `INSERT INTO company_logs (company_id, log_type, log_text)
-                 VALUES ($1, 'STAFF', 'Accepted a pending player application.')`,
-                [companyId]
-            );
-        } else {
-            await client.query(
-                `UPDATE company_applicants
-                    SET status = 'Rejected'
-                  WHERE application_id = $1::bigint AND company_id = $2`,
-                [applicationId, companyId]
-            );
-            await client.query(
-                `INSERT INTO company_logs (company_id, log_type, log_text)
-                 VALUES ($1, 'STAFF', 'Rejected a pending player application.')`,
-                [companyId]
-            );
+        const target = await client.query(
+            `SELECT current_job_id, stat_acu, stat_ops, stat_pre, stat_res
+               FROM users
+              WHERE user_id = $1
+              FOR UPDATE`,
+            [targetId]
+        );
+        if (target.rowCount !== 1) {
+            throw new ActionError(409, 'Applicant account no longer exists.');
         }
+        if (target.rows[0].current_job_id !== null) {
+            throw new ActionError(409, 'Applicant has joined a City Job since applying.');
+        }
+
+        const employed = await client.query(
+            `SELECT company_id
+               FROM company_employees
+              WHERE employee_id = $1
+                AND is_npc = false
+              LIMIT 1`,
+            [targetId]
+        );
+        if (employed.rowCount) {
+            throw new ActionError(409, 'Applicant is already employed by a company.');
+        }
+
+        const staff = await client.query(
+            'SELECT COUNT(*)::bigint AS total FROM company_employees WHERE company_id = $1',
+            [companyId]
+        );
+        if (BigInt(staff.rows[0].total) >= BigInt(company.rows[0].max_employees)) {
+            throw new ActionError(409, 'Company is at its recovered base staff capacity.');
+        }
+
+        const position = await client.query(
+            `SELECT position_id, type_id, role_key,
+                    req_stat_primary, req_amount_primary,
+                    req_stat_secondary, req_amount_secondary
+               FROM company_positions_master
+              WHERE position_id = $1
+                AND type_id = $2`,
+            [positionId, company.rows[0].type_id]
+        );
+        if (position.rowCount !== 1) {
+            throw new ActionError(404, 'Position is not part of this company type.');
+        }
+
+        const eligibility = assertPositionEligibility(
+            target.rows[0],
+            position.rows[0]
+        );
+
+        const inserted = await client.query(
+            `INSERT INTO company_employment_offers (
+                application_id,
+                company_id,
+                employee_id,
+                offered_by,
+                position_id,
+                daily_salary_clean,
+                source_ref
+             )
+             VALUES ($1, $2, $3, $4, $5, $6::numeric, $7::uuid)
+             RETURNING offer_id, created_at, status`,
+            [
+                applicationId,
+                companyId,
+                targetId,
+                actor,
+                positionId,
+                salary.toString(),
+                idempotencyKey
+            ]
+        );
+
+        await client.query(
+            `INSERT INTO company_logs (company_id, log_type, log_text)
+             VALUES ($1, 'STAFF', $2)`,
+            [
+                companyId,
+                'Director proposed role ' + position.rows[0].role_key +
+                    ' at ' + salary.toString() + ' Clean Cash per day.'
+            ]
+        );
 
         const response = {
             success: true,
-            message: action === 'accept'
-                ? 'Applicant accepted as an unassigned employee.'
-                : 'Applicant rejected.',
+            message: 'Employment offer sent. The applicant must accept it.',
+            offer_id: inserted.rows[0].offer_id,
             application_id: applicationId,
-            status: action === 'accept' ? 'Accepted' : 'Rejected'
+            employee_id: targetId,
+            position_id: positionId,
+            role_key: position.rows[0].role_key,
+            daily_salary_clean: exactJsonAmount(salary),
+            status: inserted.rows[0].status,
+            created_at: inserted.rows[0].created_at,
+            payroll_settlement_available: false,
+            requirements: {
+                primary: {
+                    stat: eligibility.primary.stat,
+                    required: exactJsonAmount(eligibility.primary.required),
+                    actual: exactJsonAmount(eligibility.primary.actual)
+                },
+                secondary: {
+                    stat: eligibility.secondary.stat,
+                    required: exactJsonAmount(eligibility.secondary.required),
+                    actual: exactJsonAmount(eligibility.secondary.actual)
+                }
+            }
+        };
+
+        await completeIdempotent(client, idem, 200, response);
+        await client.query('COMMIT');
+        transaction = false;
+        return res.json(response);
+    } catch (err) {
+        if (transaction) {
+            try { await client.query('ROLLBACK'); }
+            catch (rollback) {
+                console.error('Employment offer create rollback:', rollback);
+            }
+        }
+        return sendActionError(res, err, 'Employment offer failed:');
+    } finally {
+        if (client) client.release();
+    }
+});
+
+// --- 14. WITHDRAW PENDING EMPLOYMENT OFFER ---
+router.post('/employment-offer/withdraw', async (req, res) => {
+    let client, transaction = false;
+    try {
+        const actor = actorId(req);
+        const companyId = req.managedCompanyId;
+        const idempotencyKey = requireIdempotencyKey(req);
+        const offerId = integer(req.body?.offer_id, {
+            field: 'Employment offer ID', min: 1n, max: 9223372036854775807n
+        }).toString();
+
+        client = await pool.connect();
+        await client.query('BEGIN');
+        transaction = true;
+
+        const actorRow = await client.query(
+            'SELECT user_id FROM users WHERE user_id = $1 FOR UPDATE',
+            [actor]
+        );
+        if (actorRow.rowCount !== 1) throw new ActionError(404, 'Player not found.');
+
+        const idem = await beginIdempotent(
+            client,
+            actor,
+            'company.employment_offer.withdraw',
+            idempotencyKey,
+            { companyId, offerId }
+        );
+        if (idem.replay) {
+            await client.query('COMMIT');
+            transaction = false;
+            return res.status(idem.status).json(idem.response);
+        }
+
+        const company = await client.query(
+            `SELECT owner_id, is_active
+               FROM player_companies
+              WHERE company_id = $1
+              FOR UPDATE`,
+            [companyId]
+        );
+        if (
+            company.rowCount !== 1 ||
+            String(company.rows[0].owner_id) !== actor
+        ) {
+            throw new ActionError(403, 'Company ownership changed.');
+        }
+
+        const offer = await client.query(
+            `SELECT offer_id, status
+               FROM company_employment_offers
+              WHERE offer_id = $1
+                AND company_id = $2
+              FOR UPDATE`,
+            [offerId, companyId]
+        );
+        if (offer.rowCount !== 1) {
+            throw new ActionError(404, 'Employment offer not found.');
+        }
+        if (offer.rows[0].status !== 'pending') {
+            throw new ActionError(409, 'Employment offer is no longer pending.');
+        }
+
+        await client.query(
+            `UPDATE company_employment_offers
+                SET status = 'withdrawn',
+                    responded_at = NOW()
+              WHERE offer_id = $1`,
+            [offerId]
+        );
+        await client.query(
+            `INSERT INTO company_logs (company_id, log_type, log_text)
+             VALUES ($1, 'STAFF', 'Director withdrew a pending employment offer.')`,
+            [companyId]
+        );
+
+        const response = {
+            success: true,
+            message: 'Employment offer withdrawn.',
+            offer_id: offerId,
+            status: 'withdrawn'
         };
         await completeIdempotent(client, idem, 200, response);
         await client.query('COMMIT');
@@ -674,7 +820,135 @@ router.post('/manage-applicant', async (req, res) => {
         if (transaction) {
             try { await client.query('ROLLBACK'); }
             catch (rollback) {
-                console.error('Applicant management rollback:', rollback);
+                console.error('Employment offer withdraw rollback:', rollback);
+            }
+        }
+        return sendActionError(res, err, 'Employment offer withdrawal failed:');
+    } finally {
+        if (client) client.release();
+    }
+});
+
+// --- 15. MANAGE APPLICANT ---
+// Rejection can be immediate. Direct acceptance is intentionally removed:
+// real players require a negotiated Clean Cash salary and source role, so the
+// Director must create an employment offer and the applicant must accept it.
+router.post('/manage-applicant', async (req, res) => {
+    let client, transaction = false;
+    try {
+        const actor = actorId(req);
+        const companyId = req.managedCompanyId;
+        const idempotencyKey = requireIdempotencyKey(req);
+        const applicationId = integer(req.body?.application_id, {
+            field: 'Application ID', min: 1n, max: 9223372036854775807n
+        }).toString();
+        const action = req.body?.action;
+
+        if (action === 'accept') {
+            throw new ActionError(
+                409,
+                'Direct acceptance is disabled. Send a negotiated employment offer instead.'
+            );
+        }
+        if (action !== 'reject') {
+            throw new ActionError(400, 'Applicant action must be reject.');
+        }
+
+        client = await pool.connect();
+        await client.query('BEGIN');
+        transaction = true;
+
+        const actorRow = await client.query(
+            'SELECT user_id FROM users WHERE user_id = $1 FOR UPDATE',
+            [actor]
+        );
+        if (actorRow.rowCount !== 1) throw new ActionError(404, 'Player not found.');
+
+        const idem = await beginIdempotent(
+            client,
+            actor,
+            'company.manage_applicant.reject',
+            idempotencyKey,
+            { companyId, applicationId }
+        );
+        if (idem.replay) {
+            await client.query('COMMIT');
+            transaction = false;
+            return res.status(idem.status).json(idem.response);
+        }
+
+        const company = await client.query(
+            `SELECT owner_id
+               FROM player_companies
+              WHERE company_id = $1
+              FOR UPDATE`,
+            [companyId]
+        );
+        if (
+            company.rowCount !== 1 ||
+            String(company.rows[0].owner_id) !== actor
+        ) {
+            throw new ActionError(403, 'Company ownership changed.');
+        }
+
+        const application = await client.query(
+            `SELECT status
+               FROM company_applicants
+              WHERE application_id = $1::bigint
+                AND company_id = $2
+              FOR UPDATE`,
+            [applicationId, companyId]
+        );
+        if (application.rowCount !== 1) {
+            throw new ActionError(404, 'Application not found for this company.');
+        }
+        if (application.rows[0].status !== 'Pending') {
+            throw new ActionError(409, 'Application is no longer pending.');
+        }
+
+        const pendingOffer = await client.query(
+            `SELECT offer_id
+               FROM company_employment_offers
+              WHERE application_id = $1::bigint
+                AND status = 'pending'
+              FOR UPDATE`,
+            [applicationId]
+        );
+        if (pendingOffer.rowCount) {
+            throw new ActionError(
+                409,
+                'Withdraw the pending employment offer before rejecting this application.'
+            );
+        }
+
+        await client.query(
+            `UPDATE company_applicants
+                SET status = 'Rejected'
+              WHERE application_id = $1::bigint
+                AND company_id = $2`,
+            [applicationId, companyId]
+        );
+        await client.query(
+            `INSERT INTO company_logs (company_id, log_type, log_text)
+             VALUES ($1, 'STAFF', 'Rejected a pending player application.')`,
+            [companyId]
+        );
+
+        const response = {
+            success: true,
+            message: 'Applicant rejected.',
+            application_id: applicationId,
+            status: 'Rejected'
+        };
+        await completeIdempotent(client, idem, 200, response);
+        await client.query('COMMIT');
+        transaction = false;
+        return res.json(response);
+    } catch (err) {
+        if (transaction) {
+            try { await client.query('ROLLBACK'); }
+            catch (rollback) {
+                console.error('Applicant rejection rollback:', rollback);
             }
         }
         return sendActionError(res, err, 'Applicant management failed:');
