@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:http/http.dart' as http;
+import '../services/game_http.dart' as http;
 import 'dart:convert';
 import 'dart:math' as math;
 import '../api_config.dart';
@@ -73,18 +73,16 @@ class _MissionsViewState extends State<MissionsView> {
   String? _activeContact;
   bool _isLoadingMission = false;
   Map<String, dynamic>? _currentMissionData;
+  Map<String, dynamic> _currentProgress = {};
+  bool _verificationAvailable = false;
+  String _currentContactStatus = 'unknown';
+  String _currentContactReason = '';
   bool _isProcessingAction = false;
 
   Map<String, dynamic> _getContactExp() {
     if (widget.userData['contact_exp'] == null) return {};
     if (widget.userData['contact_exp'] is String) return jsonDecode(widget.userData['contact_exp']);
     return Map<String, dynamic>.from(widget.userData['contact_exp']);
-  }
-
-  Map<String, dynamic>? _getActiveContract() {
-    if (widget.userData['active_contract'] == null) return null;
-    if (widget.userData['active_contract'] is String) return jsonDecode(widget.userData['active_contract']);
-    return Map<String, dynamic>.from(widget.userData['active_contract']);
   }
 
   int _getExpFor(String contact) {
@@ -97,20 +95,38 @@ class _MissionsViewState extends State<MissionsView> {
 
   void _handleBack() {
     if (_activeContact != null) {
-      setState(() { _activeContact = null; _currentMissionData = null; });
+      setState(() {
+        _activeContact = null;
+        _currentMissionData = null;
+        _currentProgress = {};
+        _verificationAvailable = false;
+        _currentContactStatus = 'unknown';
+        _currentContactReason = '';
+      });
     } else {
       widget.onBack();
     }
   }
 
   Future<void> _fetchMissionData(String contact) async {
-    if (contact != 'anonymous') return;
     setState(() => _isLoadingMission = true);
     try {
       final String id = widget.userData['user_id'].toString();
       final response = await http.get(Uri.parse('${ApiConfig.baseUrl}/missions/details/$id/$contact'));
       if (response.statusCode == 200 && mounted) {
-        setState(() => _currentMissionData = jsonDecode(response.body)['mission']);
+        final data = jsonDecode(response.body);
+        final progressRaw = data['progress'];
+        setState(() {
+          _currentMissionData = data['mission'] is Map
+              ? Map<String, dynamic>.from(data['mission'])
+              : null;
+          _currentProgress = progressRaw is Map
+              ? Map<String, dynamic>.from(progressRaw)
+              : <String, dynamic>{};
+          _verificationAvailable = data['verification_available'] == true;
+          _currentContactStatus = data['status']?.toString() ?? 'unknown';
+          _currentContactReason = data['reason']?.toString() ?? '';
+        });
       }
     } catch (e) {
       debugPrint("Mission Fetch Error: $e");
@@ -126,7 +142,7 @@ class _MissionsViewState extends State<MissionsView> {
       final response = await http.post(
         Uri.parse('${ApiConfig.baseUrl}/missions/action'),
         headers: {"Content-Type": "application/json"},
-        body: jsonEncode({"user_id": widget.userData['user_id'], "contact": contact, "action_type": actionType}),
+        body: jsonEncode({"contact": contact, "action_type": actionType}),
       );
       final data = jsonDecode(response.body);
       if (response.statusCode == 200 && mounted) {
@@ -156,7 +172,7 @@ class _MissionsViewState extends State<MissionsView> {
       case 4: return { "title": "IRON AND BLOOD", "message": "You survived the streets, but you're still weak. Head to the local gym. Burn some of that energy to build your body. I want to see you push your limits in all areas.", "objective": "Navigate to Gym, spend 150 Energy on STR, DEF, DEX, and SPD.", "reward": "\$500 Clean Cash" };
       case 5: return { "title": "FOLLOW THE MONEY", "message": "If you want to survive, you need to protect your assets. I've unlocked the Financial District for you.", "objective": "Navigate to the Bank and Real Estate.", "reward": "\$1,000 Clean Cash" };
       case 6: return { "title": "INTO THE SHADOWS", "message": "Now for the real city. The Underworld is where the big players trade. Be careful.", "objective": "Navigate to the Credit Broker and The Casino.", "reward": "\$2,000 Dirty Cash" };
-      case 7: return { "title": "END OF THE LINE", "message": "I've taught you all I can. A guy named Kevin is looking for reliable muscle.", "objective": "No further objectives.", "reward": "None." };
+      case 7: return { "title": "END OF THE LINE", "message": "I've taught you all I can. A guy named Kevin is looking for reliable muscle.", "objective": "No further objectives. Request a contract from Kevin.", "reward": "None." };
 
       default: return { "title": "END OF THE LINE", "message": "I've taught you all I can. A guy named Kevin is looking for reliable muscle. Check your contact list.", "objective": "No further objectives.", "reward": "None." };
     }
@@ -192,7 +208,6 @@ class _MissionsViewState extends State<MissionsView> {
   Widget _buildContactList() {
     int anonExp = _getExpFor('anonymous');
     int kevinExp = _getExpFor('kevin');
-    int johnExp = _getExpFor('uncle_john');
 
     return ListView(
       padding: const EdgeInsets.all(12),
@@ -207,7 +222,7 @@ class _MissionsViewState extends State<MissionsView> {
             name: "Anonymous",
             phone: "+63 945 112 ****",
             repScore: anonExp,
-            maxRep: 50,
+            maxRep: 7,
             color: widget.isWaitingForMessage ? Colors.white24 : Colors.grey,
             icon: widget.isWaitingForMessage ? Icons.lock_clock : Icons.help_outline,
             subtitleOverride: widget.isWaitingForMessage ? "Decrypting transmission..." : null,
@@ -219,11 +234,20 @@ class _MissionsViewState extends State<MissionsView> {
           ),
         ),
 
-        if (anonExp >= 50)
-          _buildContactTile(name: "Kevin", phone: "+63 917 883 ****", repScore: kevinExp, maxRep: 200, color: Colors.orangeAccent, icon: Icons.local_fire_department, onTap: () => setState(() => _activeContact = 'kevin')),
-
-        if (kevinExp >= 200)
-          _buildContactTile(name: "Uncle John", phone: "+63 920 555 ****", repScore: johnExp, maxRep: 1000, color: Colors.redAccent, icon: Icons.business_center, onTap: () => setState(() => _activeContact = 'uncle_john')),
+        if (anonExp >= 7)
+          _buildContactTile(
+            name: "Kevin",
+            phone: "+63 917 883 ****",
+            repScore: kevinExp,
+            maxRep: 1,
+            color: Colors.orangeAccent,
+            icon: Icons.local_fire_department,
+            subtitleOverride: "UNLOCKED • CONTRACTS PAUSED",
+            onTap: () {
+              setState(() => _activeContact = 'kevin');
+              _fetchMissionData('kevin');
+            },
+          ),
       ],
     );
   }
@@ -312,86 +336,114 @@ class _MissionsViewState extends State<MissionsView> {
 
     Widget objectiveWidget;
     bool canVerify = false;
+    final visitsRaw = _currentProgress['visits'];
+    final visits = visitsRaw is Map
+        ? Map<String, dynamic>.from(visitsRaw)
+        : <String, dynamic>{};
+    final energyRaw = _currentProgress['energy_by_stat'];
+    final energyByStat = energyRaw is Map
+        ? Map<String, dynamic>.from(energyRaw)
+        : <String, dynamic>{};
 
     if (anonExp == 1) {
-      canVerify = widget.tut1Vitals && widget.tut1Assets;
+      final vitals = visits['vitals'] == true;
+      final assets = visits['assets'] == true;
+      canVerify = _verificationAvailable && vitals && assets;
       objectiveWidget = Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          _buildChecklistItem("Check your Vitals (Top Bar)", widget.tut1Vitals),
-          _buildChecklistItem("Inspect your Assets (Side Menu)", widget.tut1Assets),
+          _buildChecklistItem("Check your Vitals (Top Bar)", vitals),
+          _buildChecklistItem("Inspect your Assets (Side Menu)", assets),
         ],
       );
-    }
-    else if (anonExp == 2) {
-      canVerify = widget.tut2Inv && widget.tut2Prop && widget.tut2Ach;
+    } else if (anonExp == 2) {
+      final inventory = visits['inventory'] == true;
+      final properties = visits['properties'] == true;
+      final achievements = visits['achievements'] == true;
+      canVerify = _verificationAvailable && inventory && properties && achievements;
       objectiveWidget = Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          _buildChecklistItem("Access your Inventory", widget.tut2Inv),
-          _buildChecklistItem("Access your Properties", widget.tut2Prop),
-          _buildChecklistItem("Access your Achievements", widget.tut2Ach),
+          _buildChecklistItem("Access your Inventory", inventory),
+          _buildChecklistItem("Access your Properties", properties),
+          _buildChecklistItem("Access your Achievements", achievements),
         ],
       );
-    }
-    else if (anonExp == 3) {
-      bool hasDoneCrime = widget.tut3CrimesDoneCount >= 20;
-      int displayCount = widget.tut3CrimesDoneCount > 20 ? 20 : widget.tut3CrimesDoneCount;
-
-      canVerify = widget.tut3Search && widget.tut3Shop && widget.tut3Pick && hasDoneCrime;
+    } else if (anonExp == 3) {
+      final searching = visits['crime_searching'] == true;
+      final shoplifting = visits['crime_shoplifting'] == true;
+      final pickpocketing = visits['crime_pickpocketing'] == true;
+      final crimesDone = int.tryParse(
+        (_currentProgress['successful_crimes'] ?? 0).toString(),
+      ) ?? 0;
+      final crimesComplete = crimesDone >= 20;
+      canVerify = _verificationAvailable &&
+          searching && shoplifting && pickpocketing && crimesComplete;
       objectiveWidget = Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          _buildChecklistItem("Scout the Searching area", widget.tut3Search),
-          _buildChecklistItem("Scout the Shoplifting area", widget.tut3Shop),
-          _buildChecklistItem("Scout the Pickpocketing area", widget.tut3Pick),
-          _buildChecklistItem("Pull off 20 successful crimes ($displayCount / 20)", hasDoneCrime),
+          _buildChecklistItem("Scout the Searching area", searching),
+          _buildChecklistItem("Scout the Shoplifting area", shoplifting),
+          _buildChecklistItem("Scout the Pickpocketing area", pickpocketing),
+          _buildChecklistItem(
+            "Pull off 20 successful crimes (${math.min(crimesDone, 20)} / 20)",
+            crimesComplete,
+          ),
         ],
       );
-    }
-    // 🚨 TASK 4 LOGIC
-    else if (anonExp == 4) {
-      bool strDone = widget.tut4EnergyStr >= 150;
-      bool defDone = widget.tut4EnergyDef >= 150;
-      bool dexDone = widget.tut4EnergyDex >= 150;
-      bool spdDone = widget.tut4EnergySpd >= 150;
-
-      canVerify = widget.tut4Gym && strDone && defDone && dexDone && spdDone;
-
+    } else if (anonExp == 4) {
+      int energy(String stat) =>
+          int.tryParse((energyByStat[stat] ?? 0).toString()) ?? 0;
+      final gym = visits['gym'] == true;
+      final str = energy('str');
+      final def = energy('def');
+      final dex = energy('dex');
+      final spd = energy('spd');
+      canVerify = _verificationAvailable &&
+          gym && str >= 150 && def >= 150 && dex >= 150 && spd >= 150;
       objectiveWidget = Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          _buildChecklistItem("Navigate to the Training Gym", widget.tut4Gym),
-          _buildChecklistItem("Spend 150 Energy on STR (${math.min(widget.tut4EnergyStr, 150)}/150)", strDone),
-          _buildChecklistItem("Spend 150 Energy on DEF (${math.min(widget.tut4EnergyDef, 150)}/150)", defDone),
-          _buildChecklistItem("Spend 150 Energy on DEX (${math.min(widget.tut4EnergyDex, 150)}/150)", dexDone),
-          _buildChecklistItem("Spend 150 Energy on SPD (${math.min(widget.tut4EnergySpd, 150)}/150)", spdDone),
+          _buildChecklistItem("Navigate to the Training Gym", gym),
+          _buildChecklistItem("Spend 150 Energy on STR (${math.min(str, 150)}/150)", str >= 150),
+          _buildChecklistItem("Spend 150 Energy on DEF (${math.min(def, 150)}/150)", def >= 150),
+          _buildChecklistItem("Spend 150 Energy on DEX (${math.min(dex, 150)}/150)", dex >= 150),
+          _buildChecklistItem("Spend 150 Energy on SPD (${math.min(spd, 150)}/150)", spd >= 150),
         ],
       );
-    }
-    else if (anonExp == 5) {
-      canVerify = widget.tut5Bank && widget.tut5Estate;
+    } else if (anonExp == 5) {
+      final bank = visits['bank'] == true;
+      final estate = visits['real_estate'] == true;
+      canVerify = _verificationAvailable && bank && estate;
       objectiveWidget = Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          _buildChecklistItem("Navigate to The Bank (Financial District)", widget.tut5Bank),
-          _buildChecklistItem("Navigate to Real Estate (Financial District)", widget.tut5Estate),
+          _buildChecklistItem("Navigate to The Bank (Financial District)", bank),
+          _buildChecklistItem("Navigate to Real Estate (Financial District)", estate),
         ],
       );
-    }
-    else if (anonExp == 6) {
-      canVerify = widget.tut6Broker && widget.tut6Casino;
+    } else if (anonExp == 6) {
+      final broker = visits['credit_broker'] == true;
+      final casino = visits['casino'] == true;
+      canVerify = _verificationAvailable && broker && casino;
       objectiveWidget = Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          _buildChecklistItem("Navigate to Credit Broker (The Underworld)", widget.tut6Broker),
-          _buildChecklistItem("Navigate to The Casino (The Underworld)", widget.tut6Casino),
+          _buildChecklistItem("Navigate to Credit Broker (The Underworld)", broker),
+          _buildChecklistItem("Navigate to The Casino (The Underworld)", casino),
         ],
       );
-    }
-    else {
-      objectiveWidget = Text(missionData['objective_text'] ?? "", style: const TextStyle(color: Colors.orangeAccent, fontSize: 13, fontWeight: FontWeight.bold, height: 1.4));
-      canVerify = true;
+    } else {
+      objectiveWidget = Text(
+        missionData['objective_text'] ?? "",
+        style: const TextStyle(
+          color: Colors.orangeAccent,
+          fontSize: 13,
+          fontWeight: FontWeight.bold,
+          height: 1.4,
+        ),
+      );
+      canVerify = false;
     }
 
     return _buildMessageBubble(
@@ -413,36 +465,26 @@ class _MissionsViewState extends State<MissionsView> {
   }
 
   Widget _buildKevinChat() {
-    final contract = _getActiveContract();
-
-    if (contract == null || contract['fixer'] != 'kevin') {
-      return _buildMessageBubble(
-          title: "STANDBY FOR WORK", message: "You looking for a hustle? I got names and targets, but you gotta commit.",
-          objectiveWidget: const Text("Request a dynamic contract from Kevin.", style: TextStyle(color: Colors.orangeAccent, fontSize: 13, fontWeight: FontWeight.bold, height: 1.4)),
-          reward: "Variable Cash & EXP",
-          buttons: [_buildActionBtn("REQUEST NEW CONTRACT", Colors.orangeAccent, () => _processAction('kevin', 'REQUEST'))]
-      );
-    }
-
-    Widget dynamicObjective = Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        _buildChecklistItem("Crimes: ${contract['progress']['crimes']} / ${contract['reqs']['crimes']}", contract['progress']['crimes'] >= contract['reqs']['crimes']),
-        _buildChecklistItem("Gym: ${contract['progress']['gym']} / ${contract['reqs']['gym']}", contract['progress']['gym'] >= contract['reqs']['gym']),
-      ],
-    );
+    final reason = _currentContactReason.isNotEmpty
+        ? _currentContactReason
+        : "Kevin is unlocked by the Anonymous handoff, but his contract rules are still being source-reconciled.";
 
     return _buildMessageBubble(
-        title: "ACTIVE CONTRACT", message: "Here are the details. Get it done, and report back.",
-        objectiveWidget: dynamicObjective,
-        reward: "\$${contract['reward_cash']} Dirty Cash",
-        buttons: [
-          _buildActionBtn("TURN IN CONTRACT (+2 REP)", const Color(0xFF39FF14), () => _processAction('kevin', 'TURN_IN')),
-          const SizedBox(height: 8),
-          _buildActionBtn("PARTIAL TURN-IN (-1 REP)", Colors.yellowAccent, () => _processAction('kevin', 'PARTIAL')),
-          const SizedBox(height: 8),
-          _buildActionBtn("ABORT CONTRACT (-2 REP)", Colors.redAccent, () => _processAction('kevin', 'ABORT')),
-        ]
+      title: _currentContactStatus == 'paused'
+          ? "CONTACT ESTABLISHED"
+          : "KEVIN",
+      message: reason,
+      objectiveWidget: const Text(
+        "No contract can be requested, advanced, turned in, partially settled, or aborted until authoritative objectives, payouts, and reputation rules are recovered.",
+        style: TextStyle(
+          color: Colors.orangeAccent,
+          fontSize: 13,
+          fontWeight: FontWeight.bold,
+          height: 1.4,
+        ),
+      ),
+      reward: "No authoritative contract reward available.",
+      buttons: const [],
     );
   }
 
