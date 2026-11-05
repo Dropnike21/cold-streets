@@ -1,3 +1,4 @@
+const logger = require('../utils/logger');
 const express = require('express');
 const pool = require('../db');
 const router = express.Router();
@@ -99,7 +100,7 @@ router.get('/:user_id', async (req, res) => {
         const inventory = await pool.query(query, [user_id]);
         res.json(inventory.rows);
     } catch (err) {
-        console.error("Inventory Fetch Error:", err.message);
+        logger.error('inventory_fetch_failed', logger.errorFields(err));
         res.status(500).json({ error: "Failed to load stash." });
     }
 });
@@ -281,7 +282,7 @@ router.post('/use', async (req, res) => {
         return res.json(response);
     } catch (err) {
         if (transaction) {
-            try { await client.query('ROLLBACK'); } catch (rollback) { console.error('Item use rollback:', rollback); }
+            try { await client.query('ROLLBACK'); } catch (rollback) { logger.error('item_use_rollback_failed', logger.errorFields(rollback)); }
         }
         return sendActionError(res, err, 'Item use failed:');
     } finally { if (client) client.release(); }
@@ -382,7 +383,7 @@ router.post('/equip', async (req, res) => {
     } catch (err) {
         if (transaction) {
             try { await client.query('ROLLBACK'); }
-            catch (rollback) { console.error('Equip rollback:', rollback); }
+            catch (rollback) { logger.error('equip_rollback_failed', logger.errorFields(rollback)); }
         }
         return sendActionError(res, err, 'Equip failed:');
     } finally {
