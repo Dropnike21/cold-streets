@@ -186,24 +186,10 @@ class _JobsViewState extends State<JobsView> {
   }
 
   Future<void> _quitJob(String exitType) async {
-    setState(() => _isProcessing = true);
-    try {
-      final response = await http.post(Uri.parse('$apiUrl/quit'),
-          headers: {"Content-Type": "application/json"},
-          body: jsonEncode({"exit_type": exitType}));
-      final data = jsonDecode(response.body);
-
-      if (response.statusCode == 200) {
-        _showSnackbar(data['message'], isError: exitType == 'heist');
-        await _fetchJobsDashboard();
-      } else {
-        _showSnackbar(data['error'], isError: true);
-      }
-    } catch (e) {
-      _showSnackbar("Server error processing resignation.", isError: true);
-    } finally {
-      if (mounted) setState(() => _isProcessing = false);
-    }
+    _showSnackbar(
+      "City Job resignation is paused until exit retention and Final Heist settlement rules are selected.",
+      isError: true,
+    );
   }
 
   void _showSnackbar(String message, {bool isError = false}) {
@@ -213,142 +199,26 @@ class _JobsViewState extends State<JobsView> {
   }
 
   void _showResignationDialog(Map<String, dynamic> activeJob) {
-    final rawPreview = activeJob['resignation_preview'];
-    final preview = rawPreview is Map
-        ? Map<String, dynamic>.from(rawPreview)
-        : <String, dynamic>{};
-    final previewReady = preview.isNotEmpty;
-    final cleanRetention =
-        int.tryParse(preview['clean_exit_retention_percent']?.toString() ?? '');
-    final heistPayout =
-        int.tryParse(preview['heist_payout_dirty_cash']?.toString() ?? '');
-    final heistHeat =
-        int.tryParse(preview['heist_heat']?.toString() ?? '');
-    final heistBanDays =
-        int.tryParse(preview['heist_ban_days']?.toString() ?? '');
-
     showDialog(
       context: context,
       builder: (BuildContext ctx) {
         return AlertDialog(
           backgroundColor: darkSurface,
-          shape: RoundedRectangleBorder(
-            side: const BorderSide(color: Colors.redAccent),
-            borderRadius: BorderRadius.circular(8),
-          ),
           title: const Text(
-            "TERMINATE EMPLOYMENT",
+            "RESIGNATION PAUSED",
             style: TextStyle(
-              color: Colors.redAccent,
+              color: Colors.amber,
               fontWeight: FontWeight.bold,
-              fontSize: 16,
             ),
           ),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const Text(
-                "How do you want to leave?",
-                style: TextStyle(color: Colors.white, fontSize: 12),
-              ),
-              const SizedBox(height: 20),
-              SizedBox(
-                width: double.infinity,
-                child: ElevatedButton(
-                  onPressed: () {
-                    Navigator.pop(ctx);
-                    _quitJob('clean');
-                  },
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: matteBlack,
-                    side: const BorderSide(color: Colors.white24),
-                  ),
-                  child: Padding(
-                    padding: const EdgeInsets.symmetric(vertical: 12.0),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        const Text(
-                          "CLEAN EXIT",
-                          style: TextStyle(
-                            color: Colors.white,
-                            fontWeight: FontWeight.bold,
-                            fontSize: 12,
-                          ),
-                        ),
-                        const SizedBox(height: 4),
-                        Text(
-                          cleanRetention == null
-                              ? "The server will determine the retained Job Points."
-                              : "The server will retain $cleanRetention% of your unspent Job Points.",
-                          style: const TextStyle(
-                            color: Colors.white54,
-                            fontSize: 10,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-              ),
-              const SizedBox(height: 12),
-              SizedBox(
-                width: double.infinity,
-                child: ElevatedButton(
-                  onPressed: previewReady &&
-                          heistPayout != null &&
-                          heistHeat != null &&
-                          heistBanDays != null
-                      ? () {
-                          Navigator.pop(ctx);
-                          _quitJob('heist');
-                        }
-                      : null,
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.redAccent.withOpacity(0.1),
-                    side: const BorderSide(color: Colors.redAccent),
-                  ),
-                  child: Padding(
-                    padding: const EdgeInsets.symmetric(vertical: 12.0),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        const Text(
-                          "THE FINAL HEIST",
-                          style: TextStyle(
-                            color: Colors.redAccent,
-                            fontWeight: FontWeight.bold,
-                            fontSize: 12,
-                          ),
-                        ),
-                        const SizedBox(height: 4),
-                        Text(
-                          previewReady &&
-                                  heistPayout != null &&
-                                  heistHeat != null &&
-                                  heistBanDays != null
-                              ? "Server preview: ${_formatNumber(heistPayout)} Dirty Cash, Heat $heistHeat, $heistBanDays-day City Job ban, and all Job Points forfeited."
-                              : "Authoritative heist preview unavailable.",
-                          style: const TextStyle(
-                            color: Colors.redAccent,
-                            fontSize: 10,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-              ),
-            ],
+          content: const Text(
+            "The recovered City Job sources do not define clean-exit Job Point retention or the Final Heist payout, Heat, and ban rules. Resignation will reopen after those mechanics are selected.",
+            style: TextStyle(color: Colors.white70, height: 1.45),
           ),
           actions: [
             TextButton(
               onPressed: () => Navigator.pop(ctx),
-              child: const Text(
-                "CANCEL",
-                style: TextStyle(color: Colors.white54),
-              ),
+              child: const Text("CLOSE"),
             ),
           ],
         );
@@ -424,11 +294,15 @@ class _JobsViewState extends State<JobsView> {
             Padding(
               padding: const EdgeInsets.only(right: 8.0),
               child: TextButton(
-                onPressed: () {
-                  final activeJob = _jobs.firstWhere((j) => j['job_id'] == _currentJobId, orElse: () => {});
-                  _showResignationDialog(activeJob);
-                },
-                child: const Text("RESIGN", style: TextStyle(color: Colors.redAccent, fontSize: 12, fontWeight: FontWeight.bold)),
+                onPressed: null,
+                child: const Text(
+                  "RESIGN PAUSED",
+                  style: TextStyle(
+                    color: Colors.white38,
+                    fontSize: 12,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
               ),
             )
         ],
