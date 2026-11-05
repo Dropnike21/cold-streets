@@ -30,7 +30,7 @@ class _BankViewState extends State<BankView> {
   String _bankStatus = 'read_only_reconciliation';
   String _termsStatus = 'historical_code_only';
   String _conversionStatus = 'unresolved';
-  String _checkProducerStatus = 'unrecovered';
+  String _checkProducerStatus = 'issuer contract unresolved';
 
   Map<String, dynamic> _account = {};
   List<Map<String, dynamic>> _deposits = [];
@@ -78,7 +78,7 @@ class _BankViewState extends State<BankView> {
                 'unresolved';
         _checkProducerStatus =
             decoded['pending_check_creation_status']?.toString() ??
-                'unrecovered';
+                'external_issuer_contract_unimplemented';
 
         _account = decoded['account'] is Map
             ? Map<String, dynamic>.from(decoded['account'])
@@ -469,7 +469,7 @@ class _BankViewState extends State<BankView> {
           ),
           const SizedBox(height: 6),
           const Text(
-            'No authoritative producer or auto-liquidation worker for pending checks was recovered, so expiry does not currently trigger a payout path.',
+            'Pending checks are reserved for deferred payouts issued by authoritative systems such as future Casino lottery/jackpot, auction/trade settlement, or other reward flows. Issuer identity, currency, expiry, and fallback settlement are not yet canonical, so claims remain paused.',
             style: TextStyle(
               color: Colors.white38,
               fontSize: 9,
