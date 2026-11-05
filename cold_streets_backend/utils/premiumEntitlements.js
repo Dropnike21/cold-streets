@@ -11,6 +11,8 @@ const SUBSCRIBER_CITY_MARKET_DAILY_ITEM_LIMIT =
 
 const VIP_MAX_ENERGY_TARGET = 200n;
 const VIP_NERVE_BONUS_PERCENT = 20n;
+const SUBSCRIBER_MONTHLY_VIP_PACK_QUANTITY = 1n;
+const SUBSCRIBER_MONTHLY_BOOK_QUANTITY = 1n;
 
 async function getPremiumStatus(client, userId) {
     const [userRes, subscriptionRes, entitlementRes, inventoryRes] =
@@ -120,5 +122,7 @@ module.exports = {
     SUBSCRIBER_CITY_MARKET_DAILY_ITEM_LIMIT,
     VIP_MAX_ENERGY_TARGET,
     VIP_NERVE_BONUS_PERCENT,
+    SUBSCRIBER_MONTHLY_VIP_PACK_QUANTITY,
+    SUBSCRIBER_MONTHLY_BOOK_QUANTITY,
     getPremiumStatus
 };
