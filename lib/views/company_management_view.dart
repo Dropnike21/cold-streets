@@ -16,7 +16,7 @@ class CompanyManagementView extends StatefulWidget {
 }
 
 class _CompanyManagementViewState extends State<CompanyManagementView> {
-  String get apiUrl => '\${ApiConfig.baseUrl}/companies';
+  String get apiUrl => '${ApiConfig.baseUrl}/companies';
   bool _isLoading = true;
   bool _isProcessing = false;
 
