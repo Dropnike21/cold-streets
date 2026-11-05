@@ -1,3 +1,4 @@
+const logger = require('../utils/logger');
 const express = require('express');
 const pool = require('../db');
 const router = express.Router();
@@ -241,7 +242,7 @@ router.post('/enroll', async (req, res) => {
     } catch (err) {
         if (transaction) {
             try { await client.query('ROLLBACK'); }
-            catch (rollback) { console.error('University enrollment rollback:', rollback); }
+            catch (rollback) { logger.error('university_enroll_rollback_failed', logger.errorFields(rollback)); }
         }
         return sendActionError(res, err, 'University enrollment failed:');
     } finally {
@@ -296,7 +297,7 @@ router.post('/dropout', async (req, res) => {
     } catch (err) {
         if (transaction) {
             try { await client.query('ROLLBACK'); }
-            catch (rollback) { console.error('University dropout rollback:', rollback); }
+            catch (rollback) { logger.error('university_dropout_rollback_failed', logger.errorFields(rollback)); }
         }
         return sendActionError(res, err, 'University dropout failed:');
     } finally {
@@ -427,7 +428,7 @@ router.post('/graduate', async (req, res) => {
     } catch (err) {
         if (transaction) {
             try { await client.query('ROLLBACK'); }
-            catch (rollback) { console.error('University graduation rollback:', rollback); }
+            catch (rollback) { logger.error('university_graduation_rollback_failed', logger.errorFields(rollback)); }
         }
         return sendActionError(res, err, 'University graduation failed:');
     } finally {
