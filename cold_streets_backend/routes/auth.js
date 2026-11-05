@@ -95,9 +95,15 @@ router.post('/session', requireSupabaseIdentity, async (req, res) => {
                 );
                 // Exactly one initial residence is granted at verified profile
                 // creation, never by visiting a GET endpoint.
-                await client.query(
-                    "INSERT INTO owned_properties (user_id, property_type_id, status) VALUES ($1, 1, 'active_residence')",
+                const starterResidence = await client.query(
+                    "INSERT INTO owned_properties (user_id, property_type_id, status) VALUES ($1, 1, 'active_residence') RETURNING id",
                     [userId]
+                );
+                await client.query(
+                    `INSERT INTO property_transactions
+                        (instance_id, seller_id, buyer_id, transaction_type, amount)
+                     VALUES ($1, NULL, $2, 'STARTER_GRANT', 0)`,
+                    [starterResidence.rows[0].id, userId]
                 );
                 await client.query(
                     'INSERT INTO user_events (user_id, event_text) VALUES ($1, $2)',
