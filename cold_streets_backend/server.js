@@ -89,20 +89,33 @@ app.get('/readyz', async (req, res) => {
     let databaseProbeOk = null;
 
     if (gameplayEnabled) {
+        let readinessClient;
+        let readinessTransaction = false;
         try {
-            await pool.query({
-                text: 'SELECT 1',
-                query_timeout: 2000
-            });
+            readinessClient = await pool.connect();
+            await readinessClient.query('BEGIN');
+            readinessTransaction = true;
+            await readinessClient.query("SET LOCAL statement_timeout = '2s'");
+            await readinessClient.query("SET LOCAL lock_timeout = '1s'");
+            await readinessClient.query('SELECT 1');
+            await readinessClient.query('ROLLBACK');
+            readinessTransaction = false;
+
             runtimeHealth.markDatabaseReady();
             databaseProbeOk = true;
         } catch (err) {
+            if (readinessClient && readinessTransaction) {
+                try { await readinessClient.query('ROLLBACK'); }
+                catch (_) {}
+            }
             runtimeHealth.markDatabaseFailure();
             databaseProbeOk = false;
             logger.warn('readiness_database_probe_failed', {
                 request_id: req.requestId,
                 ...logger.errorFields(err)
             });
+        } finally {
+            if (readinessClient) readinessClient.release();
         }
     }
 
@@ -280,7 +293,7 @@ async function shutdown(signal, exitCode = 0) {
     const forceTimer = setTimeout(() => {
         logger.error('shutdown_forced', { signal });
         process.exit(1);
-    }, 10000);
+    }, 25000);
     if (typeof forceTimer.unref === 'function') forceTimer.unref();
 
     const finish = async (serverError) => {
