@@ -2,14 +2,13 @@ const express = require('express');
 const router = express.Router();
 const pool = require('../db');
 const {
-    ActionError, integer, dbInteger, exactJsonAmount, actorId, sendActionError
+    ActionError, dbInteger, exactJsonAmount, actorId, sendActionError
 } = require('../utils/economyValidation');
 const {
     requireIdempotencyKey, beginIdempotent, completeIdempotent
 } = require('../utils/idempotency');
 
 const CLASSIFIED_COST_PER_CHARACTER = 10n;
-const MIN_BOUNTY = 500n;
 
 // --- GET FRONT PAGE DATA ---
 router.get('/frontpage', async (_req, res) => {
@@ -132,94 +131,13 @@ router.post('/classifieds', async (req, res) => {
 });
 
 // --- POST A NEW BOUNTY ---
-router.post('/bounty', async (req, res) => {
-    let client, transaction = false;
-    try {
-        const userId = actorId(req);
-        const idempotencyKey = requireIdempotencyKey(req);
-        const reward = integer(req.body?.reward_cash, {
-            field: 'Bounty reward', min: MIN_BOUNTY
-        });
-        if (typeof req.body?.target_username !== 'string' ||
-            !req.body.target_username.trim()) {
-            throw new ActionError(400, 'Target username is required.');
-        }
-        if (typeof req.body?.is_anonymous !== 'boolean') {
-            throw new ActionError(400, 'is_anonymous must be a boolean.');
-        }
-        const targetUsername = req.body.target_username.trim();
-
-        client = await pool.connect();
-        await client.query('BEGIN');
-        transaction = true;
-        const player = await client.query(
-            'SELECT dirty_cash FROM users WHERE user_id = $1 FOR UPDATE',
-            [userId]
-        );
-        if (player.rowCount !== 1) throw new ActionError(404, 'Player not found.');
-
-        const idem = await beginIdempotent(
-            client, userId, 'info_broker.bounty', idempotencyKey,
-            {
-                targetUsername,
-                reward: reward.toString(),
-                anonymous: req.body.is_anonymous
-            }
-        );
-        if (idem.replay) {
-            await client.query('COMMIT');
-            transaction = false;
-            return res.status(idem.status).json(idem.response);
-        }
-
-        const targetRes = await client.query(
-            'SELECT user_id, username FROM users WHERE username = $1',
-            [targetUsername]
-        );
-        if (targetRes.rowCount !== 1) throw new ActionError(404, 'Target user not found.');
-        const targetId = String(targetRes.rows[0].user_id);
-        if (targetId === userId) throw new ActionError(400, 'You cannot place a bounty on yourself.');
-        if (dbInteger(player.rows[0].dirty_cash) < reward) {
-            throw new ActionError(409, 'Insufficient Dirty Cash.');
-        }
-
-        const debit = await client.query(
-            `UPDATE users
-                SET dirty_cash = dirty_cash - $1::numeric
-              WHERE user_id = $2 AND dirty_cash >= $1::numeric
-              RETURNING dirty_cash`,
-            [reward.toString(), userId]
-        );
-        if (debit.rowCount !== 1) throw new ActionError(409, 'Balance changed before bounty placement.');
-
-        const bounty = await client.query(
-            `INSERT INTO bounties
-               (target_user_id, placed_by_user_id, reward_cash, is_anonymous)
-             VALUES ($1, $2, $3::numeric, $4)
-             RETURNING id`,
-            [targetId, userId, reward.toString(), req.body.is_anonymous]
-        );
-
-        const response = {
-            success: true,
-            message: 'Bounty placed on ' + targetRes.rows[0].username + '.',
-            bounty_id: bounty.rows[0].id,
-            reward_cash: exactJsonAmount(reward),
-            dirty_cash: exactJsonAmount(dbInteger(debit.rows[0].dirty_cash))
-        };
-        await completeIdempotent(client, idem, 200, response);
-        await client.query('COMMIT');
-        transaction = false;
-        return res.json(response);
-    } catch (err) {
-        if (transaction) {
-            try { await client.query('ROLLBACK'); }
-            catch (rollback) { console.error('Bounty rollback:', rollback); }
-        }
-        return sendActionError(res, err, 'Bounty placement failed:');
-    } finally {
-        if (client) client.release();
-    }
+// Bounty placement is paused until server-authoritative PvP combat can prove a
+// successful claim. Accepting escrow now would irreversibly remove Dirty Cash
+// into a lifecycle that has no secure completion/claim event.
+router.post('/bounty', (_req, res) => {
+    return res.status(503).json({
+        error: 'Bounty placement is paused until authoritative PvP claim settlement is implemented.'
+    });
 });
 
 module.exports = router;
