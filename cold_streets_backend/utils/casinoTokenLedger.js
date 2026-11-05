@@ -3,10 +3,16 @@ const {
     integer,
     dbInteger
 } = require('./economyValidation');
+const {
+    BASE_CASINO_DAILY_TOKEN_SPEND_CAP,
+    VIP_CASINO_DAILY_TOKEN_SPEND_CAP,
+    getPremiumStatus
+} = require('./premiumEntitlements');
 
-const BASE_DAILY_TOKEN_SPEND_CAP = 100n;
-const VIP_DAILY_TOKEN_BONUS = 50n;
-const MAX_DAILY_TOKEN_SPEND_CAP = BASE_DAILY_TOKEN_SPEND_CAP + VIP_DAILY_TOKEN_BONUS;
+const BASE_DAILY_TOKEN_SPEND_CAP = BASE_CASINO_DAILY_TOKEN_SPEND_CAP;
+const MAX_DAILY_TOKEN_SPEND_CAP = VIP_CASINO_DAILY_TOKEN_SPEND_CAP;
+const VIP_DAILY_TOKEN_BONUS =
+    MAX_DAILY_TOKEN_SPEND_CAP - BASE_DAILY_TOKEN_SPEND_CAP;
 const RECONCILED_TOKEN_ENGINES = new Set([
     'perya',
     'slots',
@@ -35,9 +41,9 @@ function normalizeSourceRef(value) {
 }
 
 async function getCasinoTokenStatus(client, userId) {
-    const [wallet, usage] = await Promise.all([
+    const [wallet, usage, premium] = await Promise.all([
         client.query(
-            'SELECT casino_tokens, vip_status_active FROM users WHERE user_id = $1',
+            'SELECT casino_tokens FROM users WHERE user_id = $1',
             [userId]
         ),
         client.query(
@@ -48,7 +54,8 @@ async function getCasinoTokenStatus(client, userId) {
                 AND spent_at >= CURRENT_DATE
                 AND spent_at < CURRENT_DATE + INTERVAL '1 day'`,
             [userId]
-        )
+        ),
+        getPremiumStatus(client, userId)
     ]);
 
     if (wallet.rowCount !== 1) {
@@ -61,10 +68,8 @@ async function getCasinoTokenStatus(client, userId) {
     const spentToday = dbInteger(usage.rows[0].spent_today, {
         field: 'Casino Tokens spent today'
     });
-    const vipActive = wallet.rows[0].vip_status_active === true;
-    const dailyCap = vipActive
-        ? MAX_DAILY_TOKEN_SPEND_CAP
-        : BASE_DAILY_TOKEN_SPEND_CAP;
+    const vipActive = premium.vipBenefitsActive;
+    const dailyCap = premium.effectiveBenefits.casinoDailyTokenSpendCap;
     if (balance < 0n || spentToday < 0n || spentToday > dailyCap) {
         throw new Error('Casino token accounting is outside source-backed bounds.');
     }
@@ -74,6 +79,7 @@ async function getCasinoTokenStatus(client, userId) {
         vipActive,
         baseDailyCap: BASE_DAILY_TOKEN_SPEND_CAP,
         vipDailyBonus: vipActive ? VIP_DAILY_TOKEN_BONUS : 0n,
+        subscriberActive: premium.subscriberActive,
         dailyCap,
         spentToday,
         remainingToday: dailyCap - spentToday,
@@ -97,7 +103,7 @@ async function reserveCasinoTokenSpend(client, {
 
     // Lock order for future token games: authenticated player -> replay ledger.
     const player = await client.query(
-        'SELECT casino_tokens, vip_status_active FROM users WHERE user_id = $1 FOR UPDATE',
+        'SELECT casino_tokens FROM users WHERE user_id = $1 FOR UPDATE',
         [userId]
     );
     if (player.rowCount !== 1) {
@@ -130,6 +136,8 @@ async function reserveCasinoTokenSpend(client, {
         };
     }
 
+    const premium = await getPremiumStatus(client, userId);
+
     const usage = await client.query(
         `SELECT COALESCE(SUM(token_amount), 0)::bigint AS spent_today
            FROM casino_token_spend_ledger
@@ -141,9 +149,7 @@ async function reserveCasinoTokenSpend(client, {
     const spentToday = dbInteger(usage.rows[0].spent_today, {
         field: 'Casino Tokens spent today'
     });
-    const dailyCap = player.rows[0].vip_status_active === true
-        ? MAX_DAILY_TOKEN_SPEND_CAP
-        : BASE_DAILY_TOKEN_SPEND_CAP;
+    const dailyCap = premium.effectiveBenefits.casinoDailyTokenSpendCap;
     if (spentToday < 0n || spentToday > dailyCap) {
         throw new Error('Casino token daily spend ledger is outside source limit.');
     }
@@ -196,7 +202,8 @@ async function reserveCasinoTokenSpend(client, {
                 field: 'Casino Token balance'
             }),
             spentToday: spentToday + amount,
-            vipActive: player.rows[0].vip_status_active === true,
+            vipActive: premium.vipBenefitsActive,
+            subscriberActive: premium.subscriberActive,
             dailyCap,
             remainingToday: dailyCap - spentToday - amount
         }
