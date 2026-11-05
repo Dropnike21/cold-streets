@@ -5,6 +5,7 @@ const db = require('../db');
 const { requireOwnedPlayerParam } = require('../middleware/playerIdentity');
 const {
     ActionError,
+    integer,
     dbInteger,
     exactJsonAmount,
     actorId,
@@ -80,7 +81,7 @@ router.post('/claim-check', async (req, res) => {
     try {
         const userId = actorId(req);
         const idempotencyKey = requireIdempotencyKey(req);
-        const checkId = require('../utils/economyValidation').integer(
+        const checkId = integer(
             req.body?.check_id,
             { field: 'Check ID', min: 1n, max: 9223372036854775807n }
         ).toString();
@@ -330,7 +331,7 @@ router.get('/status/:userId', async (req, res) => {
 
         return res.json({
             success: true,
-            bank_status: 'read_only_reconciliation',
+            bank_status: 'deferred_payout_redemption_enabled',
             time_deposit_creation_available: false,
             time_deposit_claim_available: false,
             pending_check_claim_available: true,
