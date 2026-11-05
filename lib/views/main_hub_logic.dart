@@ -294,6 +294,11 @@ mixin MainHubLogic on State<MainHub> {
       exp = parseSafeInt(updatedStats['exp'] ?? exp);
       if (updatedStats.containsKey('level_holding')) levelHolding = updatedStats['level_holding'] == true;
 
+      double liveStr = parseDouble(updatedStats['stat_str'] ?? widget.userData['stat_str']);
+      double liveDef = parseDouble(updatedStats['stat_def'] ?? widget.userData['stat_def']);
+      double liveDex = parseDouble(updatedStats['stat_dex'] ?? widget.userData['stat_dex']);
+      double liveSpd = parseDouble(updatedStats['stat_spd'] ?? widget.userData['stat_spd']);
+
       energy = parseSafeInt(updatedStats['energy'] ?? energy);
       maxEnergy = parseSafeInt(updatedStats['max_energy'] ?? maxEnergy);
       nerve = parseSafeInt(updatedStats['nerve'] ?? nerve);

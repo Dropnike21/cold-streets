@@ -1,5 +1,3 @@
-import 'package:shared_preferences/shared_preferences.dart';
-
 class TutorialState {
   // Temporary Memory Flags (Reset on app restart)
   bool tut1Vitals = false;
@@ -27,37 +25,9 @@ class TutorialState {
   bool tut6Broker = false;
   bool tut6Casino = false;
 
-  // Load from Device
-  Future<void> load(String userId) async {
-    final prefs = await SharedPreferences.getInstance();
-    tut3Search = prefs.getBool('tut3Search_$userId') ?? false;
-    tut3Shop = prefs.getBool('tut3Shop_$userId') ?? false;
-    tut3Pick = prefs.getBool('tut3Pick_$userId') ?? false;
-    tut3CrimesDoneCount = prefs.getInt('tut3Crimes_$userId') ?? 0;
-
-    // 🚨 LOAD TASK 4
-    tut4Gym = prefs.getBool('tut4Gym_$userId') ?? false;
-    tut4EnergyStr = prefs.getInt('tut4EnergyStr_$userId') ?? 0;
-    tut4EnergyDef = prefs.getInt('tut4EnergyDef_$userId') ?? 0;
-    tut4EnergyDex = prefs.getInt('tut4EnergyDex_$userId') ?? 0;
-    tut4EnergySpd = prefs.getInt('tut4EnergySpd_$userId') ?? 0;
-
-    tut5Bank = prefs.getBool('tut5Bank_$userId') ?? false;
-    tut5Estate = prefs.getBool('tut5Estate_$userId') ?? false;
-    tut6Broker = prefs.getBool('tut6Broker_$userId') ?? false;
-    tut6Casino = prefs.getBool('tut6Casino_$userId') ?? false;
-  }
-
-  // Save to Device
-  Future<void> saveBool(String userId, String key, bool value) async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setBool('${key}_$userId', value);
-  }
-
-  Future<void> saveInt(String userId, String key, int value) async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setInt('${key}_$userId', value);
-  }
+  // Mission progress is server-owned. These fields are only an in-memory
+  // presentation mirror used by the tutorial beacon system.
+  Future<void> load(String _) async {}
 
   // The Smart Beacon Engine
   String? getActiveBeacon({
