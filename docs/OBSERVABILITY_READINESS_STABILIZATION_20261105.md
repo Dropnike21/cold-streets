@@ -144,7 +144,7 @@ SIGTERM/SIGINT and fatal process errors now use the same shutdown path:
 4. close the PostgreSQL pool;
 5. exit.
 
-A 10-second forced-exit guard prevents indefinite shutdown hangs.
+A 25-second forced-exit guard prevents indefinite shutdown hangs and remains above the current 20-second client query timeout.
 
 ## Central error boundary
 
