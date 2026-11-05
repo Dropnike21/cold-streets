@@ -36,6 +36,7 @@ class _BankViewState extends State<BankView> {
   List<Map<String, dynamic>> _deposits = [];
   List<Map<String, dynamic>> _checks = [];
   List<dynamic> _blockers = [];
+  String? _claimingCheckId;
 
   @override
   void initState() {
@@ -105,6 +106,58 @@ class _BankViewState extends State<BankView> {
       setState(() => _error = e.toString());
     } finally {
       if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  Future<void> _claimCheck(Map<String, dynamic> check) async {
+    final checkId = check['id']?.toString();
+    if (checkId == null || check['claim_available'] != true) return;
+
+    setState(() => _claimingCheckId = checkId);
+    try {
+      final response = await http.post(
+        Uri.parse('${ApiConfig.baseUrl}/bank/claim-check'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({'check_id': check['id']}),
+      );
+
+      final data = jsonDecode(response.body);
+      if (!mounted) return;
+
+      if (response.statusCode == 200) {
+        final updated = Map<String, dynamic>.from(widget.userData);
+        updated['dirty_cash'] = data['dirty_cash'];
+        updated['clean_cash'] = data['clean_cash'];
+        widget.onStateChange(updated);
+
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              'Deferred payout claimed: ${_formatCash(data['amount'])} ${_formatStatus(data['payout_currency'])}',
+            ),
+            backgroundColor: cGreen,
+          ),
+        );
+        await _fetchBank();
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(data['error']?.toString() ?? 'Claim failed.'),
+            backgroundColor: Colors.redAccent,
+          ),
+        );
+      }
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Unable to claim deferred payout.'),
+            backgroundColor: Colors.redAccent,
+          ),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _claimingCheckId = null);
     }
   }
 
@@ -243,7 +296,7 @@ class _BankViewState extends State<BankView> {
               SizedBox(width: 8),
               Expanded(
                 child: Text(
-                  'BANK SETTLEMENT PAUSED — SOURCE RECONCILIATION',
+                  'BANK PARTIALLY RECONCILED',
                   style: TextStyle(
                     color: Colors.amber,
                     fontSize: 11,
@@ -256,7 +309,7 @@ class _BankViewState extends State<BankView> {
           ),
           const SizedBox(height: 10),
           const Text(
-            'Deposit creation, matured-deposit payout, and pending-check claims are disabled. Historical code would convert deposited Dirty Cash into Clean Cash at maturity, which conflicts with the recovered laundering model.',
+            'Time deposits remain paused because their interest and Dirty→Clean semantics conflict with the recovered economy. Fully contracted, unexpired deferred-payout checks can now be redeemed exactly once; legacy and expired checks remain read-only.',
             style: TextStyle(
               color: Colors.white70,
               fontSize: 11,
@@ -415,6 +468,10 @@ class _BankViewState extends State<BankView> {
   }
 
   Widget _buildCheckCard(Map<String, dynamic> check) {
+    final claimable = check['claim_available'] == true;
+    final checkId = check['id']?.toString();
+    final claiming = checkId != null && _claimingCheckId == checkId;
+
     return Container(
       margin: const EdgeInsets.only(bottom: 8),
       padding: const EdgeInsets.all(12),
@@ -440,10 +497,10 @@ class _BankViewState extends State<BankView> {
                   ),
                 ),
               ),
-              const Text(
-                'CLAIM PAUSED',
+              Text(
+                claimable ? 'CLAIMABLE' : _formatStatus(check['settlement_status']),
                 style: TextStyle(
-                  color: Colors.amber,
+                  color: claimable ? cGreen : Colors.amber,
                   fontSize: 8,
                   fontWeight: FontWeight.bold,
                 ),
@@ -452,9 +509,26 @@ class _BankViewState extends State<BankView> {
           ),
           const SizedBox(height: 10),
           _row(
-            'Recorded amount',
+            'Amount',
             _formatCash(check['amount_recorded']),
-            Colors.blueAccent,
+            check['payout_currency'] == 'dirty_cash'
+                ? cGreen
+                : Colors.blueAccent,
+          ),
+          _row(
+            'Payout denomination',
+            _formatStatus(check['payout_currency']),
+            Colors.white70,
+          ),
+          _row(
+            'Issuer',
+            _formatStatus(check['issuer_type']),
+            Colors.white54,
+          ),
+          _row(
+            'Source reference',
+            check['source_ref']?.toString() ?? 'legacy / unavailable',
+            Colors.white38,
           ),
           _row('Status', _formatStatus(check['status']), Colors.white54),
           _row(
@@ -467,15 +541,34 @@ class _BankViewState extends State<BankView> {
             _formatTimestamp(check['expires_at']),
             Colors.white38,
           ),
-          const SizedBox(height: 6),
-          const Text(
-            'Pending checks are reserved for deferred payouts issued by authoritative systems such as future Casino lottery/jackpot, auction/trade settlement, or other reward flows. Issuer identity, currency, expiry, and fallback settlement are not yet canonical, so claims remain paused.',
-            style: TextStyle(
-              color: Colors.white38,
-              fontSize: 9,
-              height: 1.35,
+          if (check['claimed_at'] != null)
+            _row(
+              'Claimed',
+              _formatTimestamp(check['claimed_at']),
+              Colors.white38,
             ),
-          ),
+          const SizedBox(height: 8),
+          if (claimable)
+            SizedBox(
+              width: double.infinity,
+              child: ElevatedButton(
+                onPressed: claiming ? null : () => _claimCheck(check),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: cGreen,
+                  foregroundColor: Colors.black,
+                ),
+                child: Text(claiming ? 'CLAIMING…' : 'CLAIM PAYOUT'),
+              ),
+            )
+          else
+            const Text(
+              'Legacy, already-settled, or expired obligations remain read-only. Expired-check fallback settlement is intentionally unresolved.',
+              style: TextStyle(
+                color: Colors.white38,
+                fontSize: 9,
+                height: 1.35,
+              ),
+            ),
         ],
       ),
     );
