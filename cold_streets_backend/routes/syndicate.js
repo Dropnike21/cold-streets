@@ -46,6 +46,8 @@ const lastNames = [
 ];
 
 // V1.2 FIX: Massive Stat Boost & Progression Scaling
+const RECRUITMENT_COOLDOWN_SECONDS = 120;
+
 const TIER_DATA = {
     1: { name: "Runner", minLvl: 1, curRange: [10, 50], maxRange: [100, 1000], barMax: 1000 },
     2: { name: "Hustler", minLvl: 15, curRange: [100, 500], maxRange: [2000, 10000], barMax: 10000 },
@@ -594,16 +596,21 @@ router.post('/hire', async (req, res) => {
         );
         await client.query(
             `INSERT INTO user_cooldowns (user_id,type,expires_at,reason)
-             VALUES ($1,'recruitment',NOW() + INTERVAL '2 minutes',
-                     'Your scouts are out looking for new prospects.')`,
-            [userId]
+             VALUES (
+                 $1,
+                 'recruitment',
+                 NOW() + ($2::bigint * INTERVAL '1 second'),
+                 'Your scouts are out looking for new prospects.'
+             )`,
+            [userId, RECRUITMENT_COOLDOWN_SECONDS]
         );
 
         const response = {
             success: true,
             message: offer.npc_name + ' joined the crew.',
             crew_id: crew.rows[0].crew_id,
-            dirty_cash: debit.rows[0].dirty_cash
+            dirty_cash: debit.rows[0].dirty_cash,
+            recruitment_cooldown_seconds: RECRUITMENT_COOLDOWN_SECONDS
         };
         await completeIdempotent(client, idem, 200, response);
         await client.query('COMMIT');
