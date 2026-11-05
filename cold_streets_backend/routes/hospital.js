@@ -1,3 +1,4 @@
+const logger = require('../utils/logger');
 const express = require('express');
 const pool = require('../db');
 const router = express.Router();
@@ -198,7 +199,7 @@ router.post('/revive', async (req, res) => {
         return res.json(response);
     } catch (err) {
         if (transaction) {
-            try { await client.query('ROLLBACK'); } catch (rollback) { console.error('Hospital revive rollback:', rollback); }
+            try { await client.query('ROLLBACK'); } catch (rollback) { logger.error('hospital_revive_rollback_failed', logger.errorFields(rollback)); }
         }
         return sendActionError(res, err, 'Hospital revive failed:');
     } finally { if (client) client.release(); }
