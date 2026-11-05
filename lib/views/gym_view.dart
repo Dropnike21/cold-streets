@@ -1,7 +1,7 @@
 // File Path: lib/views/gym_view.dart
 
 import 'package:flutter/material.dart';
-import 'package:http/http.dart' as http;
+import '../services/game_http.dart' as http;
 import 'dart:convert';
 import 'dart:async';
 import '../api_config.dart';
@@ -96,7 +96,7 @@ class _GymViewState extends State<GymView> {
     try {
       final response = await http.post(Uri.parse('$apiUrl/purchase'),
           headers: {"Content-Type": "application/json"},
-          body: jsonEncode({"user_id": widget.userData['user_id'], "gym_id": gymId}));
+          body: jsonEncode({"gym_id": gymId}));
       final data = jsonDecode(response.body);
       if (response.statusCode == 200) {
         setState(() {
@@ -118,7 +118,7 @@ class _GymViewState extends State<GymView> {
     try {
       final response = await http.post(Uri.parse('$apiUrl/activate'),
           headers: {"Content-Type": "application/json"},
-          body: jsonEncode({"user_id": widget.userData['user_id'], "gym_id": gymId}));
+          body: jsonEncode({"gym_id": gymId}));
       if (response.statusCode == 200) {
         setState(() { activeGymId = gymId; viewedGymId = null; });
       }
@@ -153,7 +153,7 @@ class _GymViewState extends State<GymView> {
     try {
       final response = await http.post(Uri.parse('$apiUrl/train'),
           headers: {"Content-Type": "application/json"},
-          body: jsonEncode({"user_id": widget.userData['user_id'], "stat_type": statType, "energy_spent": finalEnergySpent, "gym_id": activeGymId}));
+          body: jsonEncode({"stat_type": statType, "energy_spent": finalEnergySpent, "gym_id": activeGymId}));
 
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);

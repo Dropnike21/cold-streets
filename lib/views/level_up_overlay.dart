@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:http/http.dart' as http;
+import '../services/game_http.dart' as http;
 import 'dart:convert';
 import 'dart:math' as math;
 import '../api_config.dart';
@@ -41,7 +41,6 @@ class _LevelUpOverlayState extends State<LevelUpOverlay> {
         Uri.parse('${ApiConfig.baseUrl}/character/level-up'),
         headers: {"Content-Type": "application/json"},
         body: jsonEncode({
-          "user_id": widget.userData['user_id'],
           "action": action
         }),
       );
