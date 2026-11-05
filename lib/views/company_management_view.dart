@@ -27,6 +27,7 @@ class _CompanyManagementViewState extends State<CompanyManagementView> {
   List<dynamic> _shipments = [];
   List<dynamic> _applicants = [];
   Map<String, dynamic> _cashFlow = {};
+  Map<String, dynamic> _companyCatalog = {};
 
   final List<String> _manageOptions = [
     'Employees', 'Company Positions', 'Pricing',
@@ -88,6 +89,9 @@ class _CompanyManagementViewState extends State<CompanyManagementView> {
             _applicants = data['applicants'] ?? [];
             _cashFlow = data['cash_flow'] is Map
                 ? Map<String, dynamic>.from(data['cash_flow'])
+                : <String, dynamic>{};
+            _companyCatalog = data['company_catalog'] is Map
+                ? Map<String, dynamic>.from(data['company_catalog'])
                 : <String, dynamic>{};
 
             _nameEditController.text = _company['company_name'] ?? "";
@@ -427,222 +431,212 @@ class _CompanyManagementViewState extends State<CompanyManagementView> {
 
   // --- 1. EMPLOYEES & APPLICANTS ---
   Widget _buildEmployeesView() {
-    int maxEmps = _safeInt(_company['max_employees'], fallback: 4);
-    var manageableRoster = _roster.where((emp) => emp['position_role'] != 'Director').toList();
+    int maxEmps = _safeInt(_company['max_employees'], fallback: 0);
 
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
-        Row(
-          children: [
-            Expanded(child: ElevatedButton(
-                onPressed: () => _showAssignCrewModal(),
-                style: ElevatedButton.styleFrom(backgroundColor: darkSurface, side: const BorderSide(color: Colors.cyanAccent)),
-                child: const Text("MANAGE NPC CREW", style: TextStyle(color: Colors.cyanAccent, fontSize: 10))
-            )),
-            const SizedBox(width: 8),
-            Expanded(child: ElevatedButton(
-                onPressed: () => _showApplicantsDialog(),
-                style: ElevatedButton.styleFrom(backgroundColor: darkSurface, side: const BorderSide(color: Colors.amberAccent)),
-                child: Text("VIEW APPLICANTS (${_applicants.length})", style: const TextStyle(color: Colors.amberAccent, fontSize: 10))
-            )),
-          ],
+        Container(
+          padding: const EdgeInsets.all(12),
+          decoration: BoxDecoration(
+            color: Colors.amber.withValues(alpha: 0.07),
+            border: Border.all(color: Colors.amber.withValues(alpha: 0.45)),
+            borderRadius: BorderRadius.circular(5),
+          ),
+          child: const Text(
+            "EMPLOYEE MANAGEMENT PAUSED\n\nPosition definitions are now source-normalized, but salary negotiation, training settlement, NPC assignment, firing consequences, and contract acceptance are not fully reconciled. Roster data remains visible; mutations stay disabled.",
+            style: TextStyle(
+              color: Colors.amber,
+              fontSize: 10,
+              height: 1.45,
+              fontWeight: FontWeight.bold,
+            ),
+          ),
         ),
         const SizedBox(height: 16),
         Row(
           mainAxisAlignment: MainAxisAlignment.spaceBetween,
           children: [
-            Text("PERSONNEL ROSTER (${_roster.length} / $maxEmps)", style: const TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.bold)),
-            ElevatedButton(
-              onPressed: () {},
-              style: ElevatedButton.styleFrom(backgroundColor: neonGreen.withValues(alpha: 0.2), side: BorderSide(color: neonGreen), minimumSize: const Size(80, 30)),
-              child: Text("TRAIN ALL", style: TextStyle(color: neonGreen, fontSize: 10, fontWeight: FontWeight.bold)),
-            )
+            Text(
+              "PERSONNEL ROSTER (${_roster.length} / $maxEmps)",
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 12,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+            TextButton(
+              onPressed: _showApplicantsDialog,
+              child: Text(
+                "APPLICANTS (${_applicants.length})",
+                style: const TextStyle(
+                  color: Colors.amberAccent,
+                  fontSize: 10,
+                ),
+              ),
+            ),
           ],
         ),
         const SizedBox(height: 12),
-        ...manageableRoster.map((emp) {
-          String empName = (emp['username'] ?? "NPC_Worker").toString();
-          int employeeId = _safeInt(emp['employee_id']);
-          bool isNpc = emp['is_npc'] ?? false;
-          int eff = _safeInt(emp['effectiveness_score']);
-          int days = _safeInt(emp['days_employed']);
-          int salary = _safeInt(emp['daily_salary']);
-          int acu = _safeInt(emp['stat_acu']);
-          int pre = _safeInt(emp['stat_pre']);
-          int ops = _safeInt(emp['stat_ops']);
-          int res = _safeInt(emp['stat_res']);
-          String pos = (emp['position_role'] ?? 'Unassigned').toString();
-          bool isDirector = pos == 'Director';
-
-          _employeeEdits.putIfAbsent(empName, () => {'salary': salary, 'position': pos});
-
-          List<String> dropDownOptions = _positions.map((e) => e['name'] as String).toList();
-          if (!dropDownOptions.contains('Unassigned')) dropDownOptions.add('Unassigned');
-          if (!dropDownOptions.contains('Director')) dropDownOptions.add('Director');
+        ..._roster.map((emp) {
+          final empName = (emp['username'] ?? "NPC Worker").toString();
+          final isNpc = emp['is_npc'] == true;
+          final pos = (emp['position_role'] ?? 'Unassigned').toString();
+          final salary = _safeInt(emp['daily_salary']);
+          final acu = _safeInt(emp['stat_acu']);
+          final pre = _safeInt(emp['stat_pre']);
+          final ops = _safeInt(emp['stat_ops']);
+          final res = _safeInt(emp['stat_res']);
 
           return Container(
-            margin: const EdgeInsets.only(bottom: 16),
+            margin: const EdgeInsets.only(bottom: 10),
             padding: const EdgeInsets.all(12),
-            decoration: BoxDecoration(color: darkSurface, border: Border.all(color: const Color(0xFF333333)), borderRadius: BorderRadius.circular(4)),
+            decoration: BoxDecoration(
+              color: darkSurface,
+              border: Border.all(color: const Color(0xFF333333)),
+              borderRadius: BorderRadius.circular(4),
+            ),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
-                    Text(empName, style: TextStyle(color: neonGreen, fontSize: 14, fontWeight: FontWeight.bold)),
-                    Text("$days Days Old", style: const TextStyle(color: Colors.white54, fontSize: 10)),
-                  ],
-                ),
-                const SizedBox(height: 8),
-                Row(
-                  children: [
-                    const Text("Eff: ", style: TextStyle(color: Colors.white70, fontSize: 10)),
-                    Expanded(child: LinearProgressIndicator(value: eff / 100, backgroundColor: Colors.black, color: Colors.cyanAccent, minHeight: 6)),
-                    const SizedBox(width: 8),
-                    Text("$eff%", style: const TextStyle(color: Colors.cyanAccent, fontSize: 10, fontWeight: FontWeight.bold)),
-                  ],
-                ),
-                const SizedBox(height: 8),
-                Text("Stats: Acu $acu | Pre $pre | Ops $ops | Res $res", style: const TextStyle(color: Colors.white38, fontSize: 9)),
-                const Divider(color: Color(0xFF333333), height: 16),
-
-                if (!isDirector) ...[
-                  Row(
-                    children: [
-                      Expanded(
-                        flex: 2,
-                        child: DropdownButtonFormField<String>(
-                          initialValue: dropDownOptions.contains(pos) ? pos : 'Unassigned',
-                          dropdownColor: matteBlack,
-                          decoration: const InputDecoration(isDense: true, contentPadding: EdgeInsets.all(8), border: OutlineInputBorder(), labelText: "Position", labelStyle: TextStyle(color: Colors.white54, fontSize: 10)),
-                          style: const TextStyle(color: Colors.white, fontSize: 11),
-                          items: dropDownOptions.map((p) => DropdownMenuItem(value: p, child: Text(p))).toList(),
-                          onChanged: (val) => _employeeEdits[empName]!['position'] = val,
+                    Expanded(
+                      child: Text(
+                        empName,
+                        style: TextStyle(
+                          color: neonGreen,
+                          fontSize: 12,
+                          fontWeight: FontWeight.bold,
                         ),
                       ),
-                      const SizedBox(width: 8),
-                      Expanded(
-                        flex: 2,
-                        child: TextFormField(
-                          initialValue: salary.toString(),
-                          keyboardType: TextInputType.number,
-                          enabled: !isNpc, // NPCs don't get a salary
-                          style: TextStyle(color: isNpc ? Colors.white24 : Colors.greenAccent, fontSize: 11),
-                          decoration: InputDecoration(isDense: true, contentPadding: const EdgeInsets.all(8), border: const OutlineInputBorder(), labelText: isNpc ? "NPCs work free" : "Salary (\$)", labelStyle: const TextStyle(color: Colors.white54, fontSize: 10)),
-                          onChanged: (val) => _employeeEdits[empName]!['salary'] = int.tryParse(val) ?? 0,
-                        ),
+                    ),
+                    Text(
+                      isNpc ? "NPC" : "PLAYER",
+                      style: const TextStyle(
+                        color: Colors.white38,
+                        fontSize: 9,
+                        fontWeight: FontWeight.bold,
                       ),
-                    ],
-                  ),
-                  const SizedBox(height: 12),
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.end,
-                    children: [
-                      ElevatedButton(onPressed: () => _submitAction('manage-employee', {'employee_id': employeeId, 'is_npc': isNpc, 'target_username': empName, 'action_type': 'update', 'new_position': _employeeEdits[empName]!['position'], 'new_salary': _employeeEdits[empName]!['salary']}), style: ElevatedButton.styleFrom(backgroundColor: Colors.blueAccent.withValues(alpha: 0.1), side: const BorderSide(color: Colors.blueAccent)), child: const Text("SAVE", style: TextStyle(color: Colors.blueAccent, fontSize: 10))),
-                      const SizedBox(width: 8),
-                      ElevatedButton(onPressed: () => _submitAction('manage-employee', {'employee_id': employeeId, 'is_npc': isNpc, 'target_username': empName, 'action_type': 'train'}), style: ElevatedButton.styleFrom(backgroundColor: Colors.amber.withValues(alpha: 0.1), side: const BorderSide(color: Colors.amber)), child: const Text("TRAIN", style: TextStyle(color: Colors.amber, fontSize: 10))),
-                      const SizedBox(width: 8),
-                      ElevatedButton(onPressed: () => _submitAction('manage-employee', {'employee_id': employeeId, 'is_npc': isNpc, 'target_username': empName, 'action_type': 'fire'}), style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent.withValues(alpha: 0.1), side: const BorderSide(color: Colors.redAccent)), child: const Text("FIRE", style: TextStyle(color: Colors.redAccent, fontSize: 10))),
-                    ],
-                  )
-                ] else ...[
-                  const Text("The Director cannot be trained, fired, or re-assigned.", style: TextStyle(color: Colors.white38, fontSize: 10, fontStyle: FontStyle.italic))
-                ]
-              ],
-            ),
-          );
-        }).toList(),
-      ],
-    );
-  }
-
-  // --- 2. POSITIONS (Dynamic Database List) ---
-  Widget _buildPositionsView() {
-    return ListView(
-      padding: const EdgeInsets.all(16),
-      children: [
-        const Text("ROLE ASSIGNMENTS", style: TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.bold)),
-        const SizedBox(height: 8),
-        const Text("Tap or long-press a position to view its responsibilities.", style: TextStyle(color: Colors.white54, fontSize: 10)),
-        const SizedBox(height: 16),
-        ..._positions.where((p) => p['name'] != 'Director').map((pos) => Tooltip(
-          message: pos['description'] ?? 'No description provided.',
-          triggerMode: TooltipTriggerMode.tap,
-          showDuration: const Duration(seconds: 4),
-          child: Container(
-            margin: const EdgeInsets.only(bottom: 8),
-            padding: const EdgeInsets.all(12),
-            decoration: BoxDecoration(color: darkSurface, border: Border.all(color: const Color(0xFF333333)), borderRadius: BorderRadius.circular(4)),
-            child: Row(
-              children: [
-                Expanded(flex: 2, child: Text(pos['name'].toString(), style: TextStyle(color: neonGreen, fontSize: 12, fontWeight: FontWeight.bold))),
-                Expanded(flex: 3, child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text("Req: ${pos['req_stat_primary']}", style: const TextStyle(color: Colors.white70, fontSize: 10)),
-                    Text("Gain: ${pos['stat_gain_desc']}", style: const TextStyle(color: Colors.cyanAccent, fontSize: 10)),
+                    ),
                   ],
-                )),
-                const Icon(Icons.info_outline, color: Colors.white24, size: 16)
-              ],
-            ),
-          ),
-        )),
-      ],
-    );
-  }
-
-  // --- 3. PRICING (Dynamic Output Products) ---
-  Widget _buildPricingView() {
-    var outputProducts = _inventory.where((p) => p['is_input'] == false).toList();
-
-    return ListView(
-      padding: const EdgeInsets.all(16),
-      children: [
-        const Text("MARKET PRICING", style: TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.bold)),
-        const SizedBox(height: 16),
-
-        if (outputProducts.isEmpty)
-          const Text("This company does not produce sellable goods.", style: TextStyle(color: Colors.white54, fontStyle: FontStyle.italic)),
-
-        ...outputProducts.map((prod) {
-          int id = prod['item_id'];
-          return Container(
-            margin: const EdgeInsets.only(bottom: 12),
-            padding: const EdgeInsets.all(12),
-            decoration: BoxDecoration(color: darkSurface, border: Border.all(color: const Color(0xFF333333)), borderRadius: BorderRadius.circular(4)),
-            child: Row(
-              children: [
-                Expanded(child: Text(prod['item_name'], style: const TextStyle(color: Colors.white, fontSize: 12))),
-                SizedBox(
-                  width: 120,
-                  child: TextFormField(
-                    controller: _priceControllers[id],
-                    keyboardType: TextInputType.number,
-                    style: const TextStyle(color: Colors.greenAccent, fontSize: 12),
-                    decoration: const InputDecoration(isDense: true, prefixText: "\$ ", prefixStyle: TextStyle(color: Colors.greenAccent), border: OutlineInputBorder(), labelText: "Price / Unit"),
-                  ),
-                )
+                ),
+                const SizedBox(height: 6),
+                Text(
+                  "Position: $pos",
+                  style: const TextStyle(color: Colors.white70, fontSize: 10),
+                ),
+                Text(
+                  isNpc ? "Salary: \$0 (design reference)" : "Recorded salary: \$${_formatNumber(salary)} Clean Cash",
+                  style: const TextStyle(color: Colors.white54, fontSize: 9),
+                ),
+                const SizedBox(height: 5),
+                Text(
+                  "Stats: ACU $acu | PRE $pre | OPS $ops | RES $res",
+                  style: const TextStyle(color: Colors.white38, fontSize: 9),
+                ),
               ],
             ),
           );
         }),
+      ],
+    );
+  }
+
+  // --- 2. POSITIONS (SOURCE-NORMALIZED) ---
+  Widget _buildPositionsView() {
+    return ListView(
+      padding: const EdgeInsets.all(16),
+      children: [
+        const Text(
+          "SOURCE-NORMALIZED POSITIONS",
+          style: TextStyle(
+            color: Colors.white,
+            fontSize: 12,
+            fontWeight: FontWeight.bold,
+          ),
+        ),
+        const SizedBox(height: 8),
+        const Text(
+          "Requirements and Working Stat gains come directly from the recovered company spreadsheet. Assignment/training remains paused.",
+          style: TextStyle(color: Colors.white54, fontSize: 10, height: 1.4),
+        ),
         const SizedBox(height: 16),
-        if (outputProducts.isNotEmpty)
-          SizedBox(
-            width: double.infinity, height: 40,
-            child: ElevatedButton(
-                onPressed: () {
-                  for(var p in outputProducts) {
-                    _submitAction('update-pricing', {'item_id': p['item_id'], 'product_price': _priceControllers[p['item_id']]!.text});
-                  }
-                },
-                style: ElevatedButton.styleFrom(backgroundColor: neonGreen.withValues(alpha: 0.1), side: BorderSide(color: neonGreen)),
-                child: Text("UPDATE PRICES", style: TextStyle(color: neonGreen, fontWeight: FontWeight.bold))
+        ..._positions.map((pos) {
+          final pStat = (pos['req_stat_primary'] ?? '').toString().toUpperCase();
+          final sStat = (pos['req_stat_secondary'] ?? '').toString().toUpperCase();
+          final pReq = _safeInt(pos['req_amount_primary']);
+          final sReq = _safeInt(pos['req_amount_secondary']);
+          final pGain = _safeInt(pos['gain_primary']);
+          final sGain = _safeInt(pos['gain_secondary']);
+
+          return Container(
+            margin: const EdgeInsets.only(bottom: 8),
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: darkSurface,
+              border: Border.all(color: const Color(0xFF333333)),
+              borderRadius: BorderRadius.circular(4),
             ),
-          )
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  pos['name'].toString().replaceAll('_', ' ').toUpperCase(),
+                  style: TextStyle(
+                    color: neonGreen,
+                    fontSize: 12,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+                const SizedBox(height: 7),
+                Text(
+                  "Requires: $pStat ${_formatNumber(pReq)} + $sStat ${_formatNumber(sReq)}",
+                  style: const TextStyle(color: Colors.white70, fontSize: 10),
+                ),
+                Text(
+                  "Source gain values: +$pGain $pStat / +$sGain $sStat",
+                  style: const TextStyle(color: Colors.cyanAccent, fontSize: 10),
+                ),
+              ],
+            ),
+          );
+        }),
+      ],
+    );
+  }
+
+  // --- 3. PRICING ---
+  Widget _buildPricingView() {
+    return ListView(
+      padding: const EdgeInsets.all(16),
+      children: [
+        const Text(
+          "PRODUCT PRICING",
+          style: TextStyle(
+            color: Colors.white,
+            fontSize: 12,
+            fontWeight: FontWeight.bold,
+          ),
+        ),
+        const SizedBox(height: 12),
+        Container(
+          padding: const EdgeInsets.all(14),
+          decoration: BoxDecoration(
+            color: Colors.amber.withValues(alpha: 0.07),
+            border: Border.all(color: Colors.amber.withValues(alpha: 0.5)),
+            borderRadius: BorderRadius.circular(6),
+          ),
+          child: const Text(
+            "PRICING PAUSED\n\nThe recovered 120-company supply-chain source uses a broader product generation than the legacy 20-row normalized product table. Pricing cannot be authoritative until those product generations are reconciled.",
+            style: TextStyle(
+              color: Colors.amber,
+              fontSize: 10,
+              height: 1.45,
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+        ),
       ],
     );
   }
@@ -918,14 +912,45 @@ class _CompanyManagementViewState extends State<CompanyManagementView> {
 
   // --- 7. UPGRADES ---
   Widget _buildUpgradesView() {
+    final rawUpgrade = _companyCatalog['upgrade'];
+    final upgrade = rawUpgrade is Map
+        ? Map<String, dynamic>.from(rawUpgrade)
+        : <String, dynamic>{};
+
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
         const Text(
-          "COMPANY UPGRADES",
-          style: TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.bold),
+          "COMPANY UPGRADE SOURCE",
+          style: TextStyle(
+            color: Colors.white,
+            fontSize: 12,
+            fontWeight: FontWeight.bold,
+          ),
         ),
         const SizedBox(height: 12),
+        if (upgrade.isNotEmpty) ...[
+          _buildInfoRow(
+            "Upgrade",
+            (upgrade['upgrade_key'] ?? 'unknown')
+                .toString()
+                .replaceAll('_', ' ')
+                .toUpperCase(),
+          ),
+          _buildInfoRow(
+            "Source cost",
+            "\$${_formatNumber(upgrade['cost'])}",
+          ),
+          _buildInfoRow(
+            "Upkeep increase",
+            "\$${_formatNumber(upgrade['upkeep_increase'])} / day",
+          ),
+          _buildInfoRow(
+            "Bonus source value",
+            "${upgrade['bonus_key']}: ${upgrade['bonus_value']}",
+          ),
+          const SizedBox(height: 12),
+        ],
         Container(
           padding: const EdgeInsets.all(14),
           decoration: BoxDecoration(
@@ -934,13 +959,47 @@ class _CompanyManagementViewState extends State<CompanyManagementView> {
             borderRadius: BorderRadius.circular(6),
           ),
           child: const Text(
-            "UPGRADE PURCHASES PAUSED\n\nThe old client calculated upgrade costs from startup cost and local level formulas. The recovered upgrade definitions remain legacy text and the normalized upgrade catalog is incomplete, so no client-side price is authoritative.",
-            style: TextStyle(color: Colors.amber, fontSize: 10, height: 1.45, fontWeight: FontWeight.bold),
+            "PURCHASE PAUSED\n\nUpgrade cost and upkeep are source-normalized. The bonus key/value is preserved exactly but its runtime semantics, stacking, settlement, and effect consumer are not yet reconciled.",
+            style: TextStyle(
+              color: Colors.amber,
+              fontSize: 10,
+              height: 1.45,
+              fontWeight: FontWeight.bold,
+            ),
           ),
         ),
       ],
     );
   }
+
+  Widget _buildInfoRow(String label, String value) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 6),
+      child: Row(
+        children: [
+          Expanded(
+            child: Text(
+              label,
+              style: const TextStyle(color: Colors.white54, fontSize: 10),
+            ),
+          ),
+          const SizedBox(width: 10),
+          Flexible(
+            child: Text(
+              value,
+              textAlign: TextAlign.right,
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 10,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   // --- 8. EDIT PROFILE ---
   Widget _buildEditProfileView() {
     return ListView(
