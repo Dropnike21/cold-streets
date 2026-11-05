@@ -435,7 +435,7 @@ class _SyndicateViewState extends State<SyndicateView> {
                                         await http.post(
                                             Uri.parse('$apiUrl/assign_job'),
                                             headers: {"Content-Type": "application/json"},
-                                            body: jsonEncode({"crew_id": npc['crew_id'], "crime_title": crime['title']})
+                                            body: jsonEncode({"crew_id": npc['crew_id'], "crime_id": crime['id']})
                                         );
                                         _fetchActiveCrew();
                                         if (!context.mounted) return;
