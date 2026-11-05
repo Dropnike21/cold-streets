@@ -695,10 +695,17 @@ class _InfoBrokerViewState extends State<InfoBrokerView> {
                   );
                 } else if (tabController.index == 1) {
                   return FloatingActionButton.extended(
-                    onPressed: _showBountyDialog,
-                    backgroundColor: Colors.redAccent,
-                    icon: const Icon(Icons.warning, color: Colors.white),
-                    label: const Text("PLACE BOUNTY", style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontFamily: 'Courier')),
+                    onPressed: null,
+                    backgroundColor: Colors.white12,
+                    icon: const Icon(Icons.lock, color: Colors.white38),
+                    label: const Text(
+                      "BOUNTY PAUSED",
+                      style: TextStyle(
+                        color: Colors.white38,
+                        fontWeight: FontWeight.bold,
+                        fontFamily: 'Courier',
+                      ),
+                    ),
                   );
                 }
                 return const SizedBox.shrink();
