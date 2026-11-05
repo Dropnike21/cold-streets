@@ -8,7 +8,8 @@ games without reopening any gambling mutation.
 The recovered Casino V1.0 explicitly establishes:
 
 - Category 1 NPC-vs-player games use **Casino Tokens**;
-- players are capped at **spending 100 Casino Tokens per day**;
+- players have a **100 Casino Token base daily spend cap**;
+- VIP Status adds **+50** to that cap, for **150/day total**;
 - Perya, Syndicate Slots and High-Low are Token Games.
 
 The source does **not** establish token issuance/replenishment semantics,
@@ -57,7 +58,9 @@ The source reference gives future game settlement a persistent replay boundary.
 
 `utils/casinoTokenLedger.js` defines:
 
-- daily spend cap: 100;
+- base daily spend cap: 100;
+- VIP daily bonus: +50;
+- maximum effective daily spend cap: 150;
 - currently preserved reconciled engine identities:
   - `perya`;
   - `slots`;
@@ -74,10 +77,11 @@ Future callers must run inside one database transaction. The helper:
 3. locks the authenticated player;
 4. checks the persistent source-reference replay row;
 5. sums the player's current database-calendar-day spend;
-6. refuses spend above the 100-token daily cap;
-7. refuses insufficient Token balance;
-8. atomically debits Casino Tokens;
-9. records the immutable spend obligation.
+6. derives the effective cap from server-owned VIP Status (100 base / 150 VIP);
+7. refuses spend above that effective daily cap;
+8. refuses insufficient Token balance;
+9. atomically debits Casino Tokens;
+10. records the immutable spend obligation.
 
 A retry with the same source reference may replay only if the game and amount
 match the original obligation.
@@ -89,7 +93,7 @@ match the original obligation.
 returns:
 
 - current Casino Token balance;
-- source-backed daily spend cap;
+- source-backed base, VIP bonus, and effective daily spend cap;
 - Token spend recorded today;
 - remaining daily spend capacity;
 - database day key;
@@ -102,7 +106,7 @@ All other `/casino/*` requests continue to return 503.
 
 ## Reset boundary
 
-The source says "per day" but does not specify an in-world or player timezone.
+The source says "per day" but does not specify an in-world or player timezone. The later Master Items update also explicitly establishes VIP Status as +50 to the Casino Token daily limit.
 
 The ledger therefore uses PostgreSQL `CURRENT_DATE` only as the deterministic
 accounting boundary. This is **not** treated as a design decision that Token
