@@ -98,6 +98,8 @@ router.get('/details/:user_id/:contact', async (req, res) => {
             }
 
             const terminal = terminalRes.rows[0];
+            const terminalReqs = terminal.reqs_json || {};
+            const terminalRewards = terminal.rewards_json || {};
             if (
                 String(terminal.id) !== '11' ||
                 String(terminal.contact_name) !== 'anonymous' ||
@@ -105,7 +107,10 @@ router.get('/details/:user_id/:contact', async (req, res) => {
                 String(terminal.title) !== 'END OF THE LINE' ||
                 String(terminal.objective_text) !==
                     'No further objectives. Request a contract from Kevin.' ||
-                String(terminal.reward_text) !== 'None'
+                String(terminal.reward_text) !== 'None' ||
+                Object.keys(terminalReqs).length !== 0 ||
+                Object.keys(terminalRewards).length !== 1 ||
+                String(terminalRewards.clean_cash) !== '1000'
             ) {
                 throw new ActionError(
                     503,
