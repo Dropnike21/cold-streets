@@ -164,9 +164,9 @@ class _JailViewState extends State<JailView> {
                         ),
                       ),
                       ElevatedButton(
-                        onPressed: () => _processAction('gym/train', {"user_id": widget.userData['user_id'], "energy_spent": 10}),
-                        style: ElevatedButton.styleFrom(backgroundColor: matteBlack, side: const BorderSide(color: Colors.orangeAccent)),
-                        child: const Text("WORKOUT (-10 EN)", style: TextStyle(color: Colors.orangeAccent, fontSize: 10, fontWeight: FontWeight.bold)),
+                        onPressed: null,
+                        style: ElevatedButton.styleFrom(backgroundColor: matteBlack, side: const BorderSide(color: Colors.white24)),
+                        child: const Text("YARD PAUSED", style: TextStyle(color: Colors.white38, fontSize: 10, fontWeight: FontWeight.bold)),
                       )
                     ],
                   ),
@@ -194,7 +194,6 @@ class _JailViewState extends State<JailView> {
                     var inmate = _inmates[index];
                     bool isMe = inmate['user_id'].toString() == widget.userData['user_id'].toString();
 
-                    int bailCost = _calculateBail(inmate['jail_initial_seconds'] ?? 0);
                     String? timeLeft = _getTimeRemaining(inmate['jail_expires_at']);
                     bool isReleased = timeLeft == null;
 
@@ -254,15 +253,15 @@ class _JailViewState extends State<JailView> {
                                 SizedBox(
                                   width: 120, height: 26,
                                   child: ElevatedButton(
-                                    onPressed: isReleased ? null : () => _processAction('bail', {"user_id": widget.userData['user_id'], "target_id": inmate['user_id']}),
+                                    onPressed: null,
                                     style: ElevatedButton.styleFrom(
                                         backgroundColor: isMe ? Colors.transparent : Colors.green.withOpacity(0.1),
                                         side: BorderSide(color: isMe ? Colors.white24 : Colors.green),
                                         padding: EdgeInsets.zero
                                     ),
-                                    child: Text(
-                                        isMe ? "PAY BAIL (${_formatCash(bailCost)})" : "BAIL (${_formatCash(bailCost)})",
-                                        style: TextStyle(color: isReleased ? Colors.white24 : (isMe ? Colors.white : Colors.green), fontSize: 9, fontWeight: FontWeight.bold)
+                                    child: const Text(
+                                        "BAIL PAUSED",
+                                        style: TextStyle(color: Colors.white38, fontSize: 9, fontWeight: FontWeight.bold)
                                     ),
                                   ),
                                 ),
@@ -270,15 +269,15 @@ class _JailViewState extends State<JailView> {
                                 SizedBox(
                                   width: 120, height: 26,
                                   child: ElevatedButton(
-                                    onPressed: isReleased ? null : () => _processAction('breakout', {"user_id": widget.userData['user_id'], "target_id": inmate['user_id']}),
+                                    onPressed: null,
                                     style: ElevatedButton.styleFrom(
                                         backgroundColor: Colors.redAccent.withOpacity(0.1),
                                         side: const BorderSide(color: Colors.redAccent),
                                         padding: EdgeInsets.zero
                                     ),
-                                    child: Text(
-                                        isMe ? "ESCAPE (5 Nerve)" : "BUST OUT (5 Nerve)",
-                                        style: TextStyle(color: isReleased ? Colors.redAccent.withOpacity(0.3) : Colors.redAccent, fontSize: 9, fontWeight: FontWeight.bold)
+                                    child: const Text(
+                                        "BREAKOUT PAUSED",
+                                        style: TextStyle(color: Colors.white38, fontSize: 9, fontWeight: FontWeight.bold)
                                     ),
                                   ),
                                 ),
