@@ -3,6 +3,7 @@ const pool = require('../db');
 const router = express.Router();
 const { requireOwnedPlayerParam } = require('../middleware/playerIdentity');
 const { SUPPORTED_TRACKERS } = require('../utils/achievement_engine');
+const { dbInteger } = require('../utils/economyValidation');
 
 router.param('user_id', requireOwnedPlayerParam);
 
@@ -64,22 +65,30 @@ router.get('/:user_id', async (req, res) => {
         };
 
         const mappedAchievements = achievements.map(ach => {
-            const max = Number(ach.max);
-            if (!Number.isSafeInteger(max) || max < 1) {
-                throw new Error('Achievement threshold is not a safe positive integer.');
+            const maxExact = dbInteger(
+                ach.max,
+                { field: 'Achievement threshold' }
+            );
+            if (maxExact < 1n || maxExact > BigInt(Number.MAX_SAFE_INTEGER)) {
+                throw new Error('Achievement threshold is outside the supported display range.');
             }
 
             const trackingAvailable = TRACKABLE.has(ach.stat_tracker);
-            const rawCurrent = trackingAvailable
-                ? Number(progressByTracker[ach.stat_tracker] ?? 0)
-                : 0;
-            if (!Number.isSafeInteger(rawCurrent) || rawCurrent < 0) {
-                throw new Error('Achievement progress is not a safe nonnegative integer.');
+            const rawCurrentExact = trackingAvailable
+                ? dbInteger(
+                    progressByTracker[ach.stat_tracker] ?? 0,
+                    { field: 'Achievement progress' }
+                )
+                : 0n;
+            if (rawCurrentExact < 0n) {
+                throw new Error('Achievement progress cannot be negative.');
             }
 
-            const current = ach.unlocked
-                ? max
-                : Math.min(rawCurrent, max);
+            const shownExact = ach.unlocked || rawCurrentExact > maxExact
+                ? maxExact
+                : rawCurrentExact;
+            const max = Number(maxExact);
+            const current = Number(shownExact);
 
             return {
                 id: ach.id,
