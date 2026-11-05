@@ -4,6 +4,7 @@ const router = express.Router();
 const { requireOwnedPlayerParam } = require('../middleware/playerIdentity');
 const { SUPPORTED_TRACKERS } = require('../utils/achievement_engine');
 const { dbInteger } = require('../utils/economyValidation');
+const { getStateDurationProgress } = require('../utils/stateDurationTelemetry');
 
 router.param('user_id', requireOwnedPlayerParam);
 
@@ -57,11 +58,15 @@ router.get('/:user_id', async (req, res) => {
             return res.status(404).json({ error: 'Player not found.' });
         }
 
+        const stateProgress = await getStateDurationProgress(pool, user_id);
+
         const progressByTracker = {
             gym_trains: stats[0]?.total_gym_trains ?? '0',
             crimes_successful: crimes[0]?.total_successes ?? '0',
             player_level: users[0].level ?? 1,
-            courses_completed: courses[0]?.total ?? '0'
+            courses_completed: courses[0]?.total ?? '0',
+            days_in_jail: stateProgress.days_in_jail,
+            hospital_hours: stateProgress.hospital_hours
         };
 
         const mappedAchievements = achievements.map(ach => {

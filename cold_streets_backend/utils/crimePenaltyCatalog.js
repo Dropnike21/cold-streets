@@ -1,4 +1,5 @@
 const { ActionError } = require('./economyValidation');
+const { beginStateEpisode } = require('./stateDurationTelemetry');
 
 function positiveCatalogInteger(value, field) {
     const raw = String(value ?? '').trim();
@@ -104,7 +105,7 @@ async function getFederalMaximumJailSeconds(client) {
     return String(result.rows[0].max_jail_seconds);
 }
 
-async function applyFederalArrest(client, { userId, nerveCost, currentInfluence }) {
+async function applyFederalArrest(client, { userId, nerveCost, currentInfluence, sourceRef }) {
     const influenceGuard = await client.query(
         `SELECT $1::numeric >= 50::numeric AS can_deduct`,
         [String(currentInfluence)]
@@ -133,11 +134,18 @@ async function applyFederalArrest(client, { userId, nerveCost, currentInfluence 
         [String(nerveCost), jailSeconds, userId]
     );
     if (result.rowCount !== 1) throw new Error('Federal arrest target disappeared.');
+    await beginStateEpisode(client, {
+        userId,
+        stateType: 'jail',
+        scheduledEndAt: result.rows[0].jail_expires_at,
+        sourceType: 'federal_arrest',
+        sourceRef
+    });
     return result.rows[0];
 }
 
 async function applyCrimeHospitalization(client, {
-    userId, nerveCost, heatGen, hospitalSeconds, reason
+    userId, nerveCost, heatGen, hospitalSeconds, reason, sourceRef
 }) {
     const result = await client.query(
         `UPDATE users
@@ -154,11 +162,18 @@ async function applyCrimeHospitalization(client, {
         [String(nerveCost), heatGen, hospitalSeconds, reason, userId]
     );
     if (result.rowCount !== 1) throw new Error('Hospitalization target disappeared.');
+    await beginStateEpisode(client, {
+        userId,
+        stateType: 'hospital',
+        scheduledEndAt: result.rows[0].hospital_expires_at,
+        sourceType: 'crime',
+        sourceRef
+    });
     return result.rows[0];
 }
 
 async function applyCrimeJail(client, {
-    userId, nerveCost, heatGen, jailSeconds, reason
+    userId, nerveCost, heatGen, jailSeconds, reason, sourceRef
 }) {
     const result = await client.query(
         `UPDATE users
@@ -174,6 +189,13 @@ async function applyCrimeJail(client, {
         [String(nerveCost), heatGen, jailSeconds, reason, userId]
     );
     if (result.rowCount !== 1) throw new Error('Jail target disappeared.');
+    await beginStateEpisode(client, {
+        userId,
+        stateType: 'jail',
+        scheduledEndAt: result.rows[0].jail_expires_at,
+        sourceType: 'crime',
+        sourceRef
+    });
     return result.rows[0];
 }
 
