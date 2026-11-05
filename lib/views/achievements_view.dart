@@ -215,7 +215,7 @@ class _AchievementsViewState extends State<AchievementsView> {
                             child: Tooltip(
                               message: trackingAvailable
                                   ? ach["title"].toString().toUpperCase()
-                                  : "${ach["title"].toString().toUpperCase()}\nTRACKING PENDING",
+                                  : "${ach['title'].toString().toUpperCase()}\nTRACKING PENDING",
                               preferBelow: false,
                               textStyle: const TextStyle(color: cBlack, fontWeight: FontWeight.bold, fontSize: 12),
                               decoration: BoxDecoration(color: cNeonGreen, borderRadius: BorderRadius.circular(4)),
