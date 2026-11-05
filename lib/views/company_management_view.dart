@@ -1416,16 +1416,19 @@ class _CompanyManagementViewState extends State<CompanyManagementView> {
       children: [
         const Text("TRANSFER OWNERSHIP", style: TextStyle(color: Colors.redAccent, fontSize: 12, fontWeight: FontWeight.bold)),
         const SizedBox(height: 8),
-        const Text("WARNING: You will lose ownership and become an Unassigned employee. The new director MUST already be an Unassigned employee in this company.", style: TextStyle(color: Colors.white54, fontSize: 10, height: 1.4)),
+        const Text(
+          "Directorship transfer is paused until the server-side ownership and employee transition rules are source-reconciled.",
+          style: TextStyle(color: Colors.white54, fontSize: 10, height: 1.4),
+        ),
         const SizedBox(height: 16),
         TextFormField(controller: _newDirectorController, style: const TextStyle(color: Colors.white), decoration: const InputDecoration(border: OutlineInputBorder(), labelText: "New Director (Username)")),
         const SizedBox(height: 16),
         SizedBox(
             width: double.infinity, height: 40,
             child: ElevatedButton(
-                onPressed: () => _submitAction('change-director', {'new_director_username': _newDirectorController.text}),
+                onPressed: null,
                 style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent.withValues(alpha: 0.1), side: const BorderSide(color: Colors.redAccent)),
-                child: const Text("TRANSFER DIRECTORSHIP", style: TextStyle(color: Colors.redAccent, fontWeight: FontWeight.bold))
+                child: const Text("DIRECTORSHIP PAUSED", style: TextStyle(color: Colors.white38, fontWeight: FontWeight.bold))
             )
         ),
       ],
