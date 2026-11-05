@@ -80,8 +80,7 @@ When `ENABLE_GAMEPLAY_API=false`:
 When gameplay is enabled:
 
 - PostgreSQL must answer a bounded `SELECT 1` readiness probe;
-- the Crew Crime worker must be started and healthy;
-- the State Duration worker must be started and healthy;
+- the currently enabled State Duration worker must be started and healthy;
 - shutdown state immediately makes readiness false.
 
 The public readiness response is deliberately minimal:
@@ -97,7 +96,7 @@ messages are not exposed by the readiness endpoint.
 
 ## Worker health
 
-Both persisted workers now report health through `runtimeHealth`.
+The currently enabled persisted State Duration worker reports health through `runtimeHealth`.
 
 On start:
 
@@ -139,12 +138,12 @@ for server-side connection diagnostics.
 SIGTERM/SIGINT and fatal process errors now use the same shutdown path:
 
 1. mark the service shutting down (readiness becomes false);
-2. stop both worker polling timers;
+2. stop enabled worker polling timers;
 3. stop accepting new listener work;
 4. close the PostgreSQL pool;
 5. exit.
 
-A 10-second forced-exit guard prevents indefinite shutdown hangs.
+A 25-second forced-exit guard prevents indefinite shutdown hangs while allowing bounded DB work to terminate first.
 
 ## Central error boundary
 
@@ -201,3 +200,7 @@ Not performed:
 - Flutter analyze/build;
 - deployment;
 - production changes.
+
+## Final worker-set update
+
+The Crew Crime worker was later removed from startup/readiness after Recruits Canvas conflicted with `crimes_master` on loop timing and mortality. Its module now hard-fails if invoked. Only the State Duration worker is required by readiness.
