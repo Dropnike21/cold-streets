@@ -65,7 +65,7 @@ class MainHubRouter {
       case 12: return CompanyManagementView(userData: userData, companyId: activeCompanyId, onBack: () => onNavigate(11), onSell: () => onNavigate(8));
       case 13: return InfoBrokerView(key: ValueKey(infoBrokerTabIndex), userData: userData, onStateChange: onStateChange, initialTabIndex: infoBrokerTabIndex, onNavigate: (index) { setInfoBrokerTab(0); onNavigate(index); });
       case 14: return JailView(userData: userData, onStateChange: onStateChange);
-      case 15: return HospitalView(userData: userData);
+      case 15: return HospitalView(userData: userData, onStateChange: onStateChange);
       case 16: return UniversityView(userData: userData, onStateChange: onStateChange);
       case 17: return BankView(userData: userData, onStateChange: onStateChange);
       case 18: return RealEstateView(userData: userData, onStateChange: onStateChange);
