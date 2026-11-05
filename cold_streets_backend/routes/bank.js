@@ -1,265 +1,185 @@
 const express = require('express');
 const router = express.Router();
 const db = require('../db');
+
 const { requireOwnedPlayerParam } = require('../middleware/playerIdentity');
-const { ActionError, integer, dbInteger, exactJsonAmount, actorId, sendActionError } = require('../utils/economyValidation');
-const { requireIdempotencyKey, beginIdempotent, completeIdempotent } = require('../utils/idempotency');
+const {
+    ActionError,
+    dbInteger,
+    exactJsonAmount,
+    actorId,
+    sendActionError
+} = require('../utils/economyValidation');
+
 router.param('userId', requireOwnedPlayerParam);
 
-const INTEREST_BASIS_POINTS = [50n, 110n, 250n, 900n, 2200n];
-const TERM_DAYS = [7, 14, 30, 90, 180];
-const BANK_CAP = 2000000000n;
+const BANK_BLOCKERS = Object.freeze([
+    'time_deposit_terms_not_master_data',
+    'dirty_cash_to_clean_cash_conversion_conflict',
+    'bank_trust_progression_unresolved',
+    'bank_interest_perk_stacking_unresolved',
+    'pending_check_producer_unrecovered',
+    'pending_check_expiry_settlement_unrecovered'
+]);
 
-router.post('/deposit', async (req, res) => {
-    let client, transaction = false;
+function exactDbAmount(value, field) {
+    return exactJsonAmount(dbInteger(value, { field }));
+}
+
+function pausedBankMutation(req, res, action) {
     try {
-        const userId = actorId(req);
-        const idempotencyKey = requireIdempotencyKey(req);
-        const amount = integer(req.body?.depositAmount, {
-            field: 'Deposit amount', min: 1n, max: BANK_CAP
-        });
-        const durationIndex = req.body?.durationIndex;
-        if (!Number.isInteger(durationIndex) ||
-            durationIndex < 0 || durationIndex >= TERM_DAYS.length) {
-            throw new ActionError(400, 'Invalid duration.');
-        }
+        actorId(req);
+        throw new ActionError(
+            503,
+            'Bank ' + action + ' is paused until deposit, conversion, and settlement semantics are reconciled.'
+        );
+    } catch (error) {
+        return sendActionError(res, error, 'Bank ' + action + ' failed:');
+    }
+}
 
-        client = await db.connect();
-        await client.query('BEGIN');
-        transaction = true;
-        const account = await client.query(
-            'SELECT dirty_cash, clean_cash, bank_trust_level FROM users WHERE user_id = $1 FOR UPDATE',
-            [userId]
-        );
-        if (account.rowCount !== 1) throw new ActionError(404, 'Player not found.');
-        const user = account.rows[0];
-        const idem = await beginIdempotent(
-            client, userId, 'bank.deposit', idempotencyKey,
-            { depositAmount: amount.toString(), durationIndex }
-        );
-        if (idem.replay) {
-            await client.query('COMMIT');
-            transaction = false;
-            return res.status(idem.status).json(idem.response);
-        }
-        if (!Number.isInteger(Number(user.bank_trust_level)) ||
-            durationIndex > Number(user.bank_trust_level)) {
-            throw new ActionError(403, 'Required bank trust level not reached.');
-        }
+// Time-deposit creation is intentionally paused.
+//
+// Historical implementation facts are preserved in docs, but they are not
+// treated as canonical gameplay rules:
+// - 7/14/30/90/180 day terms;
+// - 0.5/1.1/2.5/9/22 percent rates;
+// - 2B cap;
+// - bank-trust duration gating;
+// - Dirty Cash drained before Clean Cash;
+// - all matured principal + interest paid to Clean Cash.
+//
+// The last two points make the Bank a laundering path, which conflicts with
+// the GDD assigning laundering to player businesses/fronts.
+router.post('/deposit', (req, res) =>
+    pausedBankMutation(req, res, 'time-deposit creation')
+);
 
-        // Database also has a unique partial index for active deposits. This
-        // check provides a clear API error while the unique index handles races.
-        const active = await client.query(
-            "SELECT 1 FROM time_deposits WHERE user_id = $1 AND status = 'active' LIMIT 1",
-            [userId]
-        );
-        if (active.rowCount) throw new ActionError(409, 'Claim your active deposit before opening another.');
+// Existing/recovered deposit records are not settled automatically while the
+// payout denomination and legacy Dirty->Clean conversion remain disputed.
+// This avoids minting or laundering value from a rule that exists only in code.
+router.post('/claim-deposit', (req, res) =>
+    pausedBankMutation(req, res, 'time-deposit settlement')
+);
 
-        const dirty = dbInteger(user.dirty_cash), clean = dbInteger(user.clean_cash);
-        if (dirty + clean < amount) throw new ActionError(409, 'Insufficient funds.');
-        const takeDirty = dirty < amount ? dirty : amount;
-        const takeClean = amount - takeDirty;
-        const interest = amount * INTEREST_BASIS_POINTS[durationIndex] / 10000n;
-        const payout = amount + interest;
+// No authoritative backend producer for pending_checks was recovered, and the
+// 24-hour auto-liquidation path exists only in historical UI/code prose. Do not
+// pay rows whose creation/expiry semantics cannot yet be verified.
+router.post('/claim-check', (req, res) =>
+    pausedBankMutation(req, res, 'pending-check settlement')
+);
 
-        const wallet = await client.query(
-            `UPDATE users
-               SET dirty_cash = dirty_cash - $1::numeric,
-                   clean_cash = clean_cash - $2::numeric
-             WHERE user_id = $3
-               AND dirty_cash >= $1::numeric
-               AND clean_cash >= $2::numeric
-             RETURNING dirty_cash, clean_cash`,
-            [takeDirty.toString(), takeClean.toString(), userId]
-        );
-        if (wallet.rowCount !== 1) throw new ActionError(409, 'Wallet changed before deposit.');
-
-        await client.query(
-            `INSERT INTO time_deposits
-               (user_id, dirty_deposited, clean_deposited, total_payout,
-                duration_index, unlocks_at, status)
-             VALUES ($1, $2::numeric, $3::numeric, $4::numeric, $5,
-                     NOW() + $6::integer * INTERVAL '1 day', 'active')`,
-            [userId, takeDirty.toString(), takeClean.toString(),
-             payout.toString(), durationIndex, TERM_DAYS[durationIndex]]
-        );
-        const response = {
-            message: 'Deposit successful.',
-            updatedCash: {
-                dirty_cash: exactJsonAmount(dbInteger(wallet.rows[0].dirty_cash)),
-                clean_cash: exactJsonAmount(dbInteger(wallet.rows[0].clean_cash))
-            }
-        };
-        await completeIdempotent(client, idem, 200, response);
-        await client.query('COMMIT');
-        transaction = false;
-        return res.json(response);
-    } catch (err) {
-        if (transaction) {
-            try { await client.query('ROLLBACK'); }
-            catch (rollback) { console.error('Bank deposit rollback:', rollback); }
-        }
-        return sendActionError(res, err, 'Bank deposit failed:');
-    } finally { if (client) client.release(); }
-});
-
-// Explicit maturity settlement. The recovery specification confirms there was
-// no trustworthy maturation worker. A state-changing POST avoids side effects
-// in GET /status and makes repeated claims fail closed.
-router.post('/claim-deposit', async (req, res) => {
-    let client, transaction = false;
-    try {
-        const userId = actorId(req);
-        const idempotencyKey = requireIdempotencyKey(req);
-        client = await db.connect();
-        await client.query('BEGIN');
-        transaction = true;
-        const player = await client.query(
-            'SELECT user_id FROM users WHERE user_id = $1 FOR UPDATE', [userId]
-        );
-        if (player.rowCount !== 1) throw new ActionError(404, 'Player not found.');
-        const idem = await beginIdempotent(
-            client, userId, 'bank.claim_deposit', idempotencyKey, {}
-        );
-        if (idem.replay) {
-            await client.query('COMMIT');
-            transaction = false;
-            return res.status(idem.status).json(idem.response);
-        }
-
-        const result = await client.query(
-            `SELECT deposit_id, total_payout, unlocks_at
-               FROM time_deposits
-              WHERE user_id = $1 AND status = 'active'
-              FOR UPDATE`,
-            [userId]
-        );
-        if (result.rowCount !== 1) throw new ActionError(409, 'No active deposit to claim.');
-        const deposit = result.rows[0];
-
-        const claimed = await client.query(
-            `UPDATE time_deposits SET status = 'claimed'
-              WHERE deposit_id = $1 AND user_id = $2
-                AND status = 'active' AND unlocks_at <= NOW()
-              RETURNING total_payout`,
-            [deposit.deposit_id, userId]
-        );
-        if (claimed.rowCount !== 1) {
-            throw new ActionError(409, 'Deposit has not matured yet.');
-        }
-        const payout = dbInteger(claimed.rows[0].total_payout, { field: 'Deposit payout' });
-        if (payout <= 0n) throw new Error('Invalid matured deposit payout.');
-
-        const wallet = await client.query(
-            'UPDATE users SET clean_cash = clean_cash + $1::numeric WHERE user_id = $2 RETURNING clean_cash',
-            [payout.toString(), userId]
-        );
-        if (wallet.rowCount !== 1) throw new Error('Player disappeared during deposit claim.');
-        const response = {
-            message: 'Matured deposit claimed.',
-            payout: exactJsonAmount(payout),
-            updatedCash: { clean_cash: exactJsonAmount(dbInteger(wallet.rows[0].clean_cash)) }
-        };
-        await completeIdempotent(client, idem, 200, response);
-        await client.query('COMMIT');
-        transaction = false;
-        return res.json(response);
-    } catch (err) {
-        if (transaction) {
-            try { await client.query('ROLLBACK'); }
-            catch (rollback) { console.error('Deposit claim rollback:', rollback); }
-        }
-        return sendActionError(res, err, 'Deposit claim failed:');
-    } finally { if (client) client.release(); }
-});
-
-router.post('/claim-check', async (req, res) => {
-    let client, transaction = false;
-    try {
-        const userId = actorId(req);
-        const idempotencyKey = requireIdempotencyKey(req);
-        const checkId = integer(req.body?.checkId, {
-            field: 'Check ID', min: 1n, max: 9223372036854775807n
-        }).toString();
-        client = await db.connect();
-        await client.query('BEGIN');
-        transaction = true;
-
-        const account = await client.query(
-            'SELECT user_id FROM users WHERE user_id = $1 FOR UPDATE', [userId]
-        );
-        if (account.rowCount !== 1) throw new ActionError(404, 'Player not found.');
-        const idem = await beginIdempotent(
-            client, userId, 'bank.claim_check', idempotencyKey, { checkId }
-        );
-        if (idem.replay) {
-            await client.query('COMMIT');
-            transaction = false;
-            return res.status(idem.status).json(idem.response);
-        }
-        const check = await client.query(
-            'SELECT amount, expires_at, status FROM pending_checks WHERE id = $1 AND user_id = $2 FOR UPDATE',
-            [checkId, userId]
-        );
-        if (check.rowCount !== 1) throw new ActionError(404, 'Check not found.');
-        if (check.rows[0].status !== 'pending') throw new ActionError(409, 'Check already processed.');
-
-        const claimed = await client.query(
-            `UPDATE pending_checks SET status = 'claimed'
-              WHERE id = $1 AND user_id = $2 AND status = 'pending'
-                AND expires_at > NOW()
-              RETURNING amount`,
-            [checkId, userId]
-        );
-        if (claimed.rowCount !== 1) throw new ActionError(409, 'Check is expired or already processed.');
-        const amount = dbInteger(claimed.rows[0].amount, { field: 'Check payout' });
-        if (amount <= 0n) throw new Error('Invalid check payout.');
-
-        const wallet = await client.query(
-            'UPDATE users SET clean_cash = clean_cash + $1::numeric WHERE user_id = $2 RETURNING clean_cash',
-            [amount.toString(), userId]
-        );
-        if (wallet.rowCount !== 1) throw new Error('Player disappeared during check claim.');
-        const response = {
-            message: 'Check claimed successfully.',
-            updatedCash: { clean_cash: exactJsonAmount(dbInteger(wallet.rows[0].clean_cash)) }
-        };
-        await completeIdempotent(client, idem, 200, response);
-        await client.query('COMMIT');
-        transaction = false;
-        return res.json(response);
-    } catch (err) {
-        if (transaction) {
-            try { await client.query('ROLLBACK'); }
-            catch (rollback) { console.error('Check claim rollback:', rollback); }
-        }
-        return sendActionError(res, err, 'Bank check claim failed:');
-    } finally { if (client) client.release(); }
-});
-
+// Read-only bank state. This exposes recovered financial rows without implying
+// that their terms are currently executable.
 router.get('/status/:userId', async (req, res) => {
     try {
         const userId = actorId(req);
-        const [deposit, checks] = await Promise.all([
+
+        const [accountRes, depositRes, checksRes] = await Promise.all([
             db.query(
-                `SELECT deposit_id, dirty_deposited, clean_deposited,
-                        total_payout, duration_index, unlocks_at,
-                        (unlocks_at <= NOW()) AS matured
-                   FROM time_deposits
-                  WHERE user_id = $1 AND status = 'active' LIMIT 1`,
+                'SELECT bank_trust_level, dirty_cash, clean_cash FROM users WHERE user_id = $1',
                 [userId]
             ),
             db.query(
-                "SELECT id, source, amount, expires_at FROM pending_checks WHERE user_id = $1 AND status = 'pending'",
+                `SELECT deposit_id,
+                        dirty_deposited,
+                        clean_deposited,
+                        total_payout,
+                        duration_index,
+                        created_at,
+                        unlocks_at,
+                        status,
+                        (unlocks_at <= NOW()) AS timestamp_matured
+                   FROM time_deposits
+                  WHERE user_id = $1
+                  ORDER BY created_at DESC, deposit_id DESC`,
+                [userId]
+            ),
+            db.query(
+                `SELECT id,
+                        source,
+                        amount,
+                        created_at,
+                        expires_at,
+                        status,
+                        (expires_at <= NOW()) AS timestamp_expired
+                   FROM pending_checks
+                  WHERE user_id = $1
+                  ORDER BY created_at DESC, id DESC`,
                 [userId]
             )
         ]);
+
+        if (accountRes.rowCount !== 1) {
+            throw new ActionError(404, 'Player not found.');
+        }
+
+        const account = accountRes.rows[0];
+
+        const deposits = depositRes.rows.map(row => ({
+            deposit_id: row.deposit_id,
+            dirty_deposited: exactDbAmount(
+                row.dirty_deposited,
+                'Recorded Dirty Cash deposit'
+            ),
+            clean_deposited: exactDbAmount(
+                row.clean_deposited,
+                'Recorded Clean Cash deposit'
+            ),
+            total_payout_recorded: exactDbAmount(
+                row.total_payout,
+                'Recorded time-deposit payout'
+            ),
+            duration_index_recorded: row.duration_index,
+            created_at: row.created_at,
+            unlocks_at: row.unlocks_at,
+            status: row.status,
+            timestamp_matured: row.timestamp_matured === true,
+            settlement_available: false,
+            settlement_status: 'paused_semantics_unresolved'
+        }));
+
+        const checks = checksRes.rows.map(row => ({
+            id: row.id,
+            source: row.source,
+            amount_recorded: exactDbAmount(
+                row.amount,
+                'Recorded pending-check amount'
+            ),
+            created_at: row.created_at,
+            expires_at: row.expires_at,
+            status: row.status,
+            timestamp_expired: row.timestamp_expired === true,
+            claim_available: false,
+            settlement_status: 'paused_source_unrecovered'
+        }));
+
         return res.json({
-            active_time_deposit: deposit.rows[0] || null,
-            pending_checks: checks.rows
+            success: true,
+            bank_status: 'read_only_reconciliation',
+            time_deposit_creation_available: false,
+            time_deposit_claim_available: false,
+            pending_check_claim_available: false,
+            bank_trust_progression_status: 'unresolved',
+            time_deposit_terms_status: 'historical_code_only',
+            payout_currency_status: 'unresolved',
+            dirty_to_clean_conversion_status: 'conflicts_with_gdd_laundering_model',
+            pending_check_creation_status: 'producer_unrecovered',
+            pending_check_expiry_status: 'auto_liquidation_unrecovered',
+            blockers: BANK_BLOCKERS,
+            account: {
+                bank_trust_level_recorded: exactDbAmount(
+                    account.bank_trust_level,
+                    'Bank trust level'
+                ),
+                dirty_cash: exactDbAmount(account.dirty_cash, 'Dirty Cash'),
+                clean_cash: exactDbAmount(account.clean_cash, 'Clean Cash')
+            },
+            recorded_time_deposits: deposits,
+            recorded_pending_checks: checks
         });
-    } catch (err) {
-        return sendActionError(res, err, 'Bank status failed:');
+    } catch (error) {
+        return sendActionError(res, error, 'Bank status failed:');
     }
 });
 
