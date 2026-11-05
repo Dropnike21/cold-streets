@@ -74,6 +74,7 @@ app.use('/university', require('./routes/university'));
 app.use('/bank', require('./routes/bank'));
 app.use('/achievements', require('./routes/achievements'));
 app.use('/missions', require('./routes/missions'));
+app.use('/trade-network', require('./routes/trade_network'));
 
 
 // 🛑 THE STATE GATEKEEPER
