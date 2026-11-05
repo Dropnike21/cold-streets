@@ -1,5 +1,7 @@
 const { randomInt } = require('node:crypto');
 const pool = require('../db');
+const logger = require('../utils/logger');
+const runtimeHealth = require('../utils/runtimeHealth');
 const {
     getCrewCrimeRule,
     ownsRequiredTool
@@ -9,6 +11,7 @@ const CREW_STATS = ['str', 'def', 'dex', 'spd', 'acu', 'ops', 'pre', 'res'];
 const CASUALTY_SCALE = 1000000;
 const DEFAULT_POLL_MS = 5000;
 const DEFAULT_BATCH_LIMIT = 50;
+const WORKER_NAME = 'crew_crime';
 
 function chooseTwoDistinctStats() {
     const first = randomInt(0, CREW_STATS.length);
@@ -204,7 +207,10 @@ async function settleOneDueCrewCrime() {
         if (transaction) {
             try { await client.query('ROLLBACK'); }
             catch (rollback) {
-                console.error('Crew crime rollback failed:', rollback.message);
+                logger.error('worker_rollback_failed', {
+                    worker: WORKER_NAME,
+                    ...logger.errorFields(rollback)
+                });
             }
         }
         throw err;
@@ -228,14 +234,26 @@ function startCrewCrimeWorker({
     batchLimit = DEFAULT_BATCH_LIMIT
 } = {}) {
     let running = false;
+    runtimeHealth.markWorkerStarted(WORKER_NAME);
 
     const poll = async () => {
         if (running) return;
         running = true;
         try {
-            await settleDueCrewCrimeBatch(batchLimit);
+            const settled = await settleDueCrewCrimeBatch(batchLimit);
+            runtimeHealth.markWorkerPollSuccess(WORKER_NAME, settled);
+            if (settled > 0) {
+                logger.info('worker_batch_settled', {
+                    worker: WORKER_NAME,
+                    settled_count: settled
+                });
+            }
         } catch (err) {
-            console.error('Crew crime scheduler error:', err.message);
+            runtimeHealth.markWorkerPollFailure(WORKER_NAME);
+            logger.error('worker_poll_failed', {
+                worker: WORKER_NAME,
+                ...logger.errorFields(err)
+            });
         } finally {
             running = false;
         }
@@ -243,7 +261,7 @@ function startCrewCrimeWorker({
 
     const timer = setInterval(poll, pollMs);
     if (typeof timer.unref === 'function') timer.unref();
-    return { poll, timer };
+    return { name: WORKER_NAME, poll, timer };
 }
 
 module.exports = {
