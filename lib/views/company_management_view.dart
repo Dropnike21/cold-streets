@@ -302,6 +302,161 @@ class _CompanyManagementViewState extends State<CompanyManagementView> {
     );
   }
 
+  int _appStat(dynamic app, String key) {
+    return _safeInt(app['stat_$key']);
+  }
+
+  bool _appMeetsPosition(dynamic app, dynamic pos) {
+    final pStat = pos['req_stat_primary']?.toString() ?? '';
+    final sStat = pos['req_stat_secondary']?.toString() ?? '';
+    final pReq = _safeInt(pos['req_amount_primary']);
+    final sReq = _safeInt(pos['req_amount_secondary']);
+    return _appStat(app, pStat) >= pReq &&
+        _appStat(app, sStat) >= sReq;
+  }
+
+  void _showEmploymentOfferDialog(dynamic app) {
+    final eligible = _positions
+        .where((pos) => _appMeetsPosition(app, pos))
+        .toList();
+    final salaryController = TextEditingController();
+    dynamic selected = eligible.isNotEmpty ? eligible.first : null;
+
+    showDialog(
+      context: context,
+      builder: (dialogContext) {
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            return AlertDialog(
+              backgroundColor: matteBlack,
+              title: Text(
+                "NEGOTIATED EMPLOYMENT OFFER",
+                style: TextStyle(
+                  color: neonGreen,
+                  fontWeight: FontWeight.bold,
+                  fontSize: 14,
+                ),
+              ),
+              content: SizedBox(
+                width: double.maxFinite,
+                child: eligible.isEmpty
+                    ? const Text(
+                        "This applicant does not currently meet any recovered source position requirements.",
+                        style: TextStyle(color: Colors.amber, fontSize: 11),
+                      )
+                    : Column(
+                        mainAxisSize: MainAxisSize.min,
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            app['username']?.toString() ?? 'Applicant',
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                          const SizedBox(height: 12),
+                          DropdownButtonFormField<dynamic>(
+                            value: selected,
+                            dropdownColor: matteBlack,
+                            decoration: const InputDecoration(
+                              border: OutlineInputBorder(),
+                              labelText: "Source Position",
+                            ),
+                            items: eligible.map((pos) {
+                              final role = pos['name']
+                                  .toString()
+                                  .replaceAll('_', ' ')
+                                  .toUpperCase();
+                              return DropdownMenuItem<dynamic>(
+                                value: pos,
+                                child: Text(
+                                  role,
+                                  style: const TextStyle(
+                                    color: Colors.white,
+                                    fontSize: 11,
+                                  ),
+                                ),
+                              );
+                            }).toList(),
+                            onChanged: (value) {
+                              setDialogState(() => selected = value);
+                            },
+                          ),
+                          const SizedBox(height: 12),
+                          TextField(
+                            controller: salaryController,
+                            keyboardType: TextInputType.number,
+                            style: const TextStyle(color: Colors.white),
+                            decoration: const InputDecoration(
+                              border: OutlineInputBorder(),
+                              prefixText: "\$ ",
+                              labelText: "Daily Clean Cash Salary",
+                            ),
+                          ),
+                          const SizedBox(height: 10),
+                          const Text(
+                            "The applicant must explicitly accept this role and salary. Payroll settlement is still paused.",
+                            style: TextStyle(
+                              color: Colors.white38,
+                              fontSize: 9,
+                              height: 1.35,
+                            ),
+                          ),
+                        ],
+                      ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(dialogContext),
+                  child: const Text(
+                    "CANCEL",
+                    style: TextStyle(color: Colors.white54),
+                  ),
+                ),
+                if (eligible.isNotEmpty)
+                  ElevatedButton(
+                    onPressed: () {
+                      final salary = int.tryParse(salaryController.text.trim());
+                      if (salary == null || salary <= 0 || selected == null) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(
+                            content: Text("Enter a positive Clean Cash salary."),
+                            backgroundColor: Colors.redAccent,
+                          ),
+                        );
+                        return;
+                      }
+                      Navigator.pop(dialogContext);
+                      _submitAction(
+                        'employment-offer',
+                        {
+                          'application_id': app['application_id'],
+                          'position_id': selected['position_id'],
+                          'daily_salary_clean': salaryController.text.trim(),
+                        },
+                      );
+                    },
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: neonGreen.withValues(alpha: 0.12),
+                      side: BorderSide(color: neonGreen),
+                    ),
+                    child: Text(
+                      "SEND OFFER",
+                      style: TextStyle(
+                        color: neonGreen,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ),
+              ],
+            );
+          },
+        );
+      },
+    ).whenComplete(salaryController.dispose);
+  }
+
   void _showApplicantsDialog() {
     showDialog(
         context: context,
@@ -334,12 +489,85 @@ class _CompanyManagementViewState extends State<CompanyManagementView> {
                             child: Text('"${app['pitch_message']}"', style: const TextStyle(color: Colors.white54, fontSize: 10, fontStyle: FontStyle.italic)),
                           ),
                         const SizedBox(height: 8),
+                        if (app['pending_offer_id'] != null) ...[
+                          Text(
+                            "OFFER SENT: ${app['pending_offer_role_key']} • \${_formatNumber(app['pending_offer_daily_salary_clean'])} CLEAN / DAY",
+                            style: const TextStyle(
+                              color: Colors.amberAccent,
+                              fontSize: 9,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                          const SizedBox(height: 8),
+                        ],
                         Row(
                           mainAxisAlignment: MainAxisAlignment.end,
                           children: [
-                            ElevatedButton(onPressed: () { Navigator.pop(context); _submitAction('manage-applicant', {'application_id': app['application_id'], 'target_user_id': app['user_id'], 'action': 'reject'}); }, style: ElevatedButton.styleFrom(backgroundColor: darkSurface, side: const BorderSide(color: Colors.redAccent)), child: const Text("REJECT", style: TextStyle(color: Colors.redAccent, fontSize: 10))),
+                            ElevatedButton(
+                              onPressed: app['pending_offer_id'] == null
+                                  ? () {
+                                      Navigator.pop(context);
+                                      _submitAction(
+                                        'manage-applicant',
+                                        {
+                                          'application_id': app['application_id'],
+                                          'action': 'reject',
+                                        },
+                                      );
+                                    }
+                                  : null,
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: darkSurface,
+                                side: const BorderSide(color: Colors.redAccent),
+                              ),
+                              child: const Text(
+                                "REJECT",
+                                style: TextStyle(
+                                  color: Colors.redAccent,
+                                  fontSize: 10,
+                                ),
+                              ),
+                            ),
                             const SizedBox(width: 8),
-                            ElevatedButton(onPressed: () { Navigator.pop(context); _submitAction('manage-applicant', {'application_id': app['application_id'], 'target_user_id': app['user_id'], 'action': 'accept'}); }, style: ElevatedButton.styleFrom(backgroundColor: darkSurface, side: BorderSide(color: neonGreen)), child: Text("ACCEPT", style: TextStyle(color: neonGreen, fontSize: 10))),
+                            if (app['pending_offer_id'] == null)
+                              ElevatedButton(
+                                onPressed: () {
+                                  Navigator.pop(context);
+                                  _showEmploymentOfferDialog(app);
+                                },
+                                style: ElevatedButton.styleFrom(
+                                  backgroundColor: darkSurface,
+                                  side: BorderSide(color: neonGreen),
+                                ),
+                                child: Text(
+                                  "MAKE OFFER",
+                                  style: TextStyle(
+                                    color: neonGreen,
+                                    fontSize: 10,
+                                  ),
+                                ),
+                              )
+                            else
+                              ElevatedButton(
+                                onPressed: () {
+                                  Navigator.pop(context);
+                                  _submitAction(
+                                    'employment-offer/withdraw',
+                                    {'offer_id': app['pending_offer_id']},
+                                  );
+                                },
+                                style: ElevatedButton.styleFrom(
+                                  backgroundColor: darkSurface,
+                                  side: const BorderSide(color: Colors.amber),
+                                ),
+                                child: const Text(
+                                  "WITHDRAW OFFER",
+                                  style: TextStyle(
+                                    color: Colors.amber,
+                                    fontSize: 10,
+                                  ),
+                                ),
+                              ),
                           ],
                         )
                       ],
@@ -444,7 +672,7 @@ class _CompanyManagementViewState extends State<CompanyManagementView> {
             borderRadius: BorderRadius.circular(5),
           ),
           child: const Text(
-            "EMPLOYEE MANAGEMENT PAUSED\n\nPosition definitions are now source-normalized, but salary negotiation, training settlement, NPC assignment, firing consequences, and contract acceptance are not fully reconciled. Roster data remains visible; mutations stay disabled.",
+            "EMPLOYEE MANAGEMENT PAUSED\n\nPosition definitions and negotiated real-player employment offers are now source-backed. Training, NPC assignment, firing consequences, and payroll settlement remain paused. Roster data stays read-only after contract acceptance.",
             style: TextStyle(
               color: Colors.amber,
               fontSize: 10,
