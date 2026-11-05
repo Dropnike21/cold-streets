@@ -1,3 +1,4 @@
+const logger = require('../../utils/logger');
 const { unlockAchievementsForValue, refreshUniqueItemDiscoveryAchievements } = require('../../utils/achievement_engine');
 const { recordAnonymousCrimeSuccess } = require('../../utils/anonymousTutorial');
 const { randomPercent, randomInclusive, randomText, commitCrimeOutcome } = require('../../utils/crimeSettlement');
@@ -194,7 +195,7 @@ async function execute(client, user, crime, req, res) {
         }
     } catch (err) {
         await client.query('ROLLBACK');
-        console.error("Shoplifting Engine Error:", err.message);
+        logger.error('shoplifting_crime_failed', logger.errorFields(err));
         const status = Number.isInteger(err?.status) ? err.status : 500;
         res.status(status).json({
             error: status === 500 ? "Hustle engine malfunction." : err.message
