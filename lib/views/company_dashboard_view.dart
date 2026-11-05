@@ -426,8 +426,10 @@ class _CompanyDashboardViewState extends State<CompanyDashboardView> {
                   children: [
                     _buildCompactDetail("Position:", _userRole, valColor: neonGreen),
                     const SizedBox(height: 6),
-                    _buildCompactDetail("Daily Salary:", "\$${_formatNumber(_userSalary)}", valColor: Colors.white),
+                    _buildCompactDetail("Agreed Salary:", "\$${_formatNumber(_userSalary)} Clean / day", valColor: Colors.white),
                     const SizedBox(height: 6),
+                    const Text("Payroll settlement paused", style: TextStyle(color: Colors.amber, fontSize: 8)),
+                    const SizedBox(height: 3),
                     _buildCompactDetail("Job Incentives:", "$jobPoints Points", valColor: Colors.amberAccent),
                   ],
                 ),
