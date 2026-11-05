@@ -5,7 +5,7 @@ const { requireOwnedPlayerParam } = require('../middleware/playerIdentity');
 router.param('user_id', requireOwnedPlayerParam);
 
 const pool = require('../db');
-const { ActionError, integer, dbInteger, actorId, sendActionError } = require('../utils/economyValidation');
+const { ActionError, integer, dbInteger, exactJsonAmount, actorId, sendActionError } = require('../utils/economyValidation');
 const { requireIdempotencyKey, beginIdempotent, completeIdempotent } = require('../utils/idempotency');
 
 // --- 1. GET ALL COMPANY BLUEPRINTS ---
@@ -72,15 +72,37 @@ router.get('/:company_id/dashboard/:user_id', async (req, res) => {
         if (companyRes.rows.length === 0) return res.status(404).json({ error: "Company not found." });
         const company = companyRes.rows[0];
 
-        const salaryRes = await pool.query("SELECT SUM(daily_salary) as total_salaries FROM company_employees WHERE company_id = $1", [company_id]);
-        const totalSalaries = parseInt(salaryRes.rows[0].total_salaries) || 0;
-        const dailyUpkeep = parseInt(company.daily_upkeep) || 0;
+        const salaryRes = await pool.query(
+            "SELECT COALESCE(SUM(daily_salary), 0) AS total_salaries FROM company_employees WHERE company_id = $1",
+            [company_id]
+        );
+        const totalSalaries = dbInteger(salaryRes.rows[0].total_salaries, {
+            field: 'Company daily salaries'
+        });
+        const dailyUpkeep = dbInteger(company.daily_upkeep, {
+            field: 'Company daily upkeep'
+        });
         const totalDailyCosts = totalSalaries + dailyUpkeep;
 
-        const totalFunds = parseInt(company.bank_dirty) + parseInt(company.bank_clean);
-        const runwayDays = totalDailyCosts > 0 ? (totalFunds / totalDailyCosts).toFixed(1) : 99.9;
+        const bankDirty = dbInteger(company.bank_dirty, {
+            field: 'Company Dirty Cash'
+        });
+        const bankClean = dbInteger(company.bank_clean, {
+            field: 'Company Clean Cash'
+        });
+        const totalFunds = bankDirty + bankClean;
 
-        const [rosterRes, logsRes, positionsRes, inventoryRes, shipmentsRes, applicantsRes, specialsRes] = await Promise.all([
+        // Source-backed runway formula is (Dirty + Clean) / (Salaries + Upkeep).
+        // Keep the calculation exact by returning one decimal place from integer
+        // tenths rather than using JS floating point.
+        let runwayDays = null;
+        if (totalDailyCosts > 0n) {
+            const tenths = totalFunds * 10n / totalDailyCosts;
+            runwayDays =
+                (tenths / 10n).toString() + '.' + (tenths % 10n).toString();
+        }
+
+        const [rosterRes, logsRes, positionsRes, inventoryRes, shipmentsRes, applicantsRes, specialsRes, cashLedgerRes] = await Promise.all([
             pool.query(`
                 SELECT ce.*, u.username, u.level, u.stat_acu, u.stat_ops, u.stat_pre, u.stat_res
                 FROM company_employees ce
@@ -113,13 +135,58 @@ router.get('/:company_id/dashboard/:user_id', async (req, res) => {
             pool.query(`
                 SELECT special_id, type_id, star_requirement AS star, special_name AS name, effect_description AS effect, jp_cost AS cost, is_passive
                 FROM company_specials_master WHERE type_id = $1 ORDER BY star_requirement ASC
-            `, [company.type_id])
+            `, [company.type_id]),
+            userRole === 'Director'
+                ? pool.query(`
+                    SELECT entry_id, event_type, dirty_delta, clean_delta,
+                           dirty_balance_after, clean_balance_after,
+                           source_ref, created_at
+                      FROM company_cash_ledger
+                     WHERE company_id = $1
+                     ORDER BY created_at DESC, entry_id DESC
+                     LIMIT 50
+                `, [company_id])
+                : Promise.resolve({ rows: [] })
         ]);
 
         res.json({
-            success: true, user_role: userRole, company: company, runway_days: runwayDays, total_daily_costs: totalDailyCosts,
-            roster: rosterRes.rows, logs: logsRes.rows, positions: positionsRes.rows, inventory: inventoryRes.rows,
-            shipments: shipmentsRes.rows, applicants: applicantsRes.rows, specials: specialsRes.rows
+            success: true,
+            user_role: userRole,
+            company,
+            runway_days: runwayDays,
+            total_daily_costs: exactJsonAmount(totalDailyCosts),
+            cash_flow: {
+                status: 'funding_only',
+                owner_dirty_funding_available: true,
+                clean_funding_available: false,
+                withdrawals_available: false,
+                laundering_conversion_available: false,
+                payroll_settlement_available: false,
+                sales_settlement_available: false,
+                advertising_settlement_available: false,
+                bankruptcy_settlement_available: false,
+                company_bank_dirty: exactJsonAmount(bankDirty),
+                company_bank_clean: exactJsonAmount(bankClean),
+                total_daily_salaries_reference: exactJsonAmount(totalSalaries),
+                daily_upkeep_reference: exactJsonAmount(dailyUpkeep),
+                blockers: [
+                    'laundering_tax_formula_unresolved',
+                    'acumen_tax_reduction_formula_unresolved',
+                    'company_daily_settlement_boundary_unresolved',
+                    'employee_salary_contracts_paused',
+                    'product_blueprints_unrecovered',
+                    'tier3_sales_clean_ratio_not_normalized',
+                    'bankruptcy_severance_settlement_unresolved'
+                ]
+            },
+            cash_ledger: cashLedgerRes.rows,
+            roster: rosterRes.rows,
+            logs: logsRes.rows,
+            positions: positionsRes.rows,
+            inventory: inventoryRes.rows,
+            shipments: shipmentsRes.rows,
+            applicants: applicantsRes.rows,
+            specials: specialsRes.rows
         });
     } catch (err) { res.status(500).json({ error: "Server error." }); }
 });
