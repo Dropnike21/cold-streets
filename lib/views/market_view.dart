@@ -34,9 +34,9 @@ class _MarketViewState extends State<MarketView> {
   List<dynamic> _filteredItems = [];
 
   final Map<int, int> _cart = {};
-  int _dailyLimit = 100;
+  int _dailyLimit = 0;
   int _purchasedToday = 0;
-  int _remainingToday = 100;
+  int _remainingToday = 0;
   String _marketDayKey = '';
   String _resetBoundary = 'database_calendar_day';
 
@@ -111,7 +111,7 @@ class _MarketViewState extends State<MarketView> {
     final data = jsonDecode(response.body);
     if (!mounted || data is! Map) return;
     setState(() {
-      _dailyLimit = _intValue(data['daily_item_limit'], fallback: 100);
+      _dailyLimit = _intValue(data['daily_item_limit']);
       _purchasedToday = _intValue(data['purchased_today']);
       _remainingToday = _intValue(data['remaining_today']);
       _marketDayKey = data['day_key']?.toString() ?? '';
