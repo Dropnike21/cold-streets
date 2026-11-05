@@ -175,6 +175,59 @@ app.use((req, res, next) => {
 app.use(mutationContract);
 
 let workerHandles = [];
+let gameplayRuntimeStarted = false;
+let gameplayRuntimeStarting = false;
+let workerBootstrapRetryTimer = null;
+let shutdownStarted = false;
+
+async function bootstrapGameplayRuntime() {
+    if (
+        !gameplayEnabled ||
+        gameplayRuntimeStarted ||
+        gameplayRuntimeStarting ||
+        shutdownStarted
+    ) {
+        return;
+    }
+
+    gameplayRuntimeStarting = true;
+    let client;
+    try {
+        client = await pool.connect();
+        client.release();
+        client = null;
+
+        runtimeHealth.markDatabaseReady();
+
+        const stateWorker = startStateDurationWorker();
+        workerHandles = [stateWorker];
+        gameplayRuntimeStarted = true;
+
+        logger.info('gameplay_runtime_bootstrap_ready', {
+            workers: workerHandles.map(handle => handle.name).join(',')
+        });
+    } catch (err) {
+        if (client) client.release();
+
+        runtimeHealth.markDatabaseFailure();
+        logger.error(
+            'gameplay_runtime_bootstrap_failed',
+            logger.errorFields(err)
+        );
+
+        if (!shutdownStarted && !workerBootstrapRetryTimer) {
+            workerBootstrapRetryTimer = setTimeout(() => {
+                workerBootstrapRetryTimer = null;
+                void bootstrapGameplayRuntime();
+            }, 5000);
+            if (typeof workerBootstrapRetryTimer.unref === 'function') {
+                workerBootstrapRetryTimer.unref();
+            }
+        }
+    } finally {
+        gameplayRuntimeStarting = false;
+    }
+}
 
 if (gameplayEnabled) {
     const required = [
@@ -196,23 +249,7 @@ if (gameplayEnabled) {
         throw new Error('Remote staging requires encrypted database connections.');
     }
 
-    pool.connect()
-      .then(client => {
-          client.release();
-          runtimeHealth.markDatabaseReady();
-          logger.info('database_bootstrap_ready');
-
-          const stateWorker = startStateDurationWorker();
-          workerHandles = [stateWorker];
-
-          logger.info('workers_started', {
-              workers: workerHandles.map(handle => handle.name).join(',')
-          });
-      })
-      .catch(err => {
-          runtimeHealth.markDatabaseFailure();
-          logger.error('database_bootstrap_failed', logger.errorFields(err));
-      });
+    void bootstrapGameplayRuntime();
 }
 
 // --- MODULAR ROUTERS ---
@@ -293,7 +330,6 @@ app.use((err, req, res, _next) => {
 
 const PORT = process.env.PORT || 3000;
 let server = null;
-let shutdownStarted = false;
 
 async function shutdown(signal, exitCode = 0) {
     if (shutdownStarted) return;
@@ -301,6 +337,11 @@ async function shutdown(signal, exitCode = 0) {
     runtimeHealth.markShuttingDown();
 
     logger.info('shutdown_started', { signal });
+
+    if (workerBootstrapRetryTimer) {
+        clearTimeout(workerBootstrapRetryTimer);
+        workerBootstrapRetryTimer = null;
+    }
 
     for (const handle of workerHandles) {
         if (handle?.timer) clearInterval(handle.timer);
