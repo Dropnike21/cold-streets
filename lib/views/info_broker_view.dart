@@ -172,81 +172,9 @@ class _InfoBrokerViewState extends State<InfoBrokerView> {
   }
 
   void _showBountyDialog() {
-    final TextEditingController targetController = TextEditingController();
-    final TextEditingController rewardController = TextEditingController();
-    bool isAnonymous = false;
-
-    showDialog(
-        context: context,
-        builder: (BuildContext ctx) {
-          return StatefulBuilder(
-              builder: (context, setStateDialog) {
-                return AlertDialog(
-                  backgroundColor: darkSurface,
-                  shape: RoundedRectangleBorder(side: const BorderSide(color: Colors.redAccent), borderRadius: BorderRadius.circular(4)),
-                  title: const Text("ISSUE HIT CONTRACT", style: TextStyle(color: Colors.redAccent, fontWeight: FontWeight.bold, fontSize: 14, fontFamily: 'Courier')),
-                  content: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const Text("Bounties require a minimum of \$500 Dirty Cash.", style: TextStyle(color: Colors.white54, fontSize: 10)),
-                      const SizedBox(height: 12),
-                      TextField(
-                        controller: targetController,
-                        style: const TextStyle(color: Colors.white, fontSize: 12),
-                        decoration: const InputDecoration(filled: true, fillColor: Colors.black, labelText: "Target Username", labelStyle: TextStyle(color: Colors.white54), enabledBorder: OutlineInputBorder(borderSide: BorderSide(color: Colors.white24)), focusedBorder: OutlineInputBorder(borderSide: BorderSide(color: Colors.redAccent))),
-                      ),
-                      const SizedBox(height: 12),
-                      TextField(
-                        controller: rewardController,
-                        keyboardType: TextInputType.number,
-                        style: const TextStyle(color: Colors.greenAccent, fontSize: 12),
-                        decoration: const InputDecoration(filled: true, fillColor: Colors.black, prefixText: "\$ ", labelText: "Reward Amount", labelStyle: TextStyle(color: Colors.white54), enabledBorder: OutlineInputBorder(borderSide: BorderSide(color: Colors.white24)), focusedBorder: OutlineInputBorder(borderSide: BorderSide(color: Colors.redAccent))),
-                      ),
-                      const SizedBox(height: 8),
-                      Row(
-                        children: [
-                          Checkbox(
-                            value: isAnonymous,
-                            activeColor: Colors.redAccent,
-                            onChanged: (val) => setStateDialog(() => isAnonymous = val!),
-                          ),
-                          const Text("Post Anonymously", style: TextStyle(color: Colors.white70, fontSize: 11))
-                        ],
-                      )
-                    ],
-                  ),
-                  actions: [
-                    TextButton(onPressed: () => Navigator.pop(ctx), child: const Text("CANCEL", style: TextStyle(color: Colors.white54))),
-                    ElevatedButton(
-                      style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent.withOpacity(0.1), side: const BorderSide(color: Colors.redAccent)),
-                      onPressed: () async {
-                        Navigator.pop(ctx);
-                        setState(() => _isProcessing = true);
-                        try {
-                          final res = await http.post(Uri.parse('$apiUrl/bounty'),
-                              headers: {"Content-Type": "application/json"},
-                              body: jsonEncode({"user_id": widget.userData['user_id'], "target_username": targetController.text, "reward_cash": rewardController.text, "is_anonymous": isAnonymous}));
-                          final data = jsonDecode(res.body);
-                          _showSnackbar(data['message'] ?? data['error'], isError: res.statusCode != 200);
-                          if (res.statusCode == 200) {
-                            if (data['dirty_cash'] != null) {
-                              final updated = Map<String, dynamic>.from(widget.userData);
-                              updated['dirty_cash'] = data['dirty_cash'];
-                              widget.onStateChange(updated);
-                            }
-                            await _fetchAllData();
-                          }
-                        } catch (e) { _showSnackbar("Network Error", isError: true); }
-                        finally { setState(() => _isProcessing = false); }
-                      },
-                      child: const Text("ISSUE HIT", style: TextStyle(color: Colors.redAccent, fontWeight: FontWeight.bold)),
-                    )
-                  ],
-                );
-              }
-          );
-        }
+    _showSnackbar(
+      'Bounty placement is paused until terminal PvP settlement is authoritative.',
+      isError: true,
     );
   }
 
