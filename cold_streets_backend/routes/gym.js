@@ -8,6 +8,7 @@ const pool = require('../db');
 const { trackAndCheckAchievement } = require('../utils/achievement_engine'); // INJECTED ACHIEVEMENT ENGINE
 const { ActionError, integer, dbInteger, actorId, sendActionError } = require('../utils/economyValidation');
 const { incrementKevinProgress } = require('../utils/missionProgress');
+const { recordAnonymousGymTraining } = require('../utils/anonymousTutorial');
 
 // The Level 1 safety net for the Hybrid Math Engine
 const GLOBAL_FLAT_RATE = 0.05;
@@ -216,6 +217,7 @@ router.post('/train', async (req, res) => {
         // Contract "gym" means one successful server-side training action,
         // independent of how much energy was spent in that action.
         await incrementKevinProgress(client, userId, 'gym', 1);
+        await recordAnonymousGymTraining(client, userId, statType, energySpent);
         await client.query('COMMIT');
         transaction = false;
 
