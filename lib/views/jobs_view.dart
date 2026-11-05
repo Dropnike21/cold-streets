@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
-import 'package:http/http.dart' as http;
+import '../api_config.dart';
+import '../services/game_http.dart' as http;
 import 'dart:convert';
 import 'dart:async';
 import 'dart:math';
@@ -23,7 +24,7 @@ class JobsView extends StatefulWidget {
 }
 
 class _JobsViewState extends State<JobsView> {
-  final String apiUrl = "http://10.0.2.2:3000/jobs";
+  String get apiUrl => '\${ApiConfig.baseUrl}/jobs';
 
   bool _isLoading = true;
   bool _isProcessing = false;
@@ -35,6 +36,7 @@ class _JobsViewState extends State<JobsView> {
 
   bool _isInterviewing = false;
   int _applyingForJobId = 0;
+  String? _interviewId;
   List<dynamic> _interviewQuestions = [];
   Map<int, int> _selectedAnswers = {};
 
@@ -70,6 +72,54 @@ class _JobsViewState extends State<JobsView> {
     }
   }
 
+  bool get _canClaimDailyPay {
+    if (_lastClaimed == null || _lastClaimed!.isEmpty) return true;
+    final parsed = DateTime.tryParse(_lastClaimed!);
+    if (parsed == null) return false;
+    return !DateTime.now().isBefore(parsed.toLocal().add(const Duration(hours: 24)));
+  }
+
+  String get _dailyPayStatus {
+    if (_canClaimDailyPay) return "DAILY PAY READY";
+    final parsed = DateTime.tryParse(_lastClaimed!);
+    if (parsed == null) return "PAY STATUS UNAVAILABLE";
+    final remaining = parsed.toLocal().add(const Duration(hours: 24)).difference(DateTime.now());
+    final hours = remaining.inHours;
+    final minutes = remaining.inMinutes.remainder(60);
+    return "NEXT PAY IN ${hours}h ${minutes}m";
+  }
+
+  Future<void> _claimDailyPay() async {
+    if (!_canClaimDailyPay || _isProcessing) return;
+    setState(() => _isProcessing = true);
+    try {
+      final response = await http.post(
+        Uri.parse('$apiUrl/claim-daily'),
+        headers: const {"Content-Type": "application/json"},
+        body: jsonEncode(const <String, dynamic>{}),
+      );
+      final data = jsonDecode(response.body);
+      if (response.statusCode == 200) {
+        final updated = Map<String, dynamic>.from(widget.userData);
+        updated['clean_cash'] = data['clean_cash'];
+        widget.onStateChange(updated);
+        setState(() {
+          _lastClaimed = data['claimed_at']?.toString();
+        });
+        await _fetchJobsDashboard();
+        _showSnackbar(
+          "Collected \${data['daily_pay']} Clean Cash and +${data['incentives_gained']} Job Points.",
+        );
+      } else {
+        _showSnackbar(data['error'] ?? "Daily pay claim failed.", isError: true);
+      }
+    } catch (e) {
+      _showSnackbar("Network error.", isError: true);
+    } finally {
+      if (mounted) setState(() => _isProcessing = false);
+    }
+  }
+
   Future<void> _startInterview(int jobId) async {
     setState(() => _isProcessing = true);
     try {
@@ -78,6 +128,7 @@ class _JobsViewState extends State<JobsView> {
       if (response.statusCode == 200) {
         setState(() {
           _applyingForJobId = jobId;
+          _interviewId = data['interview_id']?.toString();
           _interviewQuestions = data['questions'];
           _selectedAnswers.clear();
           _isInterviewing = true;
@@ -93,19 +144,27 @@ class _JobsViewState extends State<JobsView> {
   }
 
   Future<void> _submitInterview() async {
-    if (_selectedAnswers.length < 5) return;
+    if (_selectedAnswers.length < 5 || _interviewId == null) return;
     setState(() => _isProcessing = true);
-    List<Map<String, int>> answersPayload = _selectedAnswers.entries.map((e) => {"question_id": e.key, "selected_index": e.value}).toList();
+    List<Map<String, int>> answersPayload = _selectedAnswers.entries
+        .map((e) => {"question_id": e.key, "selected_index": e.value})
+        .toList();
 
     try {
       final response = await http.post(Uri.parse('$apiUrl/interview/submit'),
           headers: {"Content-Type": "application/json"},
-          body: jsonEncode({"user_id": widget.userData['user_id'], "job_id": _applyingForJobId, "answers": answersPayload}));
+          body: jsonEncode({
+             "interview_id": _interviewId,
+            "answers": answersPayload,
+          }));
 
       final data = jsonDecode(response.body);
       _showSnackbar(data['message'], isError: !data['passed']);
 
-      setState(() => _isInterviewing = false);
+      setState(() {
+        _isInterviewing = false;
+        _interviewId = null;
+      });
       await _fetchJobsDashboard();
     } catch (e) {} finally { if (mounted) setState(() => _isProcessing = false); }
   }
@@ -115,7 +174,7 @@ class _JobsViewState extends State<JobsView> {
     try {
       final response = await http.post(Uri.parse('$apiUrl/promote'),
           headers: {"Content-Type": "application/json"},
-          body: jsonEncode({"user_id": widget.userData['user_id']}));
+          body: jsonEncode(const <String, dynamic>{}));
       final data = jsonDecode(response.body);
       if (response.statusCode == 200) {
         _showSnackbar(data['message']);
@@ -131,7 +190,7 @@ class _JobsViewState extends State<JobsView> {
     try {
       final response = await http.post(Uri.parse('$apiUrl/quit'),
           headers: {"Content-Type": "application/json"},
-          body: jsonEncode({"user_id": widget.userData['user_id'], "exit_type": exitType}));
+          body: jsonEncode({"exit_type": exitType}));
       final data = jsonDecode(response.body);
 
       if (response.statusCode == 200) {
@@ -153,144 +212,157 @@ class _JobsViewState extends State<JobsView> {
         backgroundColor: isError ? Colors.redAccent.shade700 : neonGreen.withOpacity(0.8)));
   }
 
-  void _showResignationDialog(int currentRank) {
-    int heistPayout = currentRank * 10000;
+  void _showResignationDialog(Map<String, dynamic> activeJob) {
+    final rawPreview = activeJob['resignation_preview'];
+    final preview = rawPreview is Map
+        ? Map<String, dynamic>.from(rawPreview)
+        : <String, dynamic>{};
+    final previewReady = preview.isNotEmpty;
+    final cleanRetention =
+        int.tryParse(preview['clean_exit_retention_percent']?.toString() ?? '');
+    final heistPayout =
+        int.tryParse(preview['heist_payout_dirty_cash']?.toString() ?? '');
+    final heistHeat =
+        int.tryParse(preview['heist_heat']?.toString() ?? '');
+    final heistBanDays =
+        int.tryParse(preview['heist_ban_days']?.toString() ?? '');
+
     showDialog(
-        context: context,
-        builder: (BuildContext ctx) {
-          return AlertDialog(
-            backgroundColor: darkSurface,
-            shape: RoundedRectangleBorder(side: const BorderSide(color: Colors.redAccent), borderRadius: BorderRadius.circular(8)),
-            title: const Text("TERMINATE EMPLOYMENT", style: TextStyle(color: Colors.redAccent, fontWeight: FontWeight.bold, fontSize: 16)),
-            content: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const Text("How do you want to leave?", style: TextStyle(color: Colors.white, fontSize: 12)),
-                const SizedBox(height: 20),
-                SizedBox(
-                  width: double.infinity,
-                  child: ElevatedButton(
-                    onPressed: () { Navigator.pop(ctx); _quitJob('clean'); },
-                    style: ElevatedButton.styleFrom(backgroundColor: matteBlack, side: const BorderSide(color: Colors.white24)),
-                    child: const Padding(
-                      padding: EdgeInsets.symmetric(vertical: 12.0),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text("CLEAN EXIT", style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 12)),
-                          SizedBox(height: 4),
-                          Text("Put in your two weeks. 50% of your unspent Job Points will be saved.", style: TextStyle(color: Colors.white54, fontSize: 10)),
-                        ],
-                      ),
-                    ),
-                  ),
-                ),
-                const SizedBox(height: 12),
-                SizedBox(
-                  width: double.infinity,
-                  child: ElevatedButton(
-                    onPressed: () { Navigator.pop(ctx); _quitJob('heist'); },
-                    style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent.withOpacity(0.1), side: const BorderSide(color: Colors.redAccent)),
-                    child: Padding(
-                      padding: const EdgeInsets.symmetric(vertical: 12.0),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text("THE FINAL HEIST", style: TextStyle(color: Colors.redAccent, fontWeight: FontWeight.bold, fontSize: 12)),
-                          const SizedBox(height: 4),
-                          Text("Steal \$${_formatNumber(heistPayout)} Dirty Cash. Lose all Job Points, gain MAX HEAT, and catch a 30-Day Ban.", style: const TextStyle(color: Colors.redAccent, fontSize: 10)),
-                        ],
-                      ),
-                    ),
-                  ),
-                ),
-              ],
-            ),
-            actions: [TextButton(onPressed: () => Navigator.pop(ctx), child: const Text("CANCEL", style: TextStyle(color: Colors.white54)))],
-          );
-        }
-    );
-  }
-
-  void _openSpecialExchangeSheet(Map<String, dynamic> special, int currentIncentives) {
-    if (special['is_passive'] == true) return;
-    final TextEditingController amountController = TextEditingController(text: "1");
-
-    showModalBottomSheet(
       context: context,
-      isScrollControlled: true,
-      backgroundColor: darkSurface,
-      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(12)), side: BorderSide(color: Color(0xFF39FF14), width: 1)),
       builder: (BuildContext ctx) {
-        return Padding(
-          padding: EdgeInsets.only(bottom: MediaQuery.of(ctx).viewInsets.bottom, left: 16, right: 16, top: 24),
-          child: Column(
+        return AlertDialog(
+          backgroundColor: darkSurface,
+          shape: RoundedRectangleBorder(
+            side: const BorderSide(color: Colors.redAccent),
+            borderRadius: BorderRadius.circular(8),
+          ),
+          title: const Text(
+            "TERMINATE EMPLOYMENT",
+            style: TextStyle(
+              color: Colors.redAccent,
+              fontWeight: FontWeight.bold,
+              fontSize: 16,
+            ),
+          ),
+          content: Column(
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text("JOB SPECIAL: ${special['name'].toUpperCase()}", style: TextStyle(color: neonGreen, fontSize: 16, fontWeight: FontWeight.bold)),
-              const SizedBox(height: 8),
-              Text("How many job points would you like to exchange for ${special['effect']}?", style: const TextStyle(color: Colors.white, fontSize: 12)),
-              const SizedBox(height: 16),
-              Row(
-                children: [
-                  Expanded(
-                    flex: 2,
-                    child: Container(
-                      height: 40,
-                      decoration: BoxDecoration(color: matteBlack, border: Border.all(color: Colors.white24), borderRadius: BorderRadius.circular(4)),
-                      child: TextField(
-                        controller: amountController,
-                        keyboardType: TextInputType.number,
-                        textAlign: TextAlign.center,
-                        style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
-                        decoration: const InputDecoration(border: InputBorder.none, isDense: true, contentPadding: EdgeInsets.only(top: 10)),
-                      ),
+              const Text(
+                "How do you want to leave?",
+                style: TextStyle(color: Colors.white, fontSize: 12),
+              ),
+              const SizedBox(height: 20),
+              SizedBox(
+                width: double.infinity,
+                child: ElevatedButton(
+                  onPressed: () {
+                    Navigator.pop(ctx);
+                    _quitJob('clean');
+                  },
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: matteBlack,
+                    side: const BorderSide(color: Colors.white24),
+                  ),
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 12.0),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text(
+                          "CLEAN EXIT",
+                          style: TextStyle(
+                            color: Colors.white,
+                            fontWeight: FontWeight.bold,
+                            fontSize: 12,
+                          ),
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          cleanRetention == null
+                              ? "The server will determine the retained Job Points."
+                              : "The server will retain $cleanRetention% of your unspent Job Points.",
+                          style: const TextStyle(
+                            color: Colors.white54,
+                            fontSize: 10,
+                          ),
+                        ),
+                      ],
                     ),
                   ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    flex: 3,
-                    child: SizedBox(
-                      height: 40,
-                      child: ElevatedButton(
-                        style: ElevatedButton.styleFrom(backgroundColor: neonGreen.withOpacity(0.1), side: BorderSide(color: neonGreen)),
-                        onPressed: () async {
-                          int amount = int.tryParse(amountController.text) ?? 0;
-                          int totalCost = amount * (special['cost'] as int);
-
-                          if (amount <= 0) { Navigator.pop(ctx); _showSnackbar("Invalid amount.", isError: true); return; }
-                          if (currentIncentives < totalCost) { Navigator.pop(ctx); _showSnackbar("You need $totalCost Job Points.", isError: true); return; }
-
-                          Navigator.pop(ctx);
-                          setState(() => _isProcessing = true);
-                          try {
-                            final response = await http.post(Uri.parse('$apiUrl/exchange'),
-                                headers: {"Content-Type": "application/json"},
-                                body: jsonEncode({"user_id": widget.userData['user_id'], "amount": amount}));
-                            final data = jsonDecode(response.body);
-                            if (response.statusCode == 200) {
-                              _showSnackbar(data['message']);
-                              await _fetchJobsDashboard();
-                              widget.onStateChange(widget.userData);
-                            } else {
-                              _showSnackbar(data['error'], isError: true);
-                            }
-                          } catch (e) { _showSnackbar("Network error.", isError: true); }
-                          finally { setState(() => _isProcessing = false); }
-                        },
-                        child: Text("EXCHANGE", style: TextStyle(color: neonGreen, fontWeight: FontWeight.bold, letterSpacing: 1)),
-                      ),
-                    ),
-                  )
-                ],
+                ),
               ),
-              const SizedBox(height: 24),
+              const SizedBox(height: 12),
+              SizedBox(
+                width: double.infinity,
+                child: ElevatedButton(
+                  onPressed: previewReady &&
+                          heistPayout != null &&
+                          heistHeat != null &&
+                          heistBanDays != null
+                      ? () {
+                          Navigator.pop(ctx);
+                          _quitJob('heist');
+                        }
+                      : null,
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.redAccent.withOpacity(0.1),
+                    side: const BorderSide(color: Colors.redAccent),
+                  ),
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 12.0),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text(
+                          "THE FINAL HEIST",
+                          style: TextStyle(
+                            color: Colors.redAccent,
+                            fontWeight: FontWeight.bold,
+                            fontSize: 12,
+                          ),
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          previewReady &&
+                                  heistPayout != null &&
+                                  heistHeat != null &&
+                                  heistBanDays != null
+                              ? "Server preview: ${_formatNumber(heistPayout)} Dirty Cash, Heat $heistHeat, $heistBanDays-day City Job ban, and all Job Points forfeited."
+                              : "Authoritative heist preview unavailable.",
+                          style: const TextStyle(
+                            color: Colors.redAccent,
+                            fontSize: 10,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
             ],
           ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text(
+                "CANCEL",
+                style: TextStyle(color: Colors.white54),
+              ),
+            ),
+          ],
         );
       },
+    );
+  }
+
+  void _openSpecialExchangeSheet(
+    Map<String, dynamic> special,
+    int currentIncentives,
+  ) {
+    _showSnackbar(
+      'Legacy Job Point exchange is paused. Only source-reconciled mastery actives may mutate rewards.',
+      isError: true,
     );
   }
 
@@ -354,7 +426,7 @@ class _JobsViewState extends State<JobsView> {
               child: TextButton(
                 onPressed: () {
                   final activeJob = _jobs.firstWhere((j) => j['job_id'] == _currentJobId, orElse: () => {});
-                  _showResignationDialog(activeJob['current_rank'] ?? 1);
+                  _showResignationDialog(activeJob);
                 },
                 child: const Text("RESIGN", style: TextStyle(color: Colors.redAccent, fontSize: 12, fontWeight: FontWeight.bold)),
               ),
@@ -497,12 +569,19 @@ class _JobsViewState extends State<JobsView> {
     final int pre = _parseSafeInt(widget.userData['stat_pre']);
     final int res = _parseSafeInt(widget.userData['stat_res']);
 
-    // Check if they have the specific stat required to promote
-    int playerPrimaryStat = _parseSafeInt(widget.userData['stat_$primaryStat']);
     bool statsMet = false;
-    if (currentRank < 5 && ranksList.length > currentRank) {
-      final nextRankDetails = ranksList.firstWhere((r) => r['rank_level'] == currentRank + 1);
-      statsMet = playerPrimaryStat >= nextRankDetails['stat_req_value'];
+    if (currentRank < 5 && ranksList.isNotEmpty) {
+      final nextRankDetails = ranksList.firstWhere(
+        (r) => r['rank_level'] == currentRank + 1,
+        orElse: () => <String, dynamic>{},
+      );
+      final req = Map<String, dynamic>.from(
+        nextRankDetails['requirements'] ?? const <String, dynamic>{},
+      );
+      statsMet = acu >= _parseSafeInt(req['acu']) &&
+          ops >= _parseSafeInt(req['ops']) &&
+          pre >= _parseSafeInt(req['pre']) &&
+          res >= _parseSafeInt(req['res']);
     }
 
     return SingleChildScrollView(
@@ -529,6 +608,44 @@ class _JobsViewState extends State<JobsView> {
                   children: [
                     Text("Position: ${currentRankDetails['title']}", style: const TextStyle(color: Colors.white70, fontSize: 12)),
                     Text("Job Points: $incentiveBalance", style: const TextStyle(color: Colors.amberAccent, fontSize: 12, fontWeight: FontWeight.bold)),
+                  ],
+                ),
+                const SizedBox(height: 10),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text(
+                      _dailyPayStatus,
+                      style: TextStyle(
+                        color: _canClaimDailyPay ? neonGreen : Colors.white54,
+                        fontSize: 9,
+                        fontWeight: FontWeight.bold,
+                        letterSpacing: 1,
+                      ),
+                    ),
+                    SizedBox(
+                      height: 26,
+                      child: ElevatedButton(
+                        onPressed: _canClaimDailyPay && !_isProcessing
+                            ? _claimDailyPay
+                            : null,
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: neonGreen.withOpacity(0.15),
+                          side: BorderSide(
+                            color: _canClaimDailyPay ? neonGreen : Colors.white24,
+                          ),
+                          padding: const EdgeInsets.symmetric(horizontal: 12),
+                        ),
+                        child: Text(
+                          "CLAIM DAILY PAY",
+                          style: TextStyle(
+                            color: _canClaimDailyPay ? neonGreen : Colors.white24,
+                            fontSize: 9,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ),
+                    ),
                   ],
                 ),
               ],
@@ -654,7 +771,7 @@ class _JobsViewState extends State<JobsView> {
                   bool isPassive = special['is_passive'] ?? false;
 
                   return InkWell(
-                    onTap: (isUnlocked && !isPassive) ? () => _openSpecialExchangeSheet(special, incentiveBalance) : null,
+                    onTap: null,
                     child: Container(
                       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
                       decoration: const BoxDecoration(border: Border(top: BorderSide(color: Color(0xFF333333)))),
@@ -682,7 +799,7 @@ class _JobsViewState extends State<JobsView> {
                                 ),
                                 const SizedBox(height: 4),
                                 Text(
-                                    isPassive ? "Passive" : "Cost: ${special['cost']} Inc",
+                                    isPassive ? "Passive" : "Active paused",
                                     style: TextStyle(color: isUnlocked ? Colors.amberAccent : Colors.white24, fontSize: 9, fontWeight: FontWeight.bold)
                                 ),
                               ],

@@ -38,6 +38,8 @@ dependencies:
   flutter_map: ^7.0.2
   latlong2: ^0.9.1
   http: ^1.2.0
+  # Stable v2 Flutter Auth SDK. Exact version until lockfile is regenerated.
+  supabase_flutter: 2.18.3
   intl: ^0.19.0
 
 dev_dependencies:
