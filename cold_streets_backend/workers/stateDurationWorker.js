@@ -1,10 +1,13 @@
 const pool = require('../db');
+const logger = require('../utils/logger');
+const runtimeHealth = require('../utils/runtimeHealth');
 const {
     refreshStateDurationAchievements
 } = require('../utils/stateDurationTelemetry');
 
 const DEFAULT_POLL_MS = 5000;
 const DEFAULT_BATCH_LIMIT = 50;
+const WORKER_NAME = 'state_duration';
 
 async function settleOneDueStateEpisode() {
     const client = await pool.connect();
@@ -52,7 +55,10 @@ async function settleOneDueStateEpisode() {
         if (transaction) {
             try { await client.query('ROLLBACK'); }
             catch (rollback) {
-                console.error('State duration rollback failed:', rollback.message);
+                logger.error('worker_rollback_failed', {
+                    worker: WORKER_NAME,
+                    ...logger.errorFields(rollback)
+                });
             }
         }
         throw err;
@@ -76,14 +82,26 @@ function startStateDurationWorker({
     batchLimit = DEFAULT_BATCH_LIMIT
 } = {}) {
     let running = false;
+    runtimeHealth.markWorkerStarted(WORKER_NAME);
 
     const poll = async () => {
         if (running) return;
         running = true;
         try {
-            await settleDueStateEpisodeBatch(batchLimit);
+            const settled = await settleDueStateEpisodeBatch(batchLimit);
+            runtimeHealth.markWorkerPollSuccess(WORKER_NAME, settled);
+            if (settled > 0) {
+                logger.info('worker_batch_settled', {
+                    worker: WORKER_NAME,
+                    settled_count: settled
+                });
+            }
         } catch (err) {
-            console.error('State duration worker error:', err.message);
+            runtimeHealth.markWorkerPollFailure(WORKER_NAME);
+            logger.error('worker_poll_failed', {
+                worker: WORKER_NAME,
+                ...logger.errorFields(err)
+            });
         } finally {
             running = false;
         }
@@ -91,7 +109,7 @@ function startStateDurationWorker({
 
     const timer = setInterval(poll, pollMs);
     if (typeof timer.unref === 'function') timer.unref();
-    return { poll, timer };
+    return { name: WORKER_NAME, poll, timer };
 }
 
 module.exports = {
