@@ -18,6 +18,7 @@ const SETTLEMENT_BLOCKERS = Object.freeze([
     'listing_fee_or_tax',
     'partial_purchase_semantics',
     'listing_expiry',
+    'seller_proceeds_timing',
     'bazaar_access_semantics',
     'equipped_item_listing_semantics'
 ]);
@@ -37,7 +38,7 @@ router.get('/:user_id', async (req, res) => {
     try {
         const userId = actorId(req);
 
-        const [userRes, inventoryRes] = await Promise.all([
+        const [userRes, inventoryRes, listingsRes] = await Promise.all([
             pool.query(
                 'SELECT has_bazaar, dirty_cash, clean_cash FROM users WHERE user_id = $1',
                 [userId]
@@ -72,6 +73,24 @@ router.get('/:user_id', async (req, res) => {
                          im.name ASC,
                          ui.item_id ASC`,
                 [userId]
+            ),
+            pool.query(
+                `SELECT tl.listing_id,
+                        tl.item_id,
+                        im.name,
+                        tl.quantity_total,
+                        tl.quantity_remaining,
+                        tl.asking_price,
+                        tl.settlement_currency,
+                        tl.status,
+                        tl.created_at,
+                        tl.updated_at,
+                        tl.closed_at
+                   FROM trade_listings tl
+                   JOIN items_master im ON im.item_id = tl.item_id
+                  WHERE tl.seller_id = $1
+                  ORDER BY tl.created_at DESC, tl.listing_id DESC`,
+                [userId]
             )
         ]);
 
@@ -94,13 +113,38 @@ router.get('/:user_id', async (req, res) => {
             listing_available: false
         }));
 
+        const listings = listingsRes.rows.map(row => ({
+            listing_id: row.listing_id,
+            item_id: row.item_id,
+            name: row.name,
+            quantity_total: exactCatalogInteger(
+                row.quantity_total,
+                'Trade listing total quantity'
+            ),
+            quantity_remaining: exactCatalogInteger(
+                row.quantity_remaining,
+                'Trade listing remaining quantity'
+            ),
+            asking_price: row.asking_price == null
+                ? null
+                : exactCatalogInteger(row.asking_price, 'Trade listing asking price'),
+            settlement_currency: row.settlement_currency,
+            status: row.status,
+            created_at: row.created_at,
+            updated_at: row.updated_at,
+            closed_at: row.closed_at,
+            settlement_available: false
+        }));
+
         return res.json({
             success: true,
             network_status: 'reconciliation_paused',
             listing_creation_available: false,
             purchase_available: false,
             cancellation_available: false,
-            escrow_status: 'not_created',
+            escrow_status: 'schema_ready_mutations_paused',
+            escrow_model: 'listing_row_holds_reserved_item_quantity_after_future_atomic_inventory_debit',
+            deferred_payout_contract_status: 'available_for_future_seller_proceeds',
             settlement_currency_status: 'unresolved',
             bazaar_access_status: 'unresolved',
             has_bazaar_flag: userRes.rows[0].has_bazaar === true,
@@ -109,7 +153,8 @@ router.get('/:user_id', async (req, res) => {
                 clean_cash: exactCatalogInteger(userRes.rows[0].clean_cash, 'Clean Cash')
             },
             blockers: SETTLEMENT_BLOCKERS,
-            tradable_inventory: inventory
+            tradable_inventory: inventory,
+            seller_listings: listings
         });
     } catch (err) {
         return sendActionError(res, err, 'Trade Network fetch failed:');
@@ -121,7 +166,7 @@ function pausedMutation(req, res, action) {
         actorId(req);
         throw new ActionError(
             503,
-            'Trade Network ' + action + ' is paused until settlement currency and escrow semantics are reconciled.'
+            'Trade Network ' + action + ' is paused until settlement currency, fees, partial-fill and expiry semantics are reconciled.'
         );
     } catch (err) {
         return sendActionError(res, err, 'Trade Network ' + action + ' failed:');
