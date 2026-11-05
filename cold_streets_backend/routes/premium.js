@@ -17,6 +17,8 @@ const {
     SUBSCRIBER_CITY_MARKET_DAILY_ITEM_LIMIT,
     VIP_MAX_ENERGY_TARGET,
     VIP_NERVE_BONUS_PERCENT,
+    SUBSCRIBER_MONTHLY_VIP_PACK_QUANTITY,
+    SUBSCRIBER_MONTHLY_BOOK_QUANTITY,
     getPremiumStatus
 } = require('../utils/premiumEntitlements');
 
@@ -65,6 +67,7 @@ router.get('/status', async (req, res) => {
             kingpin_pack_active: status.kingpinPackActive,
             vip_benefits_active: status.vipBenefitsActive,
             active_entitlements: status.activeEntitlements,
+            pack_catalog: catalog,
             pack_inventory: status.packInventory.map(row => ({
                 pack_key: row.pack_key,
                 display_name: row.display_name,
@@ -107,6 +110,16 @@ router.get('/status', async (req, res) => {
                     exactJsonAmount(VIP_MAX_ENERGY_TARGET),
                 vip_nerve_bonus_percent:
                     exactJsonAmount(VIP_NERVE_BONUS_PERCENT)
+            },
+            subscriber_monthly_grants: {
+                vip_pack_quantity: exactJsonAmount(
+                    SUBSCRIBER_MONTHLY_VIP_PACK_QUANTITY
+                ),
+                book_quantity: exactJsonAmount(
+                    SUBSCRIBER_MONTHLY_BOOK_QUANTITY
+                ),
+                settlement_available: false,
+                book_catalog_status: 'unresolved'
             },
             blockers: [
                 'VIP Pack activation remains paused until the +20% Nerve rule has an exact application semantic and the remaining VIP benefit list is final.',
