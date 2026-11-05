@@ -112,86 +112,19 @@ class _SyndicateViewState extends State<SyndicateView> {
   }
 
   Future<void> _generateRecruitBoard(StateSetter setModalState) async {
-    if (dailyRefreshes <= 0) return;
-    setModalState(() => isLoading = true);
-    try {
-      final response = await http.post(
-        Uri.parse('$apiUrl/generate_board'),
-        headers: {"Content-Type": "application/json"},
-        body: jsonEncode(const <String, dynamic>{}),
-      ).timeout(const Duration(seconds: 8));
-
-      if (response.statusCode == 200) {
-        final data = jsonDecode(response.body);
-        setModalState(() {
-          _recruitmentBoard = data['board'];
-          dailyRefreshes = data['refreshesLeft'];
-          isLoading = false;
-        });
-        setState(() {});
-      }
-      else if (response.statusCode == 403) {
-        final data = jsonDecode(response.body);
-        if (data['seconds_left'] != null) {
-          setModalState(() {
-            recruitCooldownSeconds = data['seconds_left'].toInt();
-            _recruitmentBoard.clear();
-            isLoading = false;
-          });
-          _startCooldownTimer(setModalState);
-        } else {
-          setModalState(() => isLoading = false);
-        }
-      } else {
-        setModalState(() => isLoading = false);
-      }
-    } catch (e) {
-      setModalState(() => isLoading = false);
-    }
+    setModalState(() {
+      isLoading = false;
+      _recruitmentBoard.clear();
+    });
   }
 
   Future<void> _hireRecruit(
     Map<String, dynamic> recruit,
     StateSetter setModalState,
   ) async {
-    if (recruitCooldownSeconds > 0) return;
-
-    try {
-      final response = await http.post(
-        Uri.parse('$apiUrl/hire'),
-        headers: {"Content-Type": "application/json"},
-        body: jsonEncode({"offer_id": recruit["offer_id"]}),
-      ).timeout(const Duration(seconds: 8));
-
-      if (response.statusCode == 200) {
-        final data = Map<String, dynamic>.from(jsonDecode(response.body) as Map);
-        final authoritativeCash =
-            int.tryParse(data['dirty_cash']?.toString() ?? '');
-        final authoritativeCooldown =
-            int.tryParse(data['recruitment_cooldown_seconds']?.toString() ?? '');
-
-        if (authoritativeCash != null && widget.onStateChange != null) {
-          final Map<String, dynamic> updatedUser =
-              Map<String, dynamic>.from(widget.userData);
-          updatedUser['dirty_cash'] = authoritativeCash;
-          widget.onStateChange!(updatedUser);
-        }
-
-        setModalState(() {
-          _recruitmentBoard.remove(recruit);
-          recruitCooldownSeconds =
-              authoritativeCooldown != null && authoritativeCooldown > 0
-                  ? authoritativeCooldown
-                  : 0;
-        });
-        _fetchActiveCrew();
-        if (recruitCooldownSeconds > 0) {
-          _startCooldownTimer(setModalState);
-        }
-      }
-    } catch (e) {
-      debugPrint("Hire Error: $e");
-    }
+    setModalState(() {
+      _recruitmentBoard.clear();
+    });
   }
 
   Future<void> _unassignCrew(String crewId) async {
@@ -247,10 +180,21 @@ class _SyndicateViewState extends State<SyndicateView> {
               SizedBox(
                 height: 28,
                 child: ElevatedButton.icon(
-                  onPressed: () => _showRecruitmentBoard(context),
-                  icon: const Icon(Icons.person_add, size: 14, color: Color(0xFF39FF14)),
-                  label: const Text("RECRUIT", style: TextStyle(color: Color(0xFF39FF14), fontSize: 10, fontWeight: FontWeight.bold)),
-                  style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF39FF14).withValues(alpha: 0.1), side: const BorderSide(color: Color(0xFF39FF14)), padding: const EdgeInsets.symmetric(horizontal: 12)),
+                  onPressed: null,
+                  icon: const Icon(Icons.lock, size: 14, color: Colors.white38),
+                  label: const Text(
+                    "RECRUITMENT PAUSED",
+                    style: TextStyle(
+                      color: Colors.white38,
+                      fontSize: 9,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFF121212),
+                    side: const BorderSide(color: Color(0xFF333333)),
+                    padding: const EdgeInsets.symmetric(horizontal: 10),
+                  ),
                 ),
               ),
             ],
@@ -431,18 +375,19 @@ class _SyndicateViewState extends State<SyndicateView> {
                                       ),
                                     ),
                                     ElevatedButton(
-                                      onPressed: () async {
-                                        await http.post(
-                                            Uri.parse('$apiUrl/assign_job'),
-                                            headers: {"Content-Type": "application/json"},
-                                            body: jsonEncode({"crew_id": npc['crew_id'], "crime_id": crime['id']})
-                                        );
-                                        _fetchActiveCrew();
-                                        if (!context.mounted) return;
-                                        Navigator.pop(context);
-                                      },
-                                      style: ElevatedButton.styleFrom(backgroundColor: Colors.transparent, side: const BorderSide(color: Colors.white54)),
-                                      child: Text(assignedCrew != null ? "SWAP" : "ASSIGN", style: const TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.bold)),
+                                      onPressed: null,
+                                      style: ElevatedButton.styleFrom(
+                                        backgroundColor: Colors.transparent,
+                                        side: const BorderSide(color: Colors.white24),
+                                      ),
+                                      child: const Text(
+                                        "AUTOMATION PAUSED",
+                                        style: TextStyle(
+                                          color: Colors.white38,
+                                          fontSize: 9,
+                                          fontWeight: FontWeight.bold,
+                                        ),
+                                      ),
                                     )
                                   ],
                                 ),
