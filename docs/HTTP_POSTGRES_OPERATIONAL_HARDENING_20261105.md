@@ -165,3 +165,83 @@ The backend now has bounded behavior for:
 - saturated DB request queues.
 
 These boundaries are independent from unresolved gameplay mechanics.
+
+
+## External authentication boundary
+
+Supabase Auth token verification is the only runtime outbound HTTP dependency.
+
+It is bounded by:
+
+- 10-second AbortSignal timeout per verification;
+- maximum 50 concurrent verification calls per Node process;
+- HTTP 503 + `Retry-After: 1` when that local concurrency ceiling is reached.
+
+The access token is never logged.
+
+A backend-wide source scan found no other runtime `fetch()` or
+`http(s).request/get` call.
+
+## Runtime configuration enforcement
+
+Critical security settings are now validated by the runtime itself, not only by
+the optional preflight script.
+
+`db.js` rejects:
+
+- non-integer/out-of-range DB_PORT;
+- DB_SSL values other than exact `true`/`false`;
+- any production PostgreSQL configuration that would disable TLS.
+
+`server.js` rejects:
+
+- malformed PORT;
+- malformed ENABLE_GAMEPLAY_API values;
+- any configured legacy timer flag;
+- malformed CORS origins;
+- malformed/non-HTTPS Supabase project origins;
+- secret/service-role keys in the publishable-key slot.
+
+Production browser CORS origins are also required to be HTTPS by the release
+preflight.
+
+## Bootstrap recovery
+
+A transient PostgreSQL outage during process start no longer requires a manual
+restart.
+
+When gameplay is enabled:
+
+1. initial DB acquisition is attempted;
+2. failure marks database readiness false;
+3. the gameplay runtime remains unstarted;
+4. bootstrap is retried every 5 seconds;
+5. once DB acquisition succeeds, the State Duration worker starts exactly once;
+6. readiness can then become healthy.
+
+The retry timer is cancelled during graceful shutdown.
+
+The Crew Crime worker remains deliberately disabled because its mechanics are
+source-conflicted.
+
+## Final operational source scan
+
+Backend JavaScript scan:
+
+- PostgreSQL Pool constructors: 1 (`db.js`);
+- runtime outbound HTTP calls: 1 (Supabase Auth);
+- enabled polling loops: 1 (State Duration worker);
+- ad-hoc runtime `console.*`: 0;
+- legacy mutable timers: 0.
+
+The only `console.*` calls remaining are in the operator-invoked release
+preflight script.
+
+## Static closeout
+
+At source level, every identified network/database wait now has a bounded
+failure path or explicit backpressure boundary.
+
+Remaining verification requires actually running the process/load/concurrency
+tests described in `RUNTIME_VERIFICATION_PLAN_20261105.md`; those tests were
+not authorized or executed in this phase.
