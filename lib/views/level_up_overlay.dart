@@ -17,6 +17,13 @@ class LevelUpOverlay extends StatefulWidget {
 class _LevelUpOverlayState extends State<LevelUpOverlay> {
   bool _isProcessing = false;
 
+  int _parseInt(dynamic value, {int fallback = 0}) {
+    if (value == null) return fallback;
+    if (value is int) return value;
+    if (value is num) return value.toInt();
+    return int.tryParse(value.toString()) ?? fallback;
+  }
+
   int _getRequiredExp(int level) {
     return (25 * math.pow(level, 1.7)).floor();
   }
@@ -72,8 +79,8 @@ class _LevelUpOverlayState extends State<LevelUpOverlay> {
 
   @override
   Widget build(BuildContext context) {
-    int currentLevel = widget.userData['level'] ?? 1;
-    int currentExp = widget.userData['exp'] ?? 0;
+    final currentLevel = _parseInt(widget.userData['level'], fallback: 1);
+    final currentExp = _parseInt(widget.userData['exp']);
     bool isHolding = widget.userData['level_holding'] == true;
     int requiredExp = _getRequiredExp(currentLevel);
 
