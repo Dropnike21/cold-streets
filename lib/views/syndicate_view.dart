@@ -1,7 +1,8 @@
 // File Path: lib/views/syndicate_view.dart
 
 import 'package:flutter/material.dart';
-import 'package:http/http.dart' as http;
+import '../api_config.dart';
+import '../services/game_http.dart' as http;
 import 'dart:convert';
 import 'dart:async';
 
@@ -18,7 +19,7 @@ class SyndicateView extends StatefulWidget {
 
 class _SyndicateViewState extends State<SyndicateView> {
   // NOTE: 10.0.2.2 is for Android Emulator. Use local IPv4 if testing on a physical device.
-  final String apiUrl = "http://10.0.2.2:3000/syndicate";
+  String get apiUrl => '\${ApiConfig.baseUrl}/syndicate';
 
   List<dynamic> _activeCrew = [];
   List<dynamic> _recruitmentBoard = [];
@@ -111,89 +112,28 @@ class _SyndicateViewState extends State<SyndicateView> {
   }
 
   Future<void> _generateRecruitBoard(StateSetter setModalState) async {
-    if (dailyRefreshes <= 0) return;
-    setModalState(() => isLoading = true);
-    try {
-      final String userIdStr = widget.userData['user_id'].toString();
-      final response = await http.post(
-        Uri.parse('$apiUrl/generate_board'),
-        headers: {"Content-Type": "application/json"},
-        body: jsonEncode({"user_id": userIdStr}),
-      ).timeout(const Duration(seconds: 8));
-
-      if (response.statusCode == 200) {
-        final data = jsonDecode(response.body);
-        setModalState(() {
-          _recruitmentBoard = data['board'];
-          dailyRefreshes = data['refreshesLeft'];
-          isLoading = false;
-        });
-        setState(() {});
-      }
-      else if (response.statusCode == 403) {
-        final data = jsonDecode(response.body);
-        if (data['seconds_left'] != null) {
-          setModalState(() {
-            recruitCooldownSeconds = data['seconds_left'].toInt();
-            _recruitmentBoard.clear();
-            isLoading = false;
-          });
-          _startCooldownTimer(setModalState);
-        } else {
-          setModalState(() => isLoading = false);
-        }
-      } else {
-        setModalState(() => isLoading = false);
-      }
-    } catch (e) {
-      setModalState(() => isLoading = false);
-    }
+    setModalState(() {
+      isLoading = false;
+      _recruitmentBoard.clear();
+    });
   }
 
-  Future<void> _hireRecruit(Map<String, dynamic> recruit, StateSetter setModalState) async {
-    if (recruitCooldownSeconds > 0) return;
-
-    // Safety check frontend math before hitting API
-    int currentCash = int.tryParse(widget.userData['dirty_cash']?.toString() ?? '0') ?? 0;
-    int recruitPrice = int.tryParse(recruit["price"]?.toString() ?? '0') ?? 0;
-    if (currentCash < recruitPrice) return;
-
-    try {
-      final String userIdStr = widget.userData['user_id'].toString();
-      final response = await http.post(
-        Uri.parse('$apiUrl/hire'),
-        headers: {"Content-Type": "application/json"},
-        body: jsonEncode({"user_id": userIdStr, "recruit": recruit}),
-      ).timeout(const Duration(seconds: 8));
-
-      if (response.statusCode == 200) {
-        // V1.3 FIX: Locally deduct cash so the UI instantly updates without waiting for sync
-        if (widget.onStateChange != null) {
-          Map<String, dynamic> updatedUser = Map.from(widget.userData);
-          updatedUser['dirty_cash'] = currentCash - recruitPrice;
-          widget.onStateChange!(updatedUser);
-        }
-
-        setModalState(() {
-          _recruitmentBoard.remove(recruit);
-          recruitCooldownSeconds = 120; // Explicit 2-minute default per backend
-        });
-        _fetchActiveCrew();
-        _startCooldownTimer(setModalState);
-      }
-    } catch (e) {
-      debugPrint("Hire Error: $e");
-    }
+  Future<void> _hireRecruit(
+    Map<String, dynamic> recruit,
+    StateSetter setModalState,
+  ) async {
+    setModalState(() {
+      _recruitmentBoard.clear();
+    });
   }
 
   Future<void> _unassignCrew(String crewId) async {
     setState(() => isLoading = true);
     try {
-      final String userIdStr = widget.userData['user_id'].toString();
       final response = await http.post(
         Uri.parse('$apiUrl/unassign_job'),
         headers: {"Content-Type": "application/json"},
-        body: jsonEncode({"user_id": userIdStr, "crew_id": crewId}),
+        body: jsonEncode({"crew_id": crewId}),
       ).timeout(const Duration(seconds: 8));
 
       if (response.statusCode == 200) {
@@ -240,10 +180,21 @@ class _SyndicateViewState extends State<SyndicateView> {
               SizedBox(
                 height: 28,
                 child: ElevatedButton.icon(
-                  onPressed: () => _showRecruitmentBoard(context),
-                  icon: const Icon(Icons.person_add, size: 14, color: Color(0xFF39FF14)),
-                  label: const Text("RECRUIT", style: TextStyle(color: Color(0xFF39FF14), fontSize: 10, fontWeight: FontWeight.bold)),
-                  style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF39FF14).withValues(alpha: 0.1), side: const BorderSide(color: Color(0xFF39FF14)), padding: const EdgeInsets.symmetric(horizontal: 12)),
+                  onPressed: null,
+                  icon: const Icon(Icons.lock, size: 14, color: Colors.white38),
+                  label: const Text(
+                    "RECRUITMENT PAUSED",
+                    style: TextStyle(
+                      color: Colors.white38,
+                      fontSize: 9,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFF121212),
+                    side: const BorderSide(color: Color(0xFF333333)),
+                    padding: const EdgeInsets.symmetric(horizontal: 10),
+                  ),
                 ),
               ),
             ],
@@ -261,35 +212,37 @@ class _SyndicateViewState extends State<SyndicateView> {
   }
 
   Widget _buildSyndicateTab() {
-    final myGangCount = _activeCrew.length;
-
-    // V1.3 Dynamic Capital Tracking!
-    int currentCash = int.tryParse(widget.userData['dirty_cash']?.toString() ?? '0') ?? 0;
-    double capitalProgress = (currentCash / 500000000.0).clamp(0.0, 1.0);
-
     return ListView(
-      padding: const EdgeInsets.all(10),
+      padding: const EdgeInsets.all(16),
       children: [
         Container(
-          padding: const EdgeInsets.all(12),
-          decoration: BoxDecoration(color: const Color(0xFF1A1A1A), border: Border.all(color: const Color(0xFF333333)), borderRadius: BorderRadius.circular(4)),
-          child: Column(
+          padding: const EdgeInsets.all(16),
+          decoration: BoxDecoration(
+            color: const Color(0xFF1A1A1A),
+            border: Border.all(color: const Color(0xFF333333)),
+            borderRadius: BorderRadius.circular(6),
+          ),
+          child: const Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              const Text("SYNDICATE ESTABLISHMENT", style: TextStyle(color: Color(0xFF39FF14), fontSize: 12, fontWeight: FontWeight.bold, letterSpacing: 1)),
-              const SizedBox(height: 10),
-              _buildReqRow("GANG MEMBERS", "$myGangCount / 150", (myGangCount / 150.0).clamp(0.0, 1.0)),
-              _buildReqRow("CAPITAL", "\$${_formatStat(currentCash)} / \$500M", capitalProgress),
-              _buildReqRow("COMPLETE BUSINESSES", "0 / 2", 0.0, subtext: "Requires fully linked Production, Manufacturing & Distribution lines."),
-              const SizedBox(height: 16),
-              SizedBox(
-                width: double.infinity, height: 36,
-                child: ElevatedButton(
-                  onPressed: null,
-                  style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF39FF14).withValues(alpha:0.1), disabledBackgroundColor: const Color(0xFF121212), side: const BorderSide(color: Color(0xFF333333))),
-                  child: const Text("INSUFFICIENT RESOURCES", style: TextStyle(color: Colors.white24, fontSize: 10, fontWeight: FontWeight.bold, letterSpacing: 1)),
+              Text(
+                "SYNDICATE ESTABLISHMENT — PAUSED",
+                style: TextStyle(
+                  color: Colors.amber,
+                  fontSize: 12,
+                  fontWeight: FontWeight.bold,
+                  letterSpacing: 1,
                 ),
-              )
+              ),
+              SizedBox(height: 10),
+              Text(
+                "Legacy member, capital, and completed-business thresholds are not verified by the recovered source set. Establishment requirements will be shown only after the canonical Syndicate rules are selected.",
+                style: TextStyle(
+                  color: Colors.white70,
+                  fontSize: 10,
+                  height: 1.45,
+                ),
+              ),
             ],
           ),
         ),
@@ -424,18 +377,19 @@ class _SyndicateViewState extends State<SyndicateView> {
                                       ),
                                     ),
                                     ElevatedButton(
-                                      onPressed: () async {
-                                        await http.post(
-                                            Uri.parse('$apiUrl/assign_job'),
-                                            headers: {"Content-Type": "application/json"},
-                                            body: jsonEncode({"user_id": userIdStr, "crew_id": npc['crew_id'], "crime_title": crime['title']})
-                                        );
-                                        _fetchActiveCrew();
-                                        if (!context.mounted) return;
-                                        Navigator.pop(context);
-                                      },
-                                      style: ElevatedButton.styleFrom(backgroundColor: Colors.transparent, side: const BorderSide(color: Colors.white54)),
-                                      child: Text(assignedCrew != null ? "SWAP" : "ASSIGN", style: const TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.bold)),
+                                      onPressed: null,
+                                      style: ElevatedButton.styleFrom(
+                                        backgroundColor: Colors.transparent,
+                                        side: const BorderSide(color: Colors.white24),
+                                      ),
+                                      child: const Text(
+                                        "AUTOMATION PAUSED",
+                                        style: TextStyle(
+                                          color: Colors.white38,
+                                          fontSize: 9,
+                                          fontWeight: FontWeight.bold,
+                                        ),
+                                      ),
                                     )
                                   ],
                                 ),
@@ -507,11 +461,15 @@ class _SyndicateViewState extends State<SyndicateView> {
   }
 
   Widget _buildActiveCrewCard(Map<String, dynamic> npc) {
-    int barMax = 1000;
-    if (npc["tier"] == "Hustler") barMax = 10000;
-    if (npc["tier"] == "Enforcer") barMax = 80000;
-    if (npc["tier"] == "Specialist") barMax = 350000;
-    if (npc["tier"] == "Lieutenant") barMax = 1000000;
+    final persistedMaxStats = [
+      npc["max_str"], npc["max_def"], npc["max_dex"], npc["max_spd"],
+      npc["max_acu"], npc["max_ops"], npc["max_pre"], npc["max_res"],
+    ].map((value) => int.tryParse(value?.toString() ?? '') ?? 0)
+      .where((value) => value > 0)
+      .toList();
+    final int barMax = persistedMaxStats.isEmpty
+        ? 1
+        : persistedMaxStats.reduce((a, b) => a > b ? a : b);
 
     bool isAssigned = npc["assignment"] != 'UNASSIGNED';
 

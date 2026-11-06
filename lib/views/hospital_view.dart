@@ -1,13 +1,18 @@
 import 'package:flutter/material.dart';
-import 'package:http/http.dart' as http;
+import '../services/game_http.dart' as http;
 import 'dart:convert';
 import 'dart:async';
 import '../api_config.dart';
 
 class HospitalView extends StatefulWidget {
   final Map<String, dynamic> userData;
+  final Function(Map<String, dynamic>) onStateChange;
 
-  const HospitalView({super.key, required this.userData});
+  const HospitalView({
+    super.key,
+    required this.userData,
+    required this.onStateChange,
+  });
 
   @override
   State<HospitalView> createState() => _HospitalViewState();
@@ -97,10 +102,16 @@ class _HospitalViewState extends State<HospitalView> {
     try {
       final res = await http.post(Uri.parse('$apiUrl/revive'),
           headers: {"Content-Type": "application/json"},
-          body: jsonEncode({"user_id": widget.userData['user_id'], "target_id": targetId})
+          body: jsonEncode({"target_id": targetId})
       );
       final data = jsonDecode(res.body);
 
+      if (res.statusCode == 200 && data['energy'] != null) {
+        final updated = Map<String, dynamic>.from(widget.userData);
+        updated['energy'] =
+            int.tryParse(data['energy'].toString()) ?? updated['energy'];
+        widget.onStateChange(updated);
+      }
       _showSnackbar(data['message'] ?? data['error'], isError: res.statusCode != 200);
       await _fetchPatients();
     } catch (e) {

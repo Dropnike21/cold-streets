@@ -43,3 +43,12 @@ app.*.map.json
 /android/app/debug
 /android/app/profile
 /android/app/release
+
+# Local environment files (contain private API/database credentials)
+.env
+.env.*
+!.env.example
+
+# Local database trust material used during development
+cold_streets_backend/certs/*.crt
+cold_streets_backend/certs/*.cer

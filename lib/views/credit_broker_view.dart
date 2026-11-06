@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:http/http.dart' as http;
+import '../services/game_http.dart' as http;
 import 'dart:convert';
 
 import '../api_config.dart';
@@ -21,6 +21,8 @@ class _CreditBrokerViewState extends State<CreditBrokerView> {
   bool _isLoading = true;
   List<dynamic> _upgrades = [];
   int _currentCreds = 0;
+  bool _purchaseAvailable = false;
+  String _brokerStatus = "catalog_only";
   String _selectedCategory = "Player";
 
   @override
@@ -41,6 +43,10 @@ class _CreditBrokerViewState extends State<CreditBrokerView> {
         if (data['success'] == true) {
           setState(() {
             _upgrades = data['upgrades'];
+            _currentCreds =
+                int.tryParse(data['cred']?.toString() ?? "0") ?? _currentCreds;
+            _purchaseAvailable = data['purchase_available'] == true;
+            _brokerStatus = data['broker_status']?.toString() ?? "catalog_only";
           });
         }
       }
@@ -49,19 +55,6 @@ class _CreditBrokerViewState extends State<CreditBrokerView> {
     } finally {
       if (mounted) setState(() => _isLoading = false);
     }
-  }
-
-  void _purchaseUpgrade(int upgradeId, int cost) {
-    debugPrint("Attempting to purchase Upgrade ID: $upgradeId for $cost Creds");
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        backgroundColor: cNeonGreen,
-        content: Text(
-          "Connecting to the broker...",
-          style: TextStyle(color: Colors.black, fontWeight: FontWeight.bold),
-        ),
-      ),
-    );
   }
 
   @override
@@ -106,6 +99,29 @@ class _CreditBrokerViewState extends State<CreditBrokerView> {
       ),
       body: Column(
         children: [
+          if (!_purchaseAvailable)
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+              decoration: BoxDecoration(
+                color: Colors.amber.withValues(alpha: 0.08),
+                border: const Border(
+                  bottom: BorderSide(color: Colors.amber, width: 1),
+                ),
+              ),
+              child: Text(
+                _brokerStatus == "catalog_only"
+                    ? "CATALOG ONLY — Cred earning, pricing, and upgrade effects are under source reconciliation. Purchases are paused."
+                    : "CREDIT BROKER PURCHASES ARE CURRENTLY PAUSED.",
+                textAlign: TextAlign.center,
+                style: const TextStyle(
+                  color: Colors.amber,
+                  fontSize: 10,
+                  fontWeight: FontWeight.bold,
+                  letterSpacing: 0.5,
+                ),
+              ),
+            ),
           Container(
             width: double.infinity,
             padding: const EdgeInsets.symmetric(vertical: 12.0),
@@ -156,8 +172,9 @@ class _CreditBrokerViewState extends State<CreditBrokerView> {
               itemCount: filteredUpgrades.length,
               itemBuilder: (context, index) {
                 final upg = filteredUpgrades[index];
-                final bool isMaxed = upg['is_maxed'];
-                final bool canAfford = _currentCreds >= upg['cost'];
+                final bool isMaxed = upg['is_maxed'] == true;
+                final bool itemPurchaseAvailable =
+                    _purchaseAvailable && upg['purchase_available'] == true;
                 final int level = upg['level'];
                 final int maxLevel = upg['max_level'];
 
@@ -190,12 +207,12 @@ class _CreditBrokerViewState extends State<CreditBrokerView> {
                               crossAxisAlignment: CrossAxisAlignment.end,
                               children: [
                                 Text(
-                                  "Cur: ${upg['current_bonus']}",
+                                  "Cur: +${upg['current_bonus']}${upg['suffix'] ?? ''}",
                                   style: TextStyle(color: isMaxed ? Colors.amber : Colors.white70, fontSize: 11, fontWeight: FontWeight.bold),
                                 ),
                                 if (!isMaxed)
                                   Text(
-                                    "Nxt: ${upg['next_bonus']}",
+                                    "Nxt: +${upg['next_bonus']}${upg['suffix'] ?? ''}",
                                     style: const TextStyle(color: cNeonGreen, fontSize: 11, fontWeight: FontWeight.bold),
                                   ),
                               ],
@@ -230,24 +247,29 @@ class _CreditBrokerViewState extends State<CreditBrokerView> {
                             ),
                             const SizedBox(width: 16),
                             if (!isMaxed)
-                              SizedBox(
+                              Container(
                                 height: 28,
-                                child: ElevatedButton(
-                                  onPressed: canAfford ? () => _purchaseUpgrade(upg['id'], upg['cost']) : null,
-                                  style: ElevatedButton.styleFrom(
-                                    backgroundColor: canAfford ? cNeonGreen : Colors.grey.shade900,
-                                    foregroundColor: Colors.black,
-                                    disabledForegroundColor: Colors.grey.shade700,
-                                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 0),
-                                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(4)),
+                                padding: const EdgeInsets.symmetric(horizontal: 12),
+                                alignment: Alignment.center,
+                                decoration: BoxDecoration(
+                                  color: itemPurchaseAvailable
+                                      ? cNeonGreen.withValues(alpha: 0.1)
+                                      : Colors.grey.shade900,
+                                  border: Border.all(
+                                    color: itemPurchaseAvailable
+                                        ? cNeonGreen
+                                        : Colors.grey.shade800,
                                   ),
-                                  child: Row(
-                                    mainAxisSize: MainAxisSize.min,
-                                    children: [
-                                      const Icon(Icons.diamond, size: 14),
-                                      const SizedBox(width: 4),
-                                      Text("${upg['cost']}", style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
-                                    ],
+                                  borderRadius: BorderRadius.circular(4),
+                                ),
+                                child: Text(
+                                  itemPurchaseAvailable ? "AVAILABLE" : "PURCHASE PAUSED",
+                                  style: TextStyle(
+                                    color: itemPurchaseAvailable
+                                        ? cNeonGreen
+                                        : Colors.grey.shade600,
+                                    fontSize: 10,
+                                    fontWeight: FontWeight.bold,
                                   ),
                                 ),
                               )

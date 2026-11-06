@@ -1,3 +1,5 @@
+const fs = require('fs');
+const path = require('path');
 const { Pool } = require('pg');
 require('dotenv').config();
 
@@ -36,13 +38,28 @@ if (process.env.NODE_ENV === 'production' && !tlsEnabled) {
     throw new Error('Production PostgreSQL connections require DB_SSL=true.');
 }
 
+let sslConfig = false;
+if (tlsEnabled) {
+    sslConfig = { rejectUnauthorized: true };
+
+    const caFile = process.env.DB_SSL_CA_FILE?.trim();
+    if (caFile) {
+        const resolved = path.resolve(caFile);
+        try {
+            sslConfig.ca = fs.readFileSync(resolved, 'utf8');
+        } catch (error) {
+            throw new Error(`DB_SSL_CA_FILE could not be read at ${resolved}: ${error.message}`);
+        }
+    }
+}
+
 const pool = new Pool({
     user: process.env.DB_USER,
     password: process.env.DB_PASSWORD,
     host: process.env.DB_HOST,
     port: parsePort(process.env.DB_PORT, 5432),
     database: process.env.DB_NAME || 'postgres',
-    ssl: tlsEnabled ? { rejectUnauthorized: true } : false,
+    ssl: sslConfig,
 
     // Bound pool acquisition, server execution, lock waits, and abandoned
     // transactions independently. Statement timeout is deliberately shorter
