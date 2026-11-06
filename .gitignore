@@ -48,3 +48,7 @@ app.*.map.json
 .env
 .env.*
 !.env.example
+
+# Local database trust material used during development
+cold_streets_backend/certs/*.crt
+cold_streets_backend/certs/*.cer
